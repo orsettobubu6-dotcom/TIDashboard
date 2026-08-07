@@ -1,0 +1,26 @@
+# La cartella COGO ospita anche progetti che non fanno parte di TIDashboard
+# (TOPOGRAFIA_APP, cadastra_dashboard_pro, ili2gpkg, jdxf, dati di prova,
+# archivi, documenti). Invece di elencarli uno per uno si esclude tutto e si
+# riammette solo cio' che appartiene al plugin: cosi' un file nuovo lasciato
+# per sbaglio in radice non finisce nel repository senza che nessuno se ne
+# accorga.
+/*
+
+!/.gitignore
+!/tidashboard/
+!/av2geobau_src/
+!/crea_zip_plugin.py
+
+# Il sorgente Java del traduttore DXF va distribuito (LGPL 2.1), ma i prodotti
+# della compilazione no: i .class ricompilati, la cartella di assemblaggio del
+# jar, il jar stesso e il log degli errori di compilazione.
+av2geobau_src/build/
+av2geobau_src/jarbuild/
+av2geobau_src/*.jar
+av2geobau_src/errs.txt
+
+# Bytecode, backup e residui di lavorazione.
+__pycache__/
+*.py[cod]
+*.bak
+*.orig

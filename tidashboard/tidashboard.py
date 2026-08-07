@@ -1,0 +1,3237 @@
+# TIDashboard - dati della misurazione ufficiale svizzera in QGIS
+# Copyright (C) 2026 Gabriele Peverelli
+#
+# Questo programma e' software libero: lo si puo' ridistribuire e modificare
+# secondo i termini della GNU General Public License pubblicata dalla Free
+# Software Foundation, versione 2 o (a scelta) una successiva. Il testo si
+# trova nel file LICENSE distribuito insieme al programma.
+
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+from qgis.PyQt.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QFileDialog,
+    QTextEdit, QLabel, QGroupBox, QMessageBox, QAction, QCheckBox, QGridLayout,
+    QComboBox, QDoubleSpinBox, QDateEdit, QTabWidget, QProgressBar, QWidget,
+    QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView
+)
+from qgis.PyQt.QtCore import (QThread, pyqtSignal, QPointF, QRectF, QDate,
+                              QTimer, Qt)
+from qgis.PyQt.QtGui import (QIcon, QColor, QFont, QTextCursor, QPalette,
+                             QTextCharFormat)
+# NB: le classi di simbologia (QgsSimpleFillSymbolLayer, QgsFontMarkerSymbolLayer,
+# QgsFillSymbol, ...) non compaiono piu' qui: sono passate a simbologia.py e a
+# stili.py insieme al codice che le usa.
+from qgis.core import (
+    QgsProject, QgsVectorLayer, QgsMessageLog, Qgis, QgsDataSourceUri,
+    QgsCoordinateReferenceSystem, QgsRelation, QgsVectorLayerJoinInfo,
+    QgsPrintLayout, QgsLayoutItemLabel, QgsLayoutItemScaleBar, QgsLayoutItemMap,
+    QgsLayoutExporter, QgsLayerTreeGroup, QgsRectangle,
+    QgsPalLayerSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling, QgsProperty,
+    QgsUnitTypes, QgsGeometry, QgsWkbTypes, QgsSettings
+)
+# NB: niente import di iface da qgis.utils a livello di modulo: renderebbe il
+# modulo non importabile fuori da QGIS (es. test headless) e dipendente da un
+# singleton globale. L'iface viene passato dal plugin al costruttore della
+# dialog (parametro opzionale iface=None, salvato come self._iface).
+
+try:
+    from . import planimetria as _planimetria
+    from . import dati_comune as _dati_comune
+    from . import simbologia as _simbologia
+    from .stili import StiliMixin
+    from .link_manager_dialog import open_link_manager_for_active_layer
+    from .legend_manifest import write_legend_manifest
+    from .colori import *          # noqa: F401,F403 - costanti C_*
+    from .etichette import *       # noqa: F401,F403 - regole di etichettatura
+    from .ordinamento import *     # noqa: F401,F403 - ordine z e gruppi
+    from .simbologia import *      # noqa: F401,F403 - costruttori di simboli
+    from .etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
+                            _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
+    from .ordinamento import (_raw_table_name, _rf_group_debug_info,
+                              _rf_group_for_table, _zorder_debug_info,
+                              _zorder_priority)
+    from .simbologia import (_CAP_HEIGHT_RATIO, _ensure_cadastra_text_font_loaded,
+                             _font_marker_offset, _font_size_for_cap,
+                             _svg_symbol_path)
+except ImportError:
+    # test_style_logic.py importa questo modulo come top-level (non come
+    # pacchetto), quindi l'import relativo fallisce li' - fallback assoluto.
+    import planimetria as _planimetria
+    import dati_comune as _dati_comune
+    import simbologia as _simbologia
+    from stili import StiliMixin
+    from link_manager_dialog import open_link_manager_for_active_layer
+    from legend_manifest import write_legend_manifest
+    from colori import *           # noqa: F401,F403
+    from etichette import *        # noqa: F401,F403
+    from ordinamento import *      # noqa: F401,F403
+    from simbologia import *       # noqa: F401,F403
+    from etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
+                           _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
+    from ordinamento import (_raw_table_name, _rf_group_debug_info,
+                             _rf_group_for_table, _zorder_debug_info,
+                             _zorder_priority)
+    from simbologia import (_CAP_HEIGHT_RATIO, _ensure_cadastra_text_font_loaded,
+                            _font_marker_offset, _font_size_for_cap,
+                            _svg_symbol_path)
+
+# NB: gli import con * qui sopra non sono pigrizia - RI-ESPORTANO i nomi
+# spostati nei nuovi moduli, cosi' chi importa questo modulo (i test, il resto
+# del plugin) continua a trovarli dove li ha sempre trovati. Senza,
+# spacchettare il file avrebbe rotto ogni riferimento esterno.
+
+# Cartella con il set ufficiale di simboli Cadastra Symbol SVG 2024 (e la
+# variante "mask" per l'alone bianco), fornita dall'utente e copiata dentro
+# il plugin per non dipendere da un percorso specifico della macchina. Sostituisce
+# il font "CadastraSymbol"/"CadastraSymbol Mask": niente piu' dipendenza da
+# un font installato in QGIS con nome famiglia esatto, ne' da assunzioni sulla
+# mappatura tasto->glifo del font (che non e' verificabile senza aprirlo).
+# PyQt6 (QGIS 4): gli enum delle classi Qt vanno referenziati nella forma
+# annidata Classe.EnumType.Valore. La forma piatta (_MB_SI) solleva
+# AttributeError - e le finestre di conferma che la usavano fallivano invece
+# di chiedere conferma.
+_MB_SI = QMessageBox.StandardButton.Yes
+_MB_NO = QMessageBox.StandardButton.No
+
+SYMBOLS_DIR = _simbologia.SYMBOLS_DIR
+
+# av2geobau_ti.jar: fork di av2geobau (https://github.com/claeis/av2geobau)
+# con Av2geobau.java/Mapper.java estesi per leggere MD01MUTI7MN95 direttamente
+# (nessuna finta "TRANSLATION OF" verso il modello tedesco, che fallirebbe per
+# le divergenze strutturali reali - vedi Materiale/Genere_CS/Genere_OS
+# gerarchici). Il jar richiede la sua cartella "libs" accanto a se' (i
+# riferimenti nel MANIFEST.MF sono relativi alla posizione del jar).
+AV2GEOBAU_JAR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "av2geobau", "av2geobau_ti.jar")
+
+# Nome ufficiale del plugin, quello con cui viene pubblicato.
+NOME_PLUGIN = "TIDashboard"
+
+# Modello INTERLIS in dotazione. TIDashboard e' scritto per QUESTO modello: i
+# nomi di tabella, gli enumerati e le regole di simbologia sono i suoi. Un .ili
+# diverso (o una revisione diversa) produrrebbe silenziosamente un risultato
+# sbagliato, percio' non si sceglie - come per il traduttore DXF.
+MODELLO_ILI = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "models", "MD01MUTI7MN95.ili")
+
+
+def _versione_dichiarata():
+    """La versione LETTA da metadata.txt, non ricopiata a mano.
+
+    Il titolo della finestra annunciava "v2.0" mentre metadata.txt diceva
+    1.1.1: due numeri diversi per lo stesso plugin. Leggendola da li' non
+    possono piu' divergere."""
+    percorso = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.txt")
+    try:
+        with open(percorso, encoding="utf-8") as f:
+            for riga in f:
+                if riga.startswith("version="):
+                    return riga.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return "?"
+
+
+
+
+
+def _looks_like_gpkg(path):
+    """Verifica che un file sia davvero (con ogni probabilita') un GeoPackage
+    prima di sovrascriverlo/cancellarlo: richiede SIA l'estensione ".gpkg"
+    (case-insensitive) SIA l'header magico SQLite ("SQLite format 3\\0") nei
+    primi 100 byte del file - un GeoPackage e' per definizione un database
+    SQLite (GPKG 1.0, Requirement 1). Helper puro (nessuna dipendenza da QGIS),
+    pensato per essere testabile fuori da QGIS. Usato in run_import: un
+    percorso sbagliato digitato nel campo "Output GPKG" (es. un file .gpkg
+    mancante creato da un altro programma, o un file rinominato) non deve
+    essere cancellato al posto di un vecchio output del plugin."""
+    try:
+        p = Path(path)
+        if p.suffix.lower() != ".gpkg":
+            return False
+        with open(p, "rb") as f:
+            header = f.read(100)
+        return header.startswith(b"SQLite format 3\x00")
+    except OSError:
+        return False
+
+
+# ==================================================================================================================
+class JavaWorker(QThread):
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(int, str)
+
+    def __init__(self, command, task_type):
+        super().__init__()
+        self.command = command
+        self.task_type = task_type
+        # Riferimento al Popen in corso, per poterlo terminare da fuori il
+        # thread (vedi cancel() / closeEvent della dialog).
+        self._proc = None
+
+    def run(self):
+        try:
+            # CREATE_NO_WINDOW su Windows: senza questo flag ogni lancio di
+            # java apre una finestra console nera sopra QGIS (stesso flag gia'
+            # usato da _probe_java_version). Fuori Windows il flag non esiste:
+            # si passa 0 (nessun flag).
+            self._proc = subprocess.Popen(
+                self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='replace', bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            with self._proc as process:
+                for line in process.stdout:
+                    if line:
+                        self.log_signal.emit(line.strip())
+            self.finished_signal.emit(process.returncode, self.task_type)
+        except Exception as e:
+            self.log_signal.emit(f"❌ ERRORE CRITICO: {str(e)}")
+            self.finished_signal.emit(-1, self.task_type)
+
+    def cancel(self):
+        """Termina il processo Java in corso, se ancora attivo (chiamato dalla
+        dialog alla chiusura della finestra). terminate() chiude lo stdout del
+        processo: il ciclo di lettura in run() finisce da solo e il thread
+        termina regolarmente (poi il chiamante fa wait() per sincronizzarsi)."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+
+# ==================================================================================================================
+# 4. DASHBOARD UI
+# ==================================================================================================================
+# Stile dei pulsanti di avvio. Il colore di fondo e' il segnaposto %s; il ramo
+# :disabled serve perche' i pulsanti ora si spengono da soli finche' i campi
+# non sono a posto, e uno stile a colore fisso non lo farebbe vedere.
+_STILE_PULSANTE = (
+    "QPushButton { background-color: %s; color: white; font-weight: bold; "
+    "padding: 10px; border-radius: 4px; }"
+    "QPushButton:disabled { background-color: #757575; color: #E0E0E0; }"
+)
+
+
+class TIDashboardDialog(StiliMixin, QDialog):
+    def __init__(self, parent=None, iface=None):
+        super().__init__(parent)
+        self.setWindowTitle("%s %s" % (NOME_PLUGIN, _versione_dichiarata()))
+        self.resize(900, 900)
+        # iface di QGIS passato dal plugin (niente import globale da qgis.utils):
+        # opzionale perche' i test istanziano la dialog con __new__ senza
+        # __init__ - ogni uso deve quindi passare da getattr(self, "_iface", None).
+        self._iface = iface
+        self.worker = None
+        self.loaded_layers = []
+        self.product_mode = "gb"  # 'gb' o 'bp'
+        self.plugin_dir = Path(__file__).parent
+        self._java_path_cache = None  # vedi find_java(): None = mai cercato, "" = cercato e non trovato
+        self._banda_ingombro = None
+        # Righe di console conservate per intero: il filtro nasconde, non
+        # butta via. Deve esistere PRIMA di init_ui, che gia' logga.
+        self._righe_log = []
+        self.init_ui()
+        # L'ingombro e' centrato sulla vista corrente: deve seguire pan e zoom,
+        # altrimenti resta indietro e mostra un'area che non e' piu' quella
+        # che verrebbe stampata.
+        if self._iface and self._iface.mapCanvas():
+            self._iface.mapCanvas().extentsChanged.connect(self._aggiorna_ingombro)
+
+    def init_ui(self):
+        # Elenco dei campi-percorso da convalidare, riempito da
+        # create_file_row: (QLineEdit, e_di_salvataggio, etichetta_stato, scheda)
+        self._campi_percorso = []
+        layout = QVBoxLayout()
+
+        prod_layout = QHBoxLayout()
+        prod_layout.addWidget(QLabel("Prodotto:"))
+        self.combo_product = QComboBox()
+        self.combo_product.addItem("Piano per il registro fondiario (GB)", "gb")
+        self.combo_product.addItem("Piano di base (PB-MU)", "bp")
+        self.combo_product.currentIndexChanged.connect(self.on_product_changed)
+        prod_layout.addWidget(self.combo_product)
+        prod_layout.addStretch()
+        layout.addLayout(prod_layout)
+
+        # Le tre fasi stanno su SCHEDE, non piu' impilate in una colonna sola:
+        # in colonna, su uno schermo da portatile, la console si riduceva a due
+        # righe e la sezione planimetria finiva sotto il bordo della finestra
+        # (nessuna QScrollArea). Le schede danno a ogni fase l'altezza piena e
+        # lasciano la console sempre visibile sotto.
+        self.schede = QTabWidget()
+
+        group_import = QGroupBox("1. Importazione Dati (ITF -> GeoPackage)")
+        layout_import = QVBoxLayout()
+
+        self.txt_jar = QLineEdit()
+        self.txt_jar.setPlaceholderText("Seleziona ili2gpkg-x.x.jar...")
+        layout_import.addLayout(self.create_file_row("ili2gpkg JAR:", self.txt_jar, "JAR files (*.jar)", False, "import"))
+
+        self.txt_itf = QLineEdit()
+        self.txt_itf.setPlaceholderText("Seleziona il file dati .itf...")
+        layout_import.addLayout(self.create_file_row("File ITF in:", self.txt_itf, "ITF files (*.itf)", False, "import"))
+
+        # Modello INTERLIS in dotazione: vedi MODELLO_ILI. Stessa scelta del
+        # traduttore DXF - visibile, cosi' si sa su quale modello si sta
+        # lavorando, ma non sostituibile.
+        self.txt_ili = QLineEdit()
+        self.txt_ili.setReadOnly(True)
+        self.txt_ili.setText(MODELLO_ILI)
+        self.txt_ili.setToolTip("Modello in dotazione al plugin, non sostituibile")
+        layout_import.addLayout(
+            self._riga_in_dotazione("Modello .ili:", self.txt_ili, "stato_ili"))
+
+        self.txt_gpkg = QLineEdit()
+        self.txt_gpkg.setPlaceholderText("Definisci output GeoPackage...")
+        layout_import.addLayout(self.create_file_row("Output GPKG:", self.txt_gpkg, "GeoPackage (*.gpkg)", True, "import"))
+
+        group_adv = QGroupBox("Opzioni Tolleranza Errori (Per dati sporchi)")
+        group_adv.setCheckable(True)
+        group_adv.setChecked(True)
+        layout_adv = QGridLayout()
+        # Etichette in italiano, flag di ili2gpkg nel tooltip: i nomi grezzi
+        # ("--skipPolygonBuilding") dicono qualcosa solo a chi conosce gia'
+        # ili2gpkg, e queste opzioni cambiano cosa finisce nel GeoPackage.
+        self.chk_disable_val = self._casella_tolleranza(
+            "Non validare i dati", "--disableValidation",
+            "Salta del tutto il controllo di conformita' al modello. "
+            "Ultima risorsa: passa anche cio' che e' sbagliato.")
+        self.chk_skip_geom = self._casella_tolleranza(
+            "Ignora errori di geometria", "--skipGeometryErrors",
+            "Le geometrie non valide non bloccano l'importazione: gli oggetti "
+            "interessati vengono saltati.")
+        self.chk_skip_ref = self._casella_tolleranza(
+            "Ignora riferimenti mancanti", "--skipReferenceErrors",
+            "Accetta i rimandi a oggetti assenti (relazioni interrotte).")
+        self.chk_skip_poly = self._casella_tolleranza(
+            "Non costruire i poligoni", "--skipPolygonBuilding",
+            "Non ricompone le superfici dai contorni: restano solo le linee. "
+            "Utile quando i contorni non chiudono.")
+        self.chk_sql_null = self._casella_tolleranza(
+            "Ammetti valori nulli", "--sqlEnableNull",
+            "Le colonne obbligatorie diventano facoltative nel GeoPackage.")
+        self.chk_sql_text = self._casella_tolleranza(
+            "Tutte le colonne come testo", "--sqlColsAsText",
+            "Nessuna conversione di tipo: numeri e date restano testo.")
+        layout_adv.addWidget(self.chk_disable_val, 0, 0)
+        layout_adv.addWidget(self.chk_skip_geom, 0, 1)
+        layout_adv.addWidget(self.chk_skip_ref, 1, 0)
+        layout_adv.addWidget(self.chk_skip_poly, 1, 1)
+        layout_adv.addWidget(self.chk_sql_null, 2, 0)
+        layout_adv.addWidget(self.chk_sql_text, 2, 1)
+        group_adv.setLayout(layout_adv)
+        self.group_adv = group_adv
+        layout_import.addWidget(group_adv)
+
+        self.btn_import = QPushButton("▶ ESEGUI IMPORTAZIONE UFFICIALE (2 Fasi)")
+        # Le regole vanno scritte con il selettore QPushButton e non come
+        # dichiarazioni nude: senza il ramo :disabled il pulsante restava
+        # verde acceso anche da spento, quindi sembrava premibile.
+        self.btn_import.setStyleSheet(_STILE_PULSANTE % "#2E7D32")
+        self.btn_import.clicked.connect(self.run_import)
+        layout_import.addWidget(self.btn_import)
+        self.lbl_esito_import = QLabel()
+        self.lbl_esito_import.setStyleSheet("color: %s;" % self._rosso_avviso())
+        layout_import.addWidget(self.lbl_esito_import)
+
+        # Sempre presente, non piu' setVisible: comparendo e sparendo al
+        # cambio di prodotto faceva saltare tutto il resto della scheda, e
+        # sparire un comando non spiega perche' non e' disponibile. Ora resta
+        # al suo posto, spento, con il motivo nel tooltip.
+        self.btn_layout = QPushButton("📐 CREA LAYOUT PB-MU")
+        self.btn_layout.setStyleSheet(_STILE_PULSANTE % "#1565C0")
+        self.btn_layout.clicked.connect(self.create_layout_bp)
+        layout_import.addWidget(self.btn_layout)
+        self._aggiorna_pulsante_layout()
+
+        layout_import.addStretch()
+        group_import.setLayout(layout_import)
+        self.pagina_import = self._in_scheda(group_import)
+        self.schede.addTab(self.pagina_import, "1. Importazione")
+
+        group_geobau = QGroupBox("2. Conversione DXF (av2geobau)")
+        layout_geobau = QVBoxLayout()
+        # Il traduttore DXF e' quello IN DOTAZIONE al plugin: e' una versione
+        # nostra, allineata al modello ticinese, e usarne un'altra produrrebbe
+        # un DXF che non rispetta le convenzioni implementate qui. Il campo
+        # resta VISIBILE, cosi' si vede qual e' il motore in uso, ma non si
+        # sceglie: niente "Sfoglia...", sola lettura.
+        self.txt_geobau_jar = QLineEdit()
+        self.txt_geobau_jar.setReadOnly(True)
+        self.txt_geobau_jar.setText(AV2GEOBAU_JAR)
+        self.txt_geobau_jar.setToolTip(
+            "Traduttore in dotazione al plugin, non sostituibile")
+        layout_geobau.addLayout(
+            self._riga_in_dotazione("Traduttore DXF:", self.txt_geobau_jar, "stato_jar"))
+        # L'ITF era chiesto DUE volte, qui e nella scheda 1, gia' sincronizzati
+        # fra loro: chi guardava vedeva due campi identici e non sapeva se
+        # andassero compilati entrambi. Ora questo rispecchia quello
+        # dell'importazione ed e' bloccato; si sblocca solo con la spunta, per
+        # il caso reale ma raro di un DXF da un ITF diverso da quello importato.
+        self.txt_geobau_itf = QLineEdit()
+        self.txt_geobau_itf.setPlaceholderText("Come nella scheda \"1. Importazione\"")
+        self.txt_geobau_itf.setReadOnly(True)
+        riga_itf = self.create_file_row("File ITF in:", self.txt_geobau_itf,
+                                        "ITF files (*.itf)", False, "dxf")
+        layout_geobau.addLayout(riga_itf)
+        self.chk_itf_diverso = QCheckBox(
+            "Convertire un file ITF diverso da quello importato")
+        self.chk_itf_diverso.toggled.connect(self._sblocca_itf_dxf)
+        layout_geobau.addWidget(self.chk_itf_diverso)
+        # Il pulsante "Sfoglia..." della riga e' l'ultimo widget aggiunto:
+        # senza la spunta non ha nulla da fare.
+        self._btn_sfoglia_itf_dxf = riga_itf.itemAt(riga_itf.count() - 1).widget()
+        self._btn_sfoglia_itf_dxf.setEnabled(False)
+        self.txt_geobau_dxf = QLineEdit()
+        self.txt_geobau_dxf.setPlaceholderText("Salva il DXF come...")
+        layout_geobau.addLayout(self.create_file_row("Output DXF:", self.txt_geobau_dxf, "DXF (*.dxf)", True, "dxf"))
+        self.btn_geobau = QPushButton("▶ ESEGUI TRADUZIONE av2geobau")
+        self.btn_geobau.setStyleSheet(_STILE_PULSANTE % "#1565C0")
+        self.btn_geobau.clicked.connect(self.run_geobau)
+        layout_geobau.addWidget(self.btn_geobau)
+        self.lbl_esito_dxf = QLabel()
+        self.lbl_esito_dxf.setStyleSheet("color: %s;" % self._rosso_avviso())
+        layout_geobau.addWidget(self.lbl_esito_dxf)
+        layout_geobau.addStretch()
+        group_geobau.setLayout(layout_geobau)
+        self.pagina_dxf = self._in_scheda(group_geobau)
+        self.schede.addTab(self.pagina_dxf, "2. Conversione DXF")
+
+        # --- 3. Planimetria -------------------------------------------------
+        group_plan = QGroupBox("3. Planimetria (estratto stampabile)")
+        layout_plan = QVBoxLayout()
+        riga_plan = QHBoxLayout()
+
+        riga_plan.addWidget(QLabel("Formato:"))
+        self.combo_formato = QComboBox()
+        self.combo_formato.addItems([n for n, _w, _h in _planimetria.FORMATI])
+        riga_plan.addWidget(self.combo_formato)
+
+        riga_plan.addWidget(QLabel("Scala:"))
+        self.combo_scala = QComboBox()
+        # Solo le scale del cap.1.5.1: l'elenco e' chiuso, quindi un menu a
+        # tendina invece di un campo libero rende impossibile sbagliarla.
+        self.combo_scala.addItems(["1:%d" % s for s in _planimetria.SCALE_UFFICIALI_MU])
+        self.combo_scala.setCurrentText("1:1000")
+        riga_plan.addWidget(self.combo_scala)
+
+        riga_plan.addWidget(QLabel("Rotazione (gon):"))
+        self.spin_rotazione = QDoubleSpinBox()
+        self.spin_rotazione.setRange(0.0, 400.0)
+        self.spin_rotazione.setDecimals(1)
+        self.spin_rotazione.setSingleStep(10.0)
+        self.spin_rotazione.setToolTip("Rotazione della mappa attorno al centro del foglio, "
+                                       "in gon (100 gon = 90 gradi)")
+        riga_plan.addWidget(self.spin_rotazione)
+        # I gradi accanto al valore: i gon sono l'unita' della misurazione
+        # ufficiale, ma il riscontro visivo che tutti hanno e' in gradi.
+        self.lbl_gradi = QLabel()
+        self.lbl_gradi.setStyleSheet("color: #9E9E9E;")
+        riga_plan.addWidget(self.lbl_gradi)
+        layout_plan.addLayout(riga_plan)
+
+        # Cursore e scatti rapidi: con il solo spin a passo 10 arrivare a 300
+        # gon voleva dire trenta clic. Cursore e spin restano sincronizzati nei
+        # due sensi; il cursore lavora in DECIMI di gon perche' QSlider e'
+        # intero e lo spin ha un decimale.
+        riga_rot = QHBoxLayout()
+        self.slider_rotazione = QSlider(Qt.Orientation.Horizontal)
+        self.slider_rotazione.setRange(0, 4000)
+        self.slider_rotazione.setSingleStep(10)
+        self.slider_rotazione.setPageStep(250)
+        riga_rot.addWidget(self.slider_rotazione, 1)
+        for gon in (0, 100, 200, 300):
+            b = QPushButton("%d" % gon)
+            b.setMaximumWidth(40)
+            b.setToolTip("%d gon = %g°" % (gon, _planimetria.gon_a_gradi(gon)))
+            b.clicked.connect(lambda _c=False, g=gon: self.spin_rotazione.setValue(float(g)))
+            riga_rot.addWidget(b)
+        layout_plan.addLayout(riga_rot)
+
+        self.slider_rotazione.valueChanged.connect(
+            lambda v: self.spin_rotazione.setValue(v / 10.0))
+        self.spin_rotazione.valueChanged.connect(self._sync_rotazione)
+        self._sync_rotazione(self.spin_rotazione.value())
+
+        riga_plan2 = QHBoxLayout()
+        riga_plan2.addWidget(QLabel("Comune:"))
+        # Il comune si LEGGE dai dati INTERLIS (vedi dati_comune.py), non si
+        # digita: e' un'iscrizione obbligatoria e il modello lo contiene gia'.
+        # La casella resta scrivibile perche' una consegna puo' non portare
+        # nessuna delle due fonti, e in quel caso e' meglio poterlo scrivere
+        # che restare bloccati.
+        self.combo_comune = QComboBox()
+        self.combo_comune.setEditable(True)
+        self.combo_comune.lineEdit().setPlaceholderText(
+            "Letto dai dati INTERLIS dopo l'importazione")
+        self.combo_comune.setToolTip(
+            "Nomi trovati nei dati: Layout_del_piano.Nome_comune e "
+            "Confini_comunali.Comune.Nome")
+        riga_plan2.addWidget(self.combo_comune, 1)
+
+        # "Stato al" e' la DATA DI VALIDITA' dei dati (iscrizione obbligatoria,
+        # cap.1.5.7), non la data di stampa: un estratto prodotto oggi da dati
+        # consegnati a marzo deve dichiarare marzo. Prima veniva scritta
+        # d'ufficio la data odierna, cioe' un'attestazione falsa di attualita'.
+        # Il valore iniziale resta oggi perche' e' il caso piu' frequente
+        # (estratto da dati appena importati), ma ora e' modificabile.
+        riga_plan2.addWidget(QLabel("Stato al:"))
+        self.data_validita = QDateEdit()
+        self.data_validita.setDisplayFormat("dd.MM.yyyy")
+        self.data_validita.setCalendarPopup(True)
+        self.data_validita.setDate(QDate.currentDate())
+        self.data_validita.setToolTip(
+            "Data riportata nel cartiglio (cap.1.5.7), non quella di stampa. "
+            "Viene proposta la data di estrazione dell'ITF; se l'ITF non e' "
+            "disponibile, la mutazione piu' recente presente nei dati.")
+        riga_plan2.addWidget(self.data_validita)
+        layout_plan.addLayout(riga_plan2)
+
+        # Anteprima dell'ingombro: senza, formato, scala e rotazione si
+        # scelgono alla cieca e il risultato si vede solo a layout creato.
+        self.chk_ingombro = QCheckBox("Mostra sulla mappa l'ingombro del foglio")
+        self.chk_ingombro.setToolTip(
+            "Disegna sul canvas il rettangolo di terreno che finira' sul foglio, "
+            "seguendo formato, scala, rotazione e centro della vista")
+        self.chk_ingombro.toggled.connect(self._aggiorna_ingombro)
+        layout_plan.addWidget(self.chk_ingombro)
+        for controllo in (self.combo_formato, self.combo_scala):
+            controllo.currentIndexChanged.connect(self._aggiorna_ingombro)
+        self.spin_rotazione.valueChanged.connect(self._aggiorna_ingombro)
+
+        self.btn_planimetria = QPushButton("\U0001F4D0 CREA PLANIMETRIA")
+        self.btn_planimetria.setStyleSheet(_STILE_PULSANTE % "#00695C")
+        self.btn_planimetria.clicked.connect(self.run_planimetria)
+        layout_plan.addWidget(self.btn_planimetria)
+
+        self.btn_planimetria_pdf = QPushButton("\U0001F4C4 ESPORTA PLANIMETRIA IN PDF")
+        self.btn_planimetria_pdf.clicked.connect(self.run_planimetria_pdf)
+        layout_plan.addWidget(self.btn_planimetria_pdf)
+
+        layout_plan.addStretch()
+        group_plan.setLayout(layout_plan)
+        self.pagina_plan = self._in_scheda(group_plan)
+        self.schede.addTab(self.pagina_plan, "3. Planimetria")
+
+        # Scheda degli errori nei dati: l'analisi delle violazioni di vincolo
+        # esisteva gia' ma finiva in console, dove un elenco di venti conflitti
+        # e' un muro di testo. In tabella diventa una lista di cose da
+        # sistemare. Resta disabilitata finche' non ci sono errori.
+        group_err = QGroupBox("Violazioni di vincolo trovate nell'ITF")
+        layout_err = QVBoxLayout()
+        nota_err = QLabel(
+            "Sono errori dei dati sorgente: vanno corretti da chi gestisce "
+            "l'ITF, non da qui. L'importazione li riporta tali e quali.")
+        nota_err.setWordWrap(True)
+        nota_err.setTextFormat(Qt.TextFormat.PlainText)
+        layout_err.addWidget(nota_err)
+        self.tab_errori = QTableWidget(0, 6)
+        self.tab_errori.setHorizontalHeaderLabels(
+            ["Tabella", "Vincolo", "Valori duplicati", "tid in conflitto",
+             "Riga ITF", "Diagnosi"])
+        self.tab_errori.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tab_errori.setAlternatingRowColors(True)
+        layout_err.addWidget(self.tab_errori)
+        group_err.setLayout(layout_err)
+        self.pagina_errori = self._in_scheda(group_err)
+        self.schede.addTab(self.pagina_errori, "Errori nei dati")
+        self.schede.setTabEnabled(self.schede.indexOf(self.pagina_errori), False)
+
+        layout.addWidget(self.schede)
+
+        # Sincronizza ITF/DXF del gruppo 2 con i campi del gruppo 1 (stesso
+        # dataset), senza sovrascrivere un valore che l'utente ha gia'
+        # inserito a mano direttamente nel gruppo 2.
+        self.txt_itf.textChanged.connect(self._sync_geobau_itf)
+        self.txt_gpkg.textChanged.connect(self._sync_geobau_dxf)
+        # Cambiando il GeoPackage cambia anche il comune da proporre.
+        self.txt_gpkg.textChanged.connect(self.aggiorna_comuni_da_dati)
+
+        # Avanzamento: durante ili2gpkg su un comune intero non si muoveva
+        # nulla per minuti, solo qualche riga di console. La barra e'
+        # INDETERMINATA (setRange(0, 0)) perche' ne' ili2gpkg ne' av2geobau
+        # riportano una percentuale: dichiarare un avanzamento numerico
+        # sarebbe inventarselo. Fase e tempo trascorso sono invece reali.
+        self.riga_avanzamento = QHBoxLayout()
+        self.lbl_fase = QLabel()
+        self.lbl_tempo = QLabel()
+        self.lbl_tempo.setStyleSheet("font-family: Consolas, monospace;")
+        self.barra_avanzamento = QProgressBar()
+        self.barra_avanzamento.setRange(0, 0)
+        self.barra_avanzamento.setTextVisible(False)
+        self.barra_avanzamento.setMaximumHeight(8)
+        self.riga_avanzamento.addWidget(self.lbl_fase)
+        self.riga_avanzamento.addWidget(self.barra_avanzamento, 1)
+        self.riga_avanzamento.addWidget(self.lbl_tempo)
+        layout.addLayout(self.riga_avanzamento)
+        self._timer_lavoro = QTimer(self)
+        self._timer_lavoro.setInterval(1000)
+        self._timer_lavoro.timeout.connect(self._tic_lavoro)
+        self._inizio_lavoro_ts = None
+        self._mostra_avanzamento(False)
+
+        # Esito dell'importazione. Prima l'unico riscontro era la console che
+        # scorreva: per sapere se era andata bene bisognava risalire centinaia
+        # di righe. Resta nascosto finche' non c'e' un esito da mostrare.
+        self.riquadro_esito = QGroupBox("Esito dell'ultima importazione")
+        layout_esito = QVBoxLayout()
+        self.lbl_esito = QLabel()
+        # PlainText esplicito: nel testo finiscono nomi di tabella che vengono
+        # dai dati, e QLabel di suo interpreta il rich text (stessa ragione per
+        # cui la console non usa append()).
+        self.lbl_esito.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_esito.setWordWrap(True)
+        layout_esito.addWidget(self.lbl_esito)
+        self.riquadro_esito.setLayout(layout_esito)
+        self.riquadro_esito.setVisible(False)
+        layout.addWidget(self.riquadro_esito)
+
+        # Barra della console: filtro e strumenti. Dopo un'importazione con
+        # dati sporchi la console e' lunga migliaia di righe e gli avvisi ci si
+        # perdono dentro; e per segnalare un problema a qualcun altro serviva
+        # selezionare tutto a mano.
+        riga_console = QHBoxLayout()
+        riga_console.addWidget(QLabel("Console di Esecuzione:"))
+        self.chk_solo_problemi = QCheckBox("Solo avvisi ed errori")
+        self.chk_solo_problemi.toggled.connect(self._ridisegna_console)
+        riga_console.addWidget(self.chk_solo_problemi)
+        self.lbl_conteggio_log = QLabel()
+        self.lbl_conteggio_log.setStyleSheet("color: #9E9E9E;")
+        riga_console.addWidget(self.lbl_conteggio_log)
+        riga_console.addStretch()
+        for testo, azione in (("Copia", self._copia_log),
+                              ("Salva…", self._salva_log),
+                              ("Pulisci", self._pulisci_log)):
+            b = QPushButton(testo)
+            b.setMaximumWidth(70)
+            b.clicked.connect(azione)
+            riga_console.addWidget(b)
+        layout.addLayout(riga_console)
+
+        self.txt_log = QTextEdit()
+        self.txt_log.setReadOnly(True)
+        # Colori presi dal tema, non fissi: la console era sempre nera con
+        # testo verde, quindi in QGIS chiaro restava un riquadro nero in mezzo
+        # a un'interfaccia chiara, e il verde acceso era faticoso da leggere a
+        # lungo. Il carattere a spaziatura fissa resta: serve, le colonne dei
+        # log di ili2gpkg si leggono solo cosi'.
+        fondo, testo = ("#1e1e1e", "#d4d4d4") if self._tema_scuro() else ("#fafafa", "#202020")
+        self.txt_log.setStyleSheet(
+            "background-color: %s; color: %s; font-family: Consolas, monospace; "
+            "font-size: 11px;" % (fondo, testo))
+        layout.addWidget(self.txt_log)
+
+        self.setLayout(layout)
+        self._convalida_percorsi()
+        self._aggiorna_conteggio_log()
+        self._ripristina_impostazioni()
+
+    def _in_scheda(self, widget):
+        """Impacchetta un QGroupBox in una scheda con un po' di margine."""
+        pagina = QWidget()
+        contenitore = QVBoxLayout()
+        contenitore.setContentsMargins(6, 8, 6, 6)
+        contenitore.addWidget(widget)
+        pagina.setLayout(contenitore)
+        return pagina
+
+    def on_product_changed(self, index):
+        self.product_mode = self.combo_product.currentData()
+        self._aggiorna_pulsante_layout()
+        self.log(f"🔄 Prodotto selezionato: {self.combo_product.currentText()}")
+
+    def _aggiorna_pulsante_layout(self):
+        """Il layout del piano di base ha senso solo in modalita' PB-MU."""
+        attivo = self.product_mode == "bp"
+        self.btn_layout.setEnabled(attivo)
+        self.btn_layout.setToolTip(
+            "" if attivo else
+            "Disponibile solo con il prodotto \"Piano di base (PB-MU)\"")
+
+    def create_file_row(self, label_text, line_edit, filter_str, is_save, scheda=None):
+        row = QHBoxLayout()
+        btn = QPushButton("Sfoglia...")
+        if is_save:
+            btn.clicked.connect(lambda: self.browse_save_file(line_edit, filter_str))
+        else:
+            btn.clicked.connect(lambda: self.browse_open_file(line_edit, filter_str))
+        lbl = QLabel(label_text)
+        lbl.setMinimumWidth(110)
+        row.addWidget(lbl)
+        row.addWidget(line_edit)
+        # Stato del campo, aggiornato a ogni battuta: prima un percorso
+        # sbagliato si scopriva solo dalla console, dopo che Java era gia'
+        # partito e fallito.
+        stato = QLabel()
+        stato.setMinimumWidth(16)
+        row.addWidget(stato)
+        row.addWidget(btn)
+        if scheda:
+            self._campi_percorso.append((line_edit, is_save, stato, scheda))
+            line_edit.textChanged.connect(self._convalida_percorsi)
+        return row
+
+    def _segna_scheda_fatta(self, pagina, titolo):
+        """Antepone una spunta al titolo della scheda portata a termine.
+
+        Le tre schede sono una sequenza, ma niente lo diceva: chi apriva il
+        plugin non sapeva a che punto fosse. NON si passa in automatico alla
+        scheda successiva: dopo l'importazione i passi possibili sono due
+        (DXF o planimetria) e sceglierne uno sarebbe indovinare - il riquadro
+        di esito li nomina entrambi."""
+        indice = self.schede.indexOf(pagina)
+        if indice >= 0 and not self.schede.tabText(indice).startswith("✔"):
+            self.schede.setTabText(indice, "✔ " + titolo)
+
+    def _mostra_esito_importazione(self, n_layer, saltate, comuni):
+        """Riepilogo leggibile a fine importazione, con il passo successivo.
+
+        'saltate' = lista di (tabella, motivo)."""
+        righe = ["✅ %d layer caricati e stilizzati" % n_layer]
+        if comuni:
+            righe.append("🏛️ Comune dai dati: %s" % ", ".join(comuni))
+        else:
+            righe.append("⚠️ Comune non trovato nei dati: per la planimetria "
+                         "va indicato a mano")
+        if saltate:
+            elenco = ", ".join(t for t, _m in saltate[:6])
+            if len(saltate) > 6:
+                elenco += " e altre %d" % (len(saltate) - 6)
+            righe.append("⚠️ %d tabelle saltate: %s" % (len(saltate), elenco))
+        n_errori = len(getattr(self, "_import_unique_errors", []) or [])
+        if n_errori:
+            righe.append("❌ %d violazioni di vincolo nell'ITF: vedi la scheda "
+                         "\"Errori nei dati\"" % n_errori)
+        avvisi = sum(1 for _m, l in self._righe_log if l == "avviso")
+        errori = sum(1 for _m, l in self._righe_log if l == "errore")
+        if avvisi or errori:
+            righe.append("In console: %d avvisi, %d errori (spunta \"Solo avvisi "
+                         "ed errori\" per isolarli)" % (avvisi, errori))
+        righe.append("→ Passo successivo: scheda \"2. Conversione DXF\" "
+                     "oppure \"3. Planimetria\"")
+        self.lbl_esito.setText("\n".join(righe))
+        self.riquadro_esito.setVisible(True)
+
+    def _riempi_tabella_errori(self, righe):
+        """Popola la scheda degli errori. 'righe' = lista di dizionari con le
+        chiavi tabella/vincolo/valori/tid/riga/diagnosi."""
+        self.tab_errori.setRowCount(len(righe))
+        for i, r in enumerate(righe):
+            for j, chiave in enumerate(("tabella", "vincolo", "valori", "tid",
+                                        "riga", "diagnosi")):
+                voce = QTableWidgetItem(str(r.get(chiave, "")))
+                voce.setFlags(voce.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.tab_errori.setItem(i, j, voce)
+        self.tab_errori.resizeColumnsToContents()
+        indice = self.schede.indexOf(self.pagina_errori)
+        self.schede.setTabEnabled(indice, bool(righe))
+        self.schede.setTabText(indice, "Errori nei dati (%d)" % len(righe)
+                               if righe else "Errori nei dati")
+
+    # --- MEMORIA DELLE IMPOSTAZIONI -----------------------------------------
+    # Chi lavora sullo stesso comune per giorni ricompilava tutto a ogni
+    # avvio. Si salva quello che vale la pena ritrovare, NON la data di
+    # validita' (che deve ripartire da oggi) ne' l'anteprima dell'ingombro
+    # (che e' un aiuto momentaneo, non una preferenza).
+    def _controlli_da_ricordare(self):
+        """(chiave, widget) dei controlli con memoria. Il tipo di widget
+        decide come leggerli e riscriverli."""
+        return [
+            ("prodotto", self.combo_product),
+            ("ili2gpkg_jar", self.txt_jar),
+            ("itf", self.txt_itf),
+            ("gpkg", self.txt_gpkg),
+            ("geobau_itf", self.txt_geobau_itf),
+            ("geobau_dxf", self.txt_geobau_dxf),
+            ("formato", self.combo_formato),
+            ("scala", self.combo_scala),
+            ("rotazione", self.spin_rotazione),
+            ("comune", self.combo_comune),
+            ("tolleranze_attive", self.group_adv),
+            ("disable_validation", self.chk_disable_val),
+            ("skip_geometry", self.chk_skip_geom),
+            ("skip_reference", self.chk_skip_ref),
+            ("skip_polygon", self.chk_skip_poly),
+            ("sql_null", self.chk_sql_null),
+            ("sql_text", self.chk_sql_text),
+            ("solo_problemi", self.chk_solo_problemi),
+        ]
+
+    def _ripristina_impostazioni(self):
+        impostazioni = QgsSettings()
+        for chiave, widget in self._controlli_da_ricordare():
+            valore = impostazioni.value("%s/%s" % (NOME_PLUGIN, chiave), None)
+            if valore is None:
+                continue
+            try:
+                if isinstance(widget, QLineEdit):
+                    widget.setText(str(valore))
+                elif isinstance(widget, QComboBox):
+                    # I percorsi cambiano, gli elenchi no: se la voce salvata
+                    # non c'e' piu' si lascia la predefinita invece di
+                    # inventarne una.
+                    if widget.isEditable():
+                        widget.setCurrentText(str(valore))
+                    elif widget.findText(str(valore)) >= 0:
+                        widget.setCurrentText(str(valore))
+                elif isinstance(widget, QDoubleSpinBox):
+                    widget.setValue(float(valore))
+                elif isinstance(widget, (QCheckBox, QGroupBox)):
+                    widget.setChecked(str(valore).lower() in ("true", "1"))
+            except (TypeError, ValueError):
+                continue    # un valore corrotto non deve impedire l'avvio
+        self._convalida_percorsi()
+
+    def _salva_impostazioni(self):
+        impostazioni = QgsSettings()
+        for chiave, widget in self._controlli_da_ricordare():
+            if isinstance(widget, QLineEdit):
+                valore = widget.text()
+            elif isinstance(widget, QComboBox):
+                valore = widget.currentText()
+            elif isinstance(widget, QDoubleSpinBox):
+                valore = widget.value()
+            elif isinstance(widget, (QCheckBox, QGroupBox)):
+                valore = widget.isChecked()
+            else:
+                continue
+            impostazioni.setValue("%s/%s" % (NOME_PLUGIN, chiave), valore)
+
+    def _tema_scuro(self):
+        """Vero se QGIS sta girando con un tema scuro. Si guarda la luminosita'
+        del colore di sfondo invece del nome del tema: i temi sono
+        personalizzabili e i nomi cambiano fra le versioni.
+
+        La tavolozza si chiede all'APPLICAZIONE, non a self: il tema e' una
+        proprieta' dell'applicazione, e self.palette() richiede che l'oggetto
+        C++ sottostante sia gia' costruito - cosa non vera quando la dialog
+        viene istanziata con __new__ (i test lo fanno per esercitare i metodi
+        di stile senza costruire l'interfaccia)."""
+        from qgis.PyQt.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            return False
+        return app.palette().color(QPalette.ColorRole.Window).lightness() < 128
+
+    def _rosso_avviso(self):
+        """Rosso leggibile sul fondo corrente: #B71C1C e' quasi invisibile su
+        sfondo scuro."""
+        return "#EF9A9A" if self._tema_scuro() else "#B71C1C"
+
+    def _verde_ok(self):
+        """Verde leggibile sul fondo corrente (vedi _rosso_avviso)."""
+        return "#A5D6A7" if self._tema_scuro() else "#2E7D32"
+
+    def _sync_rotazione(self, valore):
+        """Allinea cursore ed etichetta dei gradi allo spin. blockSignals sul
+        cursore evita il rimbalzo cursore -> spin -> cursore, che con
+        l'arrotondamento ai decimi bloccava il trascinamento."""
+        self.lbl_gradi.setText("= %.1f°" % _planimetria.gon_a_gradi(valore))
+        atteso = int(round(valore * 10))
+        if self.slider_rotazione.value() != atteso:
+            self.slider_rotazione.blockSignals(True)
+            self.slider_rotazione.setValue(atteso)
+            self.slider_rotazione.blockSignals(False)
+
+    def _casella_tolleranza(self, testo, flag, spiegazione):
+        """Casella per un'opzione di tolleranza: etichetta in italiano, con il
+        flag di ili2gpkg e la spiegazione nel tooltip. Il flag resta visibile
+        perche' chi lo conosce deve poterlo riconoscere, e perche' compare tal
+        quale nella riga di comando stampata in console."""
+        casella = QCheckBox(testo)
+        casella.setToolTip("%s\n\n%s" % (spiegazione, flag))
+        return casella
+
+    def _riga_in_dotazione(self, etichetta, campo, nome_stato):
+        """Riga per una risorsa IN DOTAZIONE (traduttore DXF, modello .ili):
+        percorso visibile ma in sola lettura, spia di presenza, nessun pulsante
+        'Sfoglia...'. Al suo posto un'etichetta che dice perche' non c'e' nulla
+        da scegliere."""
+        riga = QHBoxLayout()
+        lbl = QLabel(etichetta)
+        lbl.setMinimumWidth(110)
+        riga.addWidget(lbl)
+        riga.addWidget(campo)
+        spia = QLabel()
+        spia.setMinimumWidth(16)
+        riga.addWidget(spia)
+        setattr(self, nome_stato, spia)
+        nota = QLabel("in dotazione")
+        nota.setStyleSheet("color: #9E9E9E; font-style: italic;")
+        riga.addWidget(nota)
+        return riga
+
+    # --- CONVALIDA DEI PERCORSI ---------------------------------------------
+    def _stato_percorso(self, testo, is_save):
+        """(simbolo, colore, motivo) per un campo-percorso. Il campo vuoto non
+        e' un errore: e' semplicemente non ancora compilato."""
+        testo = (testo or "").strip()
+        if not testo:
+            return "•", "#9E9E9E", "da compilare"
+        if is_save:
+            # Per un file da scrivere conta che esista la CARTELLA: il file
+            # stesso non c'e' ancora, ed e' normale.
+            cartella = os.path.dirname(testo) or "."
+            if not os.path.isdir(cartella):
+                return "✖", self._rosso_avviso(), "la cartella di destinazione non esiste"
+            return "✔", self._verde_ok(), ""
+        if not os.path.isfile(testo):
+            return "✖", self._rosso_avviso(), "il file non esiste"
+        return "✔", self._verde_ok(), ""
+
+    def _convalida_percorsi(self):
+        """Aggiorna le spie dei campi e abilita i pulsanti solo quando la
+        rispettiva scheda e' completa."""
+        if not getattr(self, "_campi_percorso", None):
+            return
+        mancanti = {"import": [], "dxf": []}
+        for line_edit, is_save, etichetta, scheda in self._campi_percorso:
+            simbolo, colore, motivo = self._stato_percorso(line_edit.text(), is_save)
+            etichetta.setText(simbolo)
+            etichetta.setStyleSheet("color: %s; font-weight: bold;" % colore)
+            etichetta.setToolTip(motivo)
+            if motivo:
+                mancanti[scheda].append(motivo)
+
+        # Le risorse in dotazione non si scelgono, ma vanno comunque verificate:
+        # se l'installazione e' incompleta il file non c'e' e l'operazione
+        # fallirebbe con un errore di Java invece che con un messaggio chiaro.
+        for nome_stato, percorso, descrizione, schede in (
+                ("stato_jar", AV2GEOBAU_JAR, "il traduttore DXF", ("dxf",)),
+                ("stato_ili", MODELLO_ILI, "il modello .ili", ("import", "dxf"))):
+            spia = getattr(self, nome_stato, None)
+            if spia is None:
+                continue
+            if os.path.isfile(percorso):
+                spia.setText("✔")
+                spia.setStyleSheet("color: %s; font-weight: bold;" % self._verde_ok())
+                spia.setToolTip("")
+            else:
+                spia.setText("✖")
+                spia.setStyleSheet("color: %s; font-weight: bold;" % self._rosso_avviso())
+                motivo = "%s in dotazione non e' installato" % descrizione
+                spia.setToolTip(motivo)
+                for scheda in schede:
+                    mancanti[scheda].append(motivo)
+
+        # Un lavoro in corso ha la precedenza: i pulsanti restano spenti anche
+        # se i campi sono a posto. Si guarda un flag e non worker.isRunning()
+        # perche' _inizio_lavoro viene chiamato PRIMA che il nuovo JavaWorker
+        # sia assegnato a self.worker: interrogando il worker si sarebbe visto
+        # quello vecchio (o None) e i pulsanti si sarebbero riaccesi subito.
+        occupato = getattr(self, "_lavoro_in_corso", False)
+        for scheda, pulsante, etichetta in (
+                ("import", self.btn_import, self.lbl_esito_import),
+                ("dxf", self.btn_geobau, self.lbl_esito_dxf)):
+            problemi = mancanti[scheda]
+            pulsante.setEnabled(not problemi and not occupato)
+            if problemi:
+                etichetta.setText("%d campo/i da sistemare: %s"
+                                  % (len(problemi), "; ".join(sorted(set(problemi)))))
+            else:
+                etichetta.setText("")
+
+        # Anche i comandi della planimetria vanno spenti mentre gira un lavoro:
+        # prima restavano attivi e potevano partire con il GeoPackage in
+        # scrittura, leggendo layer a meta' importazione.
+        for pulsante in (getattr(self, "btn_planimetria", None),
+                         getattr(self, "btn_planimetria_pdf", None),
+                         getattr(self, "btn_layout", None)):
+            if pulsante is None:
+                continue
+            if pulsante is self.btn_layout:
+                pulsante.setEnabled(self.product_mode == "bp" and not occupato)
+            else:
+                pulsante.setEnabled(not occupato)
+
+    # --- AVANZAMENTO --------------------------------------------------------
+    def _mostra_avanzamento(self, visibile):
+        for w in (self.lbl_fase, self.barra_avanzamento, self.lbl_tempo):
+            w.setVisible(visibile)
+
+    def _inizio_lavoro(self, fase):
+        import time
+        self._lavoro_in_corso = True
+        self._inizio_lavoro_ts = time.monotonic()
+        self.lbl_fase.setText(fase)
+        self.lbl_tempo.setText("00:00")
+        self._mostra_avanzamento(True)
+        self._timer_lavoro.start()
+        self._convalida_percorsi()
+
+    def _fine_lavoro(self):
+        self._lavoro_in_corso = False
+        self._timer_lavoro.stop()
+        self._inizio_lavoro_ts = None
+        self._mostra_avanzamento(False)
+        self._convalida_percorsi()
+
+    def _tic_lavoro(self):
+        import time
+        if self._inizio_lavoro_ts is None:
+            return
+        trascorsi = int(time.monotonic() - self._inizio_lavoro_ts)
+        self.lbl_tempo.setText("%02d:%02d" % (trascorsi // 60, trascorsi % 60))
+
+    # --- COMUNE LETTO DAI DATI ----------------------------------------------
+    def aggiorna_comuni_da_dati(self):
+        """Rilegge i nomi di comune dal GeoPackage e li propone nella casella.
+
+        Il percorso si prende prima dai layer caricati (sono loro a dire da
+        quale file vengono davvero) e solo in mancanza dal campo di testo, che
+        l'utente puo' aver cambiato dopo l'importazione."""
+        percorso = _dati_comune.gpkg_dei_layer(getattr(self, "loaded_layers", None))
+        if not percorso:
+            percorso = self.txt_gpkg.text().strip()
+        # "Stato al" e' la data di ESTRAZIONE dell'ITF, non quella della
+        # stampa. L'ITF non la contiene al suo interno, quindi si legge dal
+        # timestamp del file. Se l'ITF non e' disponibile (es. si e' aperto
+        # solo un GeoPackage) si ripiega sulla mutazione piu' recente presente
+        # nei dati, che e' la migliore approssimazione ricavabile.
+        data = _dati_comune.data_estrazione_itf(self.txt_itf.text().strip())
+        self._origine_data = "estrazione ITF" if data else ""
+        if not data:
+            data = _dati_comune.leggi_data_validita(percorso)
+            self._origine_data = "ultima mutazione nei dati" if data else ""
+        if data:
+            giorno, mese, anno = (int(x) for x in data.split("."))
+            self.data_validita.setDate(QDate(anno, mese, giorno))
+            self._data_dai_dati = data
+        nomi = _dati_comune.leggi_comuni(percorso)
+        if not nomi:
+            return []
+        scelto = self.combo_comune.currentText().strip()
+        self.combo_comune.clear()
+        self.combo_comune.addItems(nomi)
+        # Se l'utente aveva gia' scelto un nome ancora presente, lo si rispetta.
+        self.combo_comune.setCurrentText(scelto if scelto in nomi else nomi[0])
+        return nomi
+
+    # --- ANTEPRIMA DELL'INGOMBRO DEL FOGLIO ---------------------------------
+    def _aggiorna_ingombro(self, *_args):
+        """Disegna (o cancella) sul canvas il rettangolo di terreno che finira'
+        sul foglio. La geometria arriva da planimetria.impronta_foglio, la
+        stessa usata per costruire il layout, cosi' anteprima e risultato non
+        possono divergere."""
+        iface = getattr(self, "_iface", None)
+        canvas = iface.mapCanvas() if iface else None
+        if canvas is None:
+            return
+        banda = getattr(self, "_banda_ingombro", None)
+        if not self.chk_ingombro.isChecked():
+            if banda is not None:
+                banda.reset(QgsWkbTypes.PolygonGeometry)
+            return
+        if banda is None:
+            from qgis.gui import QgsRubberBand
+            banda = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
+            banda.setColor(QColor(0, 105, 92, 60))
+            banda.setStrokeColor(QColor(0, 105, 92))
+            banda.setWidth(2)
+            self._banda_ingombro = banda
+        formato, scala, rotazione, _comune, _data = self._parametri_planimetria()
+        centro = canvas.extent().center()
+        punti = _planimetria.impronta_foglio(centro, scala, formato, rotazione)
+        banda.setToGeometry(QgsGeometry.fromPolygonXY([punti]), None)
+
+    def browse_open_file(self, line_edit, filter_str):
+        path, _ = QFileDialog.getOpenFileName(self, "Seleziona File", "", filter_str)
+        if path:
+            line_edit.setText(path)
+
+    def browse_save_file(self, line_edit, filter_str):
+        path, _ = QFileDialog.getSaveFileName(self, "Salva File", "", filter_str)
+        if path:
+            line_edit.setText(path)
+
+    def _livello_riga(self, msg, level):
+        """Classifica una riga come 'errore', 'avviso' o 'normale'.
+
+        Il parametro 'level' e' la fonte piu' attendibile, ma buona parte delle
+        chiamate non lo passa e affida la gravita' al solo emoji iniziale:
+        si guardano entrambi, altrimenti il filtro 'solo avvisi ed errori'
+        lascerebbe fuori proprio le righe scritte senza livello esplicito."""
+        if level == Qgis.Critical or "❌" in msg:
+            return "errore"
+        if level == Qgis.Warning or "⚠️" in msg:
+            return "avviso"
+        return "normale"
+
+    def _colore_livello(self, livello):
+        if livello == "errore":
+            return QColor(self._rosso_avviso())
+        if livello == "avviso":
+            return QColor("#FFB74D" if self._tema_scuro() else "#E65100")
+        return QColor("#d4d4d4" if self._tema_scuro() else "#202020")
+
+    def _scrivi_riga(self, msg, livello):
+        """Scrive una riga colorata secondo la gravita'.
+
+        insertText e NON append(): append interpreta il testo come HTML
+        (verificato: "<b>x</b>" viene mostrato in grassetto, senza i tag).
+        Nella console finiscono anche stringhe che vengono dai DATI - nomi di
+        file e messaggi di ili2gpkg che riportano i valori dell'ITF - quindi
+        un ITF confezionato ad arte poteva scrivere in console un falso
+        "✅ Importazione completata", o far caricare risorse locali con un
+        <img src>. Il colore lo decidiamo noi dal livello, il testo resta
+        letterale."""
+        cursore = self.txt_log.textCursor()
+        cursore.movePosition(QTextCursor.MoveOperation.End)
+        formato = QTextCharFormat()
+        formato.setForeground(self._colore_livello(livello))
+        cursore.setCharFormat(formato)
+        cursore.insertText(msg + "\n")
+        self.txt_log.setTextCursor(cursore)
+        self.txt_log.ensureCursorVisible()
+
+    def log(self, msg, level=Qgis.Info):
+        livello = self._livello_riga(msg, level)
+        # Le righe si conservano tutte: il filtro nasconde, non butta via.
+        self._righe_log.append((msg, livello))
+        if not (self.chk_solo_problemi.isChecked() and livello == "normale"):
+            self._scrivi_riga(msg, livello)
+        self._aggiorna_conteggio_log()
+        QgsMessageLog.logMessage(msg, NOME_PLUGIN, level)
+
+    def _ridisegna_console(self):
+        """Riscrive la console applicando il filtro corrente."""
+        solo_problemi = self.chk_solo_problemi.isChecked()
+        self.txt_log.clear()
+        for msg, livello in self._righe_log:
+            if solo_problemi and livello == "normale":
+                continue
+            self._scrivi_riga(msg, livello)
+        self._aggiorna_conteggio_log()
+
+    def _aggiorna_conteggio_log(self):
+        avvisi = sum(1 for _m, l in self._righe_log if l == "avviso")
+        errori = sum(1 for _m, l in self._righe_log if l == "errore")
+        self.lbl_conteggio_log.setText(
+            "" if not (avvisi or errori) else "%d avvisi, %d errori" % (avvisi, errori))
+
+    def _copia_log(self):
+        from qgis.PyQt.QtWidgets import QApplication
+        QApplication.clipboard().setText("\n".join(m for m, _l in self._righe_log))
+
+    def _salva_log(self):
+        percorso, _ = QFileDialog.getSaveFileName(
+            self, "Salva il registro", "tidashboard_log.txt", "Testo (*.txt)")
+        if not percorso:
+            return
+        try:
+            with open(percorso, "w", encoding="utf-8") as f:
+                f.write("\n".join(m for m, _l in self._righe_log))
+        except OSError as e:
+            QMessageBox.warning(self, "Salvataggio", "Impossibile scrivere il file:\n%s" % e)
+
+    def _pulisci_log(self):
+        self._righe_log = []
+        self.txt_log.clear()
+        self._aggiorna_conteggio_log()
+
+    def closeEvent(self, event):
+        """Se un worker Java e' ancora in esecuzione, chiedi conferma prima di
+        chiudere la finestra: il processo figlio (ili2gpkg/av2geobau) NON
+        morirebbe insieme alla dialog e continuerebbe a scrivere sul
+        GPKG/DXF in background, con l'utente convinto che fosse stato
+        interrotto. Su conferma, il processo viene terminato (worker.cancel)
+        e si attende al massimo 3 secondi che il thread finisca."""
+        worker = getattr(self, "worker", None)  # getattr: i test usano __new__ senza __init__
+        if worker is not None and worker.isRunning():
+            reply = QMessageBox.warning(
+                self, "Processo in esecuzione",
+                "Un'operazione e' ancora in corso. Chiudendo la finestra "
+                "verra' interrotta.\nChiudere comunque?",
+                _MB_SI | _MB_NO, _MB_NO)
+            if reply != _MB_SI:
+                event.ignore()
+                return
+            self.log("⏹️ Interruzione richiesta dall'utente (chiusura finestra)...")
+            worker.cancel()
+            worker.wait(3000)
+        # Le impostazioni si salvano alla chiusura, non a ogni battuta:
+        # cosi' una sessione interrotta a meta' non lascia in memoria percorsi
+        # scritti per sbaglio.
+        self._salva_impostazioni()
+        # L'ingombro e' disegnato sul canvas di QGIS, non dentro questa
+        # finestra: chiudendola resterebbe li' senza piu' nessuno che lo
+        # aggiorni.
+        banda = getattr(self, "_banda_ingombro", None)
+        if banda is not None:
+            banda.reset(QgsWkbTypes.PolygonGeometry)
+        super().closeEvent(event)
+
+    def find_java(self):
+        """Trova un java funzionante sulla macchina, senza assumere una
+        versione specifica installata: raccoglie tutti i candidati plausibili
+        (PATH, JAVA_HOME, le cartelle di installazione dei vendor JDK/JRE piu'
+        comuni su Windows), verifica DAVVERO ciascuno eseguendo 'java
+        -version' (un file java puo' esistere ma essere rotto, di
+        un'architettura sbagliata, o un semplice stub) e sceglie quello con
+        la versione piu' alta tra i funzionanti - il jar av2geobau_ti.jar e'
+        compilato con '--release 8' apposta per girare su qualunque JRE 8+,
+        quindi qualunque candidato funzionante va bene, ma preferire il piu'
+        recente e' comunque la scelta piu' sicura in generale. Il risultato
+        e' cachato sull'istanza (non tra riavvii di QGIS) per non ripetere
+        la scansione a ogni singola conversione nella stessa sessione."""
+        if self._java_path_cache is not None:
+            return self._java_path_cache or None  # "" cachato = "cercato, non trovato"
+
+        exe_name = "java.exe" if os.name == "nt" else "java"
+        candidates = []
+
+        # (a) PATH: la fonte piu' portabile e affidabile. Viene comunque
+        # verificato con 'java -version' piu' sotto (sul PATH puo' esserci
+        # uno stub rotto, es. il finto java.exe di WindowsApps).
+        which_java = shutil.which("java")
+        if which_java:
+            candidates.append(which_java)
+
+        # (b) JAVA_HOME, se esportata.
+        java_home = os.environ.get("JAVA_HOME")
+        if java_home:
+            candidate = Path(java_home) / "bin" / exe_name
+            if candidate.is_file():
+                candidates.append(str(candidate))
+
+        # (c) Solo su Windows, come ultima risorsa: scansione delle sole
+        # sottocartelle vendor note sotto Program Files, con profondita'
+        # LIMITATA a 3 livelli sotto la cartella vendor (tagliando 'dirs' in
+        # os.walk) - basta per ".../<vendor>/jdk-17/bin/java.exe" (2 livelli).
+        # Per "Microsoft" si entra SOLO nelle sottocartelle che iniziano per
+        # "jdk": sotto Program Files\Microsoft convivono decine di prodotti
+        # non-Java, e la versione precedente camminava l'INTERO albero di ogni
+        # cartella vendor (decine di migliaia di file), congelando la UI di
+        # QGIS per svariati secondi a ogni prima ricerca.
+        if os.name == "nt":
+            program_files_dirs = [
+                os.environ.get("PROGRAMFILES", "C:\\Program Files"),
+                os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+            ]
+            # Cartelle dei vendor JDK/JRE piu' diffusi su Windows: coprire
+            # questi nomi significa non dipendere da quale distribuzione
+            # l'utente ha installato (Oracle va sotto "Java").
+            vendor_subdirs = ["Java", "Eclipse Adoptium", "Eclipse Foundation",
+                              "Microsoft", "Amazon Corretto", "Zulu",
+                              "BellSoft", "Semeru"]
+            for pf in program_files_dirs:
+                for vendor in vendor_subdirs:
+                    base_path = Path(pf) / vendor
+                    if not base_path.is_dir():
+                        continue
+                    base_depth = len(base_path.parts)
+                    for root, dirs, files in os.walk(base_path):
+                        depth = len(Path(root).parts) - base_depth
+                        if depth >= 3:
+                            # Non scendere oltre: java.exe non sta mai cosi'
+                            # in fondo in una distribuzione JDK/JRE standard.
+                            dirs[:] = []
+                        elif vendor == "Microsoft" and depth == 0:
+                            dirs[:] = [d for d in dirs if d.lower().startswith("jdk")]
+                        if exe_name in files:
+                            candidates.append(str(Path(root) / exe_name))
+
+        seen = set()
+        unique_candidates = []
+        for c in candidates:
+            key = os.path.normcase(os.path.normpath(c))
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(c)
+
+        best_path = None
+        best_version = (-1, -1)
+        for c in unique_candidates:
+            version = self._probe_java_version(c)
+            if version is not None and version > best_version:
+                best_version = version
+                best_path = c
+
+        if best_path:
+            self.log(f"   ☕ Java trovato e verificato funzionante: {best_path} "
+                      f"(versione {best_version[0]}.{best_version[1]}, "
+                      f"{len(unique_candidates)} candidati esaminati)")
+        elif unique_candidates:
+            self.log(f"   ⚠️ {len(unique_candidates)} {exe_name} trovati ma nessuno "
+                      f"risulta funzionante (eseguibile rotto o incompatibile?)", Qgis.Warning)
+
+        self._java_path_cache = best_path or ""
+        return best_path
+
+    def _probe_java_version(self, java_exe):
+        """Esegue 'java -version' per verificare che l'eseguibile funzioni
+        davvero (non solo che il file esista sul disco) e per leggerne la
+        versione reale, usata per scegliere la migliore tra piu'
+        installazioni trovate sulla macchina. Ritorna None se l'eseguibile
+        non parte o la versione non e' interpretabile."""
+        try:
+            result = subprocess.run(
+                [java_exe, "-version"], capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception as e:
+            self.log(f"   ⚠️ Verifica 'java -version' fallita per {java_exe}: {e}",
+                     Qgis.Warning)
+            return None
+        output = (result.stdout or "") + (result.stderr or "")
+        m = re.search(r'version "(\d+)(?:\.(\d+))?', output)
+        if not m:
+            self.log(f"   ⚠️ Output 'java -version' non interpretabile per {java_exe}: "
+                     f"{output.strip()[:200]}", Qgis.Warning)
+            return None
+        major = int(m.group(1))
+        minor = int(m.group(2)) if m.group(2) else 0
+        # Versioni vecchio stile ("1.8.0_401" = Java 8, "1.7.0_80" = Java 7):
+        # il numero di major version reale e' il secondo gruppo, non "1".
+        if major == 1 and minor:
+            major, minor = minor, 0
+        return (major, minor)
+
+    def get_ili_class(self, gpkg_path, table_name):
+        """Legge la classe ILI dai metadati di ili2db."""
+        try:
+            with sqlite3.connect(str(gpkg_path)) as conn:
+                cursor = conn.cursor()
+                # Le colonne reali sono "IliName"/"SqlName" (verificato sul GeoPackage),
+                # non "class_name"/"sql_name".
+                cursor.execute("SELECT IliName FROM t_ili2db_classname WHERE SqlName = ?", (table_name,))
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except Exception as e:
+            self.log(f"  ⚠️ Errore lettura metadati ILI per {table_name}: {str(e)}", Qgis.Warning)
+            return None
+
+    def _nice_layer_name(self, class_name, table):
+        """Nome leggibile per il pannello Layers di QGIS, al posto del nome
+        tabella grezzo del GeoPackage (es. "beni_immobili_punto_di_confine",
+        "punti_fissctgria3_simbolopfp3" - l'identificativo SQL generato da
+        ili2db, spesso troncato/concatenato in modi poco intuitivi e mai
+        pensato per essere letto da un utente).
+        'class_name' e' il nome della classe ILI vera e propria (letto dai
+        metadati t_ili2db_classname, es. "Punto_di_confine", "SuperficieCS",
+        "PosNome_del_luogo") - gia' molto piu' chiaro con un semplice
+        underscore->spazio, tranne per le sigle tecniche concatenate senza
+        underscore (SuperficieCS, PCGiurisdizionale, DPSSP, PFP1/2/3, PFA1/2),
+        per cui uso _NICE_CLASS_NAMES. Le tabelle "PosXxx" (punto di
+        iscrizione di un'etichetta testuale, non l'oggetto vero e proprio -
+        vedi TEXT_LABEL_RULES) diventano "Xxx (etichetta)".
+        Se la classe ILI non e' stata risolta (raro, gia' loggato come
+        warning altrove), ripulisce almeno il nome tabella grezzo invece di
+        lasciarlo cosi' com'e'."""
+        if not class_name:
+            return table.replace("_", " ").strip().capitalize()
+        if class_name in self._NICE_CLASS_NAMES:
+            return self._NICE_CLASS_NAMES[class_name]
+        base, suffix = class_name, ""
+        if base.startswith("Pos") and len(base) > 3 and base[3].isupper():
+            base = base[3:]
+            suffix = " (etichetta)"
+        if base in self._NICE_CLASS_NAMES:
+            return self._NICE_CLASS_NAMES[base] + suffix
+        return base.replace("_", " ") + suffix
+
+    # Sigle/nomi di classe ILI concatenati senza underscore, illeggibili con
+    # il semplice underscore->spazio usato da _nice_layer_name per tutti gli
+    # altri (es. "Punto_di_confine" -> "Punto di confine" gia' va bene cosi').
+    # PFP1/2/3 e PFA1/2 non compaiono qui apposta: senza underscore, ricadono
+    # gia' correttamente sul percorso generico (base.replace("_"," ")) che le
+    # lascia invariate ("PFP1" invece della precedente "Punto fisso di
+    # poligonazione (cat. 1)" - richiesta esplicita dell'utente, i nomi
+    # ufficiali sono le sigle stesse, non una parafrasi).
+    _NICE_CLASS_NAMES = {
+        "SuperficieCS": "Superficie (copertura del suolo)",
+        "SuperficieCSProg": "Superficie (copertura del suolo, progetto)",
+        "PCGiurisdizionale": "Punto di confine giurisdizionale",
+        "DPSSP": "DPSSP (diritto per sé stante e permanente)",
+        "CAP_localita": "CAP località",
+    }
+
+    def _check_geometry_validity(self, layer, table):
+        """Conta le geometrie non valide (auto-intersezioni, anelli
+        degeneri, ecc.) in un layer appena caricato, verificate via GEOS -
+        lo stesso motore geometrico usato "sotto" da GDAL/OGR (il provider
+        "ogr" con cui ogni layer di questo plugin viene aperto e' letto
+        proprio tramite GDAL). Una geometria non valida non blocca il
+        caricamento QGIS, ma puo' rompere in modo silenzioso passi molto
+        piu' a valle - un poligono HATCH nel DXF costruito da un anello
+        auto-intersecante, un calcolo di area/z-order sbagliato - dove la
+        causa reale e' molto piu' difficile da individuare che qui, subito
+        dopo l'import."""
+        if not layer.isSpatial():
+            return 0
+        n_invalid = 0
+        n_checked = 0
+        examples = []
+        for f in layer.getFeatures():
+            geom = f.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            n_checked += 1
+            if not geom.isGeosValid():
+                n_invalid += 1
+                if len(examples) < 3:
+                    examples.append(f.id())
+        if n_invalid:
+            self.log(f"   ⚠️ {n_invalid}/{n_checked} geometrie non valide (GEOS) in {table} "
+                      f"- feature id esempio: {examples}", Qgis.Warning)
+        return n_invalid
+
+    def _validate_gpkg_with_gdal(self, gpkg_path):
+        """Verifica il GeoPackage appena importato usando i binding Python
+        di GDAL/OGR direttamente (osgeo.ogr, non tramite QgsVectorLayer):
+        stesso principio di _validate_dxf per l'export, applicato qui
+        all'import - ili2gpkg puo' uscire con codice 0 anche per un
+        GeoPackage vuoto o strutturalmente incompleto (es. schema creato ma
+        nessun dato importato per un ITF malformato/tronco)."""
+        try:
+            from osgeo import ogr, gdal
+        except ImportError:
+            self.log("   ⚠️ Binding Python di GDAL (osgeo) non disponibili in questo QGIS: verifica saltata.", Qgis.Warning)
+            return True
+        # Niente la mutazione globale delle eccezioni OGR (DontUse...): mutava
+        # lo stato GDAL GLOBALE di tutta l'applicazione QGIS (non solo di
+        # questa chiamata), cambiando il comportamento di ogni altro
+        # plugin/codice che usa i binding dopo di noi. Per non inondare il log con l'errore ATTESO su un file
+        # eventualmente corrotto si isola invece un error handler "quiet"
+        # attorno alla sola ogr.Open, e il risultato si controlla per None
+        # (con un except RuntimeError di sicurezza, nel caso le eccezioni
+        # GDAL fossero state attivate globalmente da altri).
+        gdal.PushErrorHandler("CPLQuietErrorHandler")
+        try:
+            ds = ogr.Open(str(gpkg_path))
+        except RuntimeError:
+            ds = None
+        finally:
+            gdal.PopErrorHandler()
+        if ds is None:
+            self.log(f"   ❌ GDAL non riesce ad aprire il GeoPackage: {gpkg_path}", Qgis.Critical)
+            return False
+
+        n_layers = ds.GetLayerCount()
+        self.log(f"   📊 GDAL: {n_layers} tabelle nel GeoPackage")
+        if n_layers == 0:
+            self.log("   ❌ GeoPackage senza tabelle: import probabilmente fallito.", Qgis.Critical)
+            ds = None
+            return False
+
+        total_features = 0
+        empty_geom_layers = []
+        n_geom_layers = 0
+        for i in range(n_layers):
+            lyr = ds.GetLayerByIndex(i)
+            n = lyr.GetFeatureCount()
+            total_features += n
+            if lyr.GetGeomType() != ogr.wkbNone:
+                n_geom_layers += 1
+                if n == 0:
+                    empty_geom_layers.append(lyr.GetName())
+
+        self.log(f"   📊 GDAL: {n_geom_layers} tabelle con geometria, {total_features} feature totali")
+        if empty_geom_layers:
+            sample = ", ".join(empty_geom_layers[:10])
+            more = ", ..." if len(empty_geom_layers) > 10 else ""
+            self.log(f"   ℹ️ {len(empty_geom_layers)} tabelle con geometria ma 0 feature "
+                      f"(normale per temi assenti in questo comune): {sample}{more}")
+        ds = None
+        return True
+
+    # Pattern degli errori di vincolo di unicita' ili2db (es. due
+    # Punto_di_confine con lo stesso IdentAN+Identificatore ma coordinate
+    # diverse - dati sorgente difettosi, non un bug del plugin). Esempio
+    # reale: "Error: line 1183131: MD01MUTI7MN95.Beni_immobili.
+    # Punto_di_confine: tid 46560: Unique constraint MD01MUTI7MN95.
+    # Beni_immobili.Punto_di_confine.Constraint2 is violated! Values
+    # TI63201, 140602 already exist in Object: 40497"
+    _ILI2GPKG_UNIQUE_RE = re.compile(
+        r"^Error: line (\d+): ([\w.]+): tid (\d+): "
+        r"Unique constraint ([\w.]+) is violated! "
+        r"Values (.+) already exist in Object: (\d+)$"
+    )
+
+    def _on_import_log_line(self, line):
+        """Wrapper del log_signal del JavaWorker durante l'import: logga
+        come sempre, ma intercetta e memorizza anche gli errori di vincolo
+        di unicita' riconosciuti, per l'analisi automatica in caso di
+        fallimento (vedi _analyze_import_errors)."""
+        self.log(line)
+        m = self._ILI2GPKG_UNIQUE_RE.match(line.strip())
+        if m:
+            self._import_unique_errors.append({
+                "line": int(m.group(1)),
+                "class_path": m.group(2),
+                "tid": m.group(3),
+                "constraint": m.group(4),
+                "values": m.group(5),
+                "existing_tid": m.group(6),
+            })
+
+    def _find_itf_table_block(self, itf_path, around_line, max_scan=3_000_000):
+        """Trova inizio (riga 'TABL <Classe>') e fine (riga 'ETAB') del
+        blocco tabella ITF che contiene 'around_line' (1-indexed). Legge il
+        file una sola volta in streaming, senza caricarlo in memoria - un
+        ITF di produzione puo' superare il milione di righe. Se il file
+        supera 'max_scan' righe la scansione si ferma: il troncamento viene
+        segnalato nel log, perche' un risultato mancante in quel caso NON
+        significa "blocco non presente" ma solo "non cercato oltre"."""
+        start_line = None
+        start_name = None
+        end_line = None
+        with open(itf_path, "r", encoding="utf-8", errors="replace") as f:
+            for i, raw in enumerate(f, start=1):
+                if i > max_scan:
+                    self.log(f"      ⚠️ Analisi ITF troncata a {max_scan:,} righe "
+                              f"(limite di scansione): il blocco tabella cercato, se sta "
+                              f"oltre questo punto, non e' stato letto.", Qgis.Warning)
+                    break
+                if raw.startswith("TABL"):
+                    start_line = i
+                    start_name = raw.strip()
+                if i >= around_line and raw.startswith("ETAB"):
+                    end_line = i
+                    break
+        return start_line, start_name, end_line
+
+    @staticmethod
+    def _extract_objects_by_tid(itf_path, start_line, end_line, tids):
+        """Estrae le righe OBJE grezze per gli 'tid' cercati, limitandosi
+        all'intervallo [start_line, end_line] (un solo blocco TABL...ETAB,
+        non l'intero file)."""
+        wanted = set(tids)
+        found = {}
+        with open(itf_path, "r", encoding="utf-8", errors="replace") as f:
+            for i, raw in enumerate(f, start=1):
+                if i < start_line:
+                    continue
+                if i > end_line or len(found) == len(wanted):
+                    break
+                if raw.startswith("OBJE"):
+                    parts = raw.split()
+                    if len(parts) >= 2 and parts[1] in wanted:
+                        found[parts[1]] = raw.strip()
+        return found
+
+    @staticmethod
+    def _extract_lv95_coords(obje_line):
+        """Euristica indipendente dalla classe ILI - resta un'euristica,
+        pensata SOLO per arricchire i messaggi di errore dell'analisi
+        duplicati (coordinate indicative nei log), non per ricostruire
+        geometrie vere: cerca nella riga OBJE una COPPIA di numeri con la
+        virgola che compaiano consecutivamente sulla STESSA riga e cadano,
+        nell'ordine, nei range LV95 svizzeri E [2'480'000, 2'840'000] e
+        N [1'070'000, 1'310'000] (estremi nazionali con margine). La versione
+        precedente prendeva i primi due numeri "plausibili" dovunque nella
+        riga, con range piu' larghi e SENZA richiedere l'adiacenza: falsi
+        positivi su quote/attributi numerici erano facili (es. una quota
+        1234567.89 seguita da un valore 2450000.0). Piu' affidabile che
+        assumere la posizione esatta del campo Geometria, che varia da
+        classe a classe."""
+        nums = re.findall(r"-?\d+\.\d+", obje_line)
+        for i in range(len(nums) - 1):
+            e, n = float(nums[i]), float(nums[i + 1])
+            if 2_480_000 <= e <= 2_840_000 and 1_070_000 <= n <= 1_310_000:
+                return e, n
+        return None
+
+    def _analyze_import_errors(self, itf_path):
+        """Analizza gli errori di vincolo di unicita' catturati durante
+        l'import (vedi _on_import_log_line) e propone un riepilogo leggibile
+        invece di lasciare solo il log Java grezzo: per ogni conflitto,
+        cerca le due righe OBJE coinvolte nell'ITF originale e - quando
+        possibile - le coordinate e la distanza tra i due punti, per capire
+        subito se e' un vero doppione (stesso punto, due tid) o una
+        collisione di numerazione (punti diversi, stesso identificativo)."""
+        errors = self._import_unique_errors
+        if not errors:
+            self.log("   ℹ️ Nessun errore di vincolo di unicità riconosciuto nel log sopra: "
+                      "controlla i messaggi \"Error:\" per il dettaglio.", Qgis.Warning)
+            return
+
+        self.log(f"\n🔬 Analisi automatica: {len(errors)} violazione/i di vincolo di unicità")
+        # Le stesse informazioni vanno anche nella scheda "Errori nei dati":
+        # in console un elenco di venti conflitti e' un muro di testo, in
+        # tabella e' una lista di cose da sistemare. Il log resta perche' porta
+        # il dettaglio esteso (coordinate, distanza) che in tabella non sta.
+        righe_tabella = []
+        for err in errors:
+            table = err["class_path"].split(".")[-1]
+            riga = {
+                "tabella": table,
+                "vincolo": err["constraint"].split(".")[-1],
+                "valori": err["values"],
+                "tid": "%s ↔ %s" % (err["tid"], err["existing_tid"]),
+                "riga": err["line"],
+                "diagnosi": "",
+            }
+            righe_tabella.append(riga)
+            self.log(f"\n   📋 Tabella: {table}  |  Vincolo: {err['constraint'].split('.')[-1]}")
+            self.log(f"      Valori duplicati: {err['values']}")
+            self.log(f"      Oggetto nuovo (tid {err['tid']}, riga ITF {err['line']}) "
+                      f"in conflitto con oggetto già importato (tid {err['existing_tid']})")
+            try:
+                start, start_name, end = self._find_itf_table_block(itf_path, err["line"])
+                if not start or not end:
+                    self.log("      ⚠️ Non trovo i confini del blocco tabella nell'ITF per il dettaglio.", Qgis.Warning)
+                    riga["diagnosi"] = "blocco tabella non individuato nell'ITF"
+                    continue
+                objs = self._extract_objects_by_tid(itf_path, start, end, [err["tid"], err["existing_tid"]])
+                coord_a = self._extract_lv95_coords(objs[err["tid"]]) if err["tid"] in objs else None
+                coord_b = self._extract_lv95_coords(objs[err["existing_tid"]]) if err["existing_tid"] in objs else None
+                if coord_a and coord_b:
+                    dist = ((coord_a[0] - coord_b[0]) ** 2 + (coord_a[1] - coord_b[1]) ** 2) ** 0.5
+                    self.log(f"      Coordinate: A=({coord_a[0]:.1f}, {coord_a[1]:.1f})  "
+                              f"B=({coord_b[0]:.1f}, {coord_b[1]:.1f})  →  distanza {dist:.0f} m")
+                    if dist < 1.0:
+                        riga["diagnosi"] = "doppione: stesso punto, distanza %.1f m" % dist
+                        self.log("      → Stesso punto fisico registrato due volte (probabile doppione da rimuovere).")
+                    else:
+                        riga["diagnosi"] = ("collisione di numerazione: punti diversi, "
+                                            "distanza %.0f m" % dist)
+                        self.log("      → Punti fisicamente DIVERSI: collisione di numerazione "
+                                  "(due punti distinti con lo stesso identificativo), non un doppione.")
+                else:
+                    riga["diagnosi"] = "coordinate non estratte (formato riga inatteso)"
+                    self.log("      ℹ️ Coordinate non estratte automaticamente (formato riga inatteso).")
+            except OSError as e:
+                riga["diagnosi"] = "lettura ITF fallita"
+                self.log(f"      ⚠️ Lettura ITF fallita durante l'analisi: {e}", Qgis.Warning)
+
+        self._riempi_tabella_errori(righe_tabella)
+        self.log("\n   💡 Non è un problema risolvibile qui: i dati sorgente vanno corretti da chi "
+                  "gestisce l'ITF (assegna un identificativo diverso a uno dei due punti). "
+                  "Per procedere comunque con l'import (i duplicati restano nel GeoPackage così come sono), "
+                  "attiva \"Disabilita validazione\" nei parametri avanzati e rilancia. "
+                  "L'elenco completo è nella scheda \"Errori nei dati\".")
+
+    def run_import(self):
+        # Guardia contro il doppio avvio: un secondo worker in parallelo
+        # scriverebbe sullo stesso GPKG del primo, corrompendolo.
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "Operazione in corso",
+                                "Un processo e' gia' in esecuzione: attendi che termini "
+                                "(o chiudi la finestra per interromperlo).")
+            self.log("⚠️ Avvio rifiutato: un processo e' gia' in esecuzione.", Qgis.Warning)
+            return
+
+        jar_path = Path(self.txt_jar.text().strip())
+        itf_path = Path(self.txt_itf.text().strip())
+        gpkg_path = Path(self.txt_gpkg.text().strip())
+        # Il modello si prende dalla costante, non dal campo: il campo lo
+        # mostra soltanto (vedi MODELLO_ILI).
+        ili_path = Path(MODELLO_ILI)
+        if not ili_path.is_file():
+            QMessageBox.warning(self, "Modello mancante",
+                                "Il modello INTERLIS in dotazione non e' presente "
+                                "nell'installazione del plugin:\n%s\n\n"
+                                "Reinstalla %s." % (ili_path, NOME_PLUGIN))
+            self.log("   ❌ Modello in dotazione mancante: %s" % ili_path, Qgis.Critical)
+            return
+        self._last_itf_path = itf_path
+        self._import_unique_errors = []
+
+        self.log("=" * 60)
+        self.log("🚀 AVVIO IMPORTAZIONE")
+        self.log("=" * 60)
+        self.log(f"📁 JAR: {jar_path}")
+        self.log(f"📄 ITF: {itf_path}")
+        self.log(f"📋 Modello ILI: {ili_path}")
+        self.log(f"💾 Output GPKG: {gpkg_path}")
+
+        if not all([jar_path.name, itf_path.name, gpkg_path.name, ili_path.name]):
+            QMessageBox.warning(self, "Dati Mancanti", "Compila tutti i campi.")
+            self.log("❌ Campi mancanti!")
+            return
+
+        java_exe = self.find_java()
+        if not java_exe:
+            QMessageBox.critical(self, "Errore", "Java non trovato.")
+            self.log("❌ Java non trovato nel sistema!")
+            return
+        self.log(f"☕ Java trovato: {java_exe}")
+
+        if gpkg_path.exists():
+            # Prima di cancellare un file esistente, DUE salvaguardie (il
+            # vecchio GPKG veniva sovrascritto senza alcuna conferma ne'
+            # verifica del contenuto):
+            # (a) deve essere DAVVERO un GeoPackage/SQLite (estensione +
+            #     header magico, vedi _looks_like_gpkg): un percorso
+            #     sbagliato digitato nel campo output non deve distruggere
+            #     un file che non e' un precedente output del plugin.
+            if not _looks_like_gpkg(gpkg_path):
+                self.log(f"❌ Il file esistente non e' un GeoPackage valido "
+                          f"(estensione .gpkg e/o header SQLite mancanti): {gpkg_path}. "
+                          "Cancellazione rifiutata - import annullato.", Qgis.Critical)
+                return
+            # (b) conferma esplicita dell'utente (default "No": la scelta
+            #     distruttiva deve essere deliberata).
+            reply = QMessageBox.warning(
+                self, "Sovrascrittura GeoPackage",
+                f"Il file GeoPackage esistente sara' sovrascritto:\n{gpkg_path}\n\n"
+                "Continuare?",
+                _MB_SI | _MB_NO, _MB_NO)
+            if reply != _MB_SI:
+                self.log("⏹️ Import annullato dall'utente (file esistente non sovrascritto).")
+                return
+            try:
+                gpkg_path.unlink()
+                self.log(f"🗑️ Rimosso vecchio GPKG: {gpkg_path.name}")
+            except Exception as e:
+                QMessageBox.critical(self, "Errore", f"Impossibile cancellare il GPKG.\n{e}")
+                self.log(f"❌ Errore cancellazione GPKG: {str(e)}")
+                return
+
+        model_name = ili_path.stem
+        model_dir = ili_path.parent
+        self.log(f"📋 Nome modello: {model_name}")
+        self.log(f"📂 Cartella modello: {model_dir}")
+
+        tol_params = []
+        if self.group_adv.isChecked():
+            if self.chk_sql_null.isChecked(): tol_params.append("--sqlEnableNull")
+            if self.chk_sql_text.isChecked(): tol_params.append("--sqlColsAsText")
+            if self.chk_skip_poly.isChecked(): tol_params.append("--skipPolygonBuilding")
+            if self.chk_skip_ref.isChecked(): tol_params.append("--skipReferenceErrors")
+            if self.chk_skip_geom.isChecked(): tol_params.append("--skipGeometryErrors")
+            if self.chk_disable_val.isChecked(): tol_params.append("--disableValidation")
+        self.log(f"⚙️ Parametri tolleranza: {tol_params if tol_params else 'Nessuno'}")
+
+        base_cmd = [java_exe, "-jar", str(jar_path), "--dbfile", str(gpkg_path),
+                    "--modeldir", str(model_dir), "--models", model_name,
+                    "--defaultSrsCode", "2056", "--nameByTopic"]
+
+        # --createMetaInfo: crea t_ili2db_column_prop, da cui ricaviamo le relazioni
+        # padre/figlio (es. PosFondo -> Fondo) per etichette e join, senza dover
+        # imporre vincoli FK reali (--createFk) che rifiuterebbero l'import in
+        # presenza di riferimenti mancanti/dati tolleranti errori.
+        cmd_schema = base_cmd + ["--schemaimport", "--createMetaInfo"] + tol_params
+        self.log("\n⚙️ FASE 1: Creazione schema database...")
+        self.log(f"   Comando: {' '.join(cmd_schema)}")
+        self.btn_import.setEnabled(False)
+        self.btn_geobau.setEnabled(False)
+        self._inizio_lavoro("Fase 1: creazione schema")
+
+        self.worker = JavaWorker(cmd_schema, "schemaimport")
+        self.worker.log_signal.connect(self._on_import_log_line)
+        self.worker.finished_signal.connect(self.on_schema_finished)
+        self.worker.start()
+
+        # Il file .itf va messo per ULTIMO: l'usage di ili2gpkg e'
+        # "[Options] [file.xtf]" e con tol_params non vuoto (es.
+        # --disableValidation) mettere il file prima delle opzioni fa
+        # fallire il parsing della CLI ("invalid placed argument").
+        self._pending_import_cmd = base_cmd + ["--import"] + tol_params + [str(itf_path)]
+
+    def on_schema_finished(self, returncode, task_type):
+        self.log(f"\n📊 Risultato FASE 1: Codice ritorno = {returncode}")
+        if returncode == 0 and task_type == "schemaimport":
+            self.log("✅ Schema creato con successo!")
+            self.log("\n📥 FASE 2: Importazione dati dal file ITF...")
+            self.log(f"   Comando: {' '.join(self._pending_import_cmd)}")
+            self._inizio_lavoro("Fase 2: importazione dati")
+            self.worker = JavaWorker(self._pending_import_cmd, "dataimport")
+            self.worker.log_signal.connect(self._on_import_log_line)
+            self.worker.finished_signal.connect(self.on_data_finished)
+            self.worker.start()
+        else:
+            self.log(f"❌ Creazione schema fallita (Codice: {returncode}).", Qgis.Critical)
+            self._fine_lavoro()
+            self.btn_import.setEnabled(True)
+            self.btn_geobau.setEnabled(True)
+
+    def on_data_finished(self, returncode, task_type):
+        self.log(f"\n📊 Risultato FASE 2: Codice ritorno = {returncode}")
+        self.btn_import.setEnabled(True)
+        self.btn_geobau.setEnabled(True)
+        if returncode == 0:
+            self.log("✅ Importazione dati completata!")
+            self.log("\n🔎 Verifica GeoPackage (GDAL)...")
+            self._validate_gpkg_with_gdal(self.txt_gpkg.text().strip())
+            self.log("\n" + "=" * 60)
+            self.log("🎨 AVVIO APPLICAZIONE LEGENDA")
+            self.log("=" * 60)
+            self.lbl_fase.setText("Fase 3: legenda e stili")
+            self.load_and_style_layers()
+        else:
+            self.log(f"❌ Importazione dati fallita (Codice: {returncode}).", Qgis.Critical)
+            if self._import_unique_errors:
+                self._analyze_import_errors(self._last_itf_path)
+        self._fine_lavoro()
+
+    def load_and_style_layers(self):
+        """Carica i layer dal GeoPackage con approccio robusto per QGIS 4.0."""
+        gpkg_path = Path(self.txt_gpkg.text().strip())
+        self.log(f"\n📂 GeoPackage: {gpkg_path}")
+
+        if not gpkg_path.exists():
+            self.log(f"❌ File GeoPackage non trovato: {gpkg_path}", Qgis.Critical)
+            return
+
+        # Rimuovi i layer caricati da un'esecuzione precedente in questa stessa
+        # sessione QGIS. Senza questo, i layer vecchi restano nel progetto ma
+        # fuori dalla nuova lista di ordine di disegno (zorder_layers): QGIS
+        # aggiunge in automatico ogni layer assente dall'ordine personalizzato
+        # IN CODA (= primo piano), coprendo i layer nuovi correttamente
+        # ordinati - indipendentemente dal tema. E' questo, non un errore
+        # nella tabella di priorita', a spiegare "punti di confine sotto le
+        # linee di confine/copertura del suolo/oggetti singoli" quando il
+        # plugin viene rilanciato piu' volte senza riavviare QGIS.
+        stale_layers = getattr(self, "loaded_layers", None)
+        if stale_layers:
+            stale_ids = [lyr.id() for lyr in stale_layers
+                         if lyr and QgsProject.instance().mapLayer(lyr.id())]
+            if stale_ids:
+                QgsProject.instance().removeMapLayers(stale_ids)
+                self.log(f"🧹 Rimossi {len(stale_ids)} layer da un'esecuzione precedente")
+        self.loaded_layers = []
+
+        # Diagnostica simboli: tutti i simboli per punti di confine, PFP/PFA,
+        # oggetti puntiformi e le trame a punti (Vigna/Canneto/Torbiera) usano
+        # ora il set ufficiale Cadastra Symbol SVG 2024 (cartelle symbols/normal
+        # e symbols/mask dentro il plugin), non piu' il font "CadastraSymbol":
+        # verifichiamo solo che le cartelle esistano e contengano gli SVG attesi,
+        # altrimenti i simboli non trovati ricadono silenziosamente su un
+        # cerchio generico (vedi _svg_symbol_path).
+        n_normal = len([f for f in os.listdir(os.path.join(SYMBOLS_DIR, "normal"))
+                        if f.lower().endswith(".svg")]) if os.path.isdir(os.path.join(SYMBOLS_DIR, "normal")) else 0
+        n_mask = len([f for f in os.listdir(os.path.join(SYMBOLS_DIR, "mask"))
+                      if f.lower().endswith(".svg")]) if os.path.isdir(os.path.join(SYMBOLS_DIR, "mask")) else 0
+        if n_normal and n_mask:
+            self.log(f"🖼️ Simboli SVG Cadastra trovati: {n_normal} normali, {n_mask} maschera (cartella {SYMBOLS_DIR})")
+        else:
+            self.log(f"⚠️ ATTENZIONE: cartella simboli SVG mancante o vuota ({SYMBOLS_DIR}). "
+                      "I simboli per punti di confine, PFP/PFA, oggetti puntiformi e le trame a "
+                      "punti (Vigna/Canneto/Torbiera) ricadranno su un cerchio generico.", Qgis.Warning)
+
+        # 1. Leggi tabelle geometriche e tabelle attributo
+        self.log("\n📋 Fase 1: Lettura tabelle geometriche...")
+        geom_tables = {}
+        attr_tables = []
+        try:
+            with sqlite3.connect(gpkg_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT table_name, column_name, geometry_type_name FROM gpkg_geometry_columns")
+                rows = cursor.fetchall()
+                self.log(f"   Trovate {len(rows)} tabelle con geometria")
+                for row in rows:
+                    geom_tables[row[0]] = (row[1], row[2])
+                    self.log(f"   📋 {row[0]} | {row[1]} | {row[2]}")
+
+                # Tabelle SENZA geometria (es. Fondo, Nome_del_luogo, Oggetto_condotta):
+                # nel modello ILI il testo di molte etichette (numero di fondo, nomi,
+                # ecc.) vive su queste tabelle "padre", non su quelle con geometria
+                # che compaiono in gpkg_geometry_columns. Vanno comunque caricate
+                # (senza stile/etichetta propri) per poter fare da sorgente ai join.
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                all_tables = [r[0] for r in cursor.fetchall()]
+                skip_prefixes = ("gpkg_", "sqlite_", "t_ili2db_", "t_key_object")
+                attr_tables = [t for t in all_tables
+                               if t not in geom_tables and not t.lower().startswith(skip_prefixes)]
+                self.log(f"   Trovate {len(attr_tables)} tabelle attributo (senza geometria)")
+        except Exception as e:
+            self.log(f"❌ Errore lettura schema GeoPackage: {str(e)}", Qgis.Critical)
+            return
+
+        if not geom_tables:
+            self.log("⚠️ Nessuna tabella con geometria trovata.", Qgis.Warning)
+            return
+
+        # 2. Carica layer con approccio robusto
+        self.log("\n🎨 Fase 2: Caricamento layer...")
+        self.log(f"   Modalità: {'GB' if self.product_mode == 'gb' else 'PB-MU'}")
+
+        loaded_layers = []
+        pending_labels = []  # (layer, t_low, class_name) da etichettare dopo i join (Fase 3)
+        pending_genere_rebind = []  # layer i cui filtri su "Genere" vanno ri-agganciati dopo i join
+        zorder_layers = []  # (layer, t_low) per l'ordine di disegno finale (Fase 5)
+        saltate = []  # (tabella, motivo) - alimenta il riquadro di esito
+        crs_2056 = QgsCoordinateReferenceSystem("EPSG:2056")
+        mode = self.product_mode
+
+        for idx, (table, (geom_col, geom_type_name)) in enumerate(geom_tables.items(), 1):
+            # Un solo layer problematico (dato inatteso, valore mai visto prima)
+            # non deve bloccare tutti gli altri: senza questo try/except
+            # un'eccezione qui abortiva l'intero metodo, saltando join/etichette/
+            # ordine di disegno anche per i layer gia' processati correttamente.
+            try:
+                self.log(f"\n{'─' * 60}")
+                self.log(f"🗂️ Layer {idx}/{len(geom_tables)}: {table}")
+                self.log(f"   Colonna geom: {geom_col} | Tipo: {geom_type_name}")
+
+                # APPROCCIO ROBUSTO: usa percorso diretto invece di QgsDataSourceUri
+                layer_uri = f"{gpkg_path}|layername={table}"
+                layer = QgsVectorLayer(layer_uri, table, "ogr")
+
+                if not layer.isValid():
+                    self.log("   ❌ Layer non valido con formato OGR diretto!", Qgis.Critical)
+                    # Prova alternativa con QgsDataSourceUri
+                    self.log("   🔄 Tentativo alternativo con QgsDataSourceUri...")
+                    uri = QgsDataSourceUri()
+                    uri.setDatabase(str(gpkg_path))
+                    uri.setDataSource("", table, geom_col)
+                    layer = QgsVectorLayer(uri.uri(), table, "ogr")
+
+                    if not layer.isValid():
+                        self.log("   ❌ Anche QgsDataSourceUri fallito", Qgis.Critical)
+                        saltate.append((table, "layer non valido"))
+                        continue
+
+                # Imposta CRS
+                if not layer.crs().isValid():
+                    layer.setCrs(crs_2056)
+                    self.log("   🌐 CRS impostato: EPSG:2056")
+                else:
+                    self.log(f"   ✅ CRS: {layer.crs().authid()}")
+
+                # Aggiungi al progetto
+                QgsProject.instance().addMapLayer(layer)
+                loaded_layers.append(layer)
+                t_low = table.lower()
+                zorder_layers.append((layer, t_low))
+                self.log("   ✅ Layer aggiunto al progetto")
+
+                # Vedi _check_geometry_validity: geometrie non valide possono
+                # rompere in modo silenzioso passi piu' a valle.
+                self._check_geometry_validity(layer, table)
+
+                # Nome leggibile nel pannello Layers - vedi _nice_layer_name.
+                # class_name calcolato una sola volta qui e riusato piu'
+                # sotto per lo stile, invece di rileggerlo.
+                ili_class = self.get_ili_class(gpkg_path, table)
+                if ili_class:
+                    # Le geometrie secondarie (LINEATTR, es. "Origine_piano_sinottico")
+                    # producono un IliName con un riferimento tra parentesi alla classe
+                    # base, es. "...Layout_del_piano.Origine_piano_sinottico(...Layout_del_piano)":
+                    # va scartato, altrimenti lo split('.') prende l'ultimo segmento del
+                    # riferimento tra parentesi invece del vero nome della classe.
+                    ili_class_main = ili_class.split('(')[0]
+                    class_name = ili_class_main.split('.')[-1] if ili_class_main else ""
+                else:
+                    class_name = ""
+                layer.setName(self._nice_layer_name(class_name, table))
+
+                # Applica stili (logica in cascata a 3 livelli: QML accanto
+                # al GPKG -> Gestore Stili di QGIS -> renderer generato).
+                # Esisteva un primo livello "QML in styles/gb|bp/ del plugin",
+                # rimosso: la cartella styles/ non e' mai esistita nel plugin,
+                # quindi il ramo era codice morto (controllo + log su ogni
+                # layer senza possibilita' di match).
+                self.log(f"\n   🔍 Ricerca stile per: {table}")
+                style_applied = False
+
+                # 1. Cartella del GeoPackage
+                qml_file_gpkg = gpkg_path.parent / f"{table}.qml"
+                self.log(f"   1️⃣ Controllo: {qml_file_gpkg}")
+                if qml_file_gpkg.exists():
+                    if load_qml_style(layer, qml_file_gpkg, self.log):
+                        style_applied = True
+                        self.log("   ✅ Stile da cartella GPKG")
+
+                # 2. Gestore Stili di QGIS
+                if not style_applied:
+                    self.log("   2️⃣ Controllo Gestore Stili")
+                    if apply_style_from_manager(layer, table, self.log):
+                        style_applied = True
+                        self.log("   ✅ Stile da Gestore Stili")
+
+                # 3. Fallback: stile generato automaticamente
+                if not style_applied:
+                    self.log("   3️⃣ Applicazione stile automatico")
+                    # t_low/ili_class/class_name gia' calcolati sopra (per il
+                    # nome leggibile del layer, vedi _nice_layer_name): non
+                    # vanno ricalcolati, solo loggati qui per diagnostica.
+                    if ili_class:
+                        ili_class_main = ili_class.split('(')[0]
+                        topic = ili_class_main.split('.')[-2] if len(ili_class_main.split('.')) >= 2 else ""
+                        self.log(f"   📋 Classe ILI: {ili_class}")
+                        self.log(f"   📋 Nome classe: {class_name}")
+                        self.log(f"   📋 Topic: {topic}")
+                    else:
+                        self.log("   ⚠️ Classe ILI non trovata")
+
+                    renderer = self._get_renderer_for_table(class_name, t_low, mode, geom_type_name, layer)
+
+                    if renderer:
+                        layer.setRenderer(renderer)
+                        self.log("   ✅ Renderer applicato")
+
+                        if hasattr(renderer, 'rootRule'):
+                            root_rule = renderer.rootRule()
+                            num_rules = len(root_rule.children()) if root_rule else 0
+                            self.log(f"   📊 Regole: {num_rules}")
+
+                        # Diagnostica: elenca i valori distinti di "Genere" realmente
+                        # presenti in SuperficieCS, per verificare se bosco/vigna/ecc.
+                        # esistono davvero in questo dataset con l'ortografia attesa,
+                        # invece di continuare a ipotizzare un bug di rendering.
+                        if "superficiecs" in t_low:
+                            try:
+                                idx = layer.fields().indexFromName("genere")
+                                valori = sorted({str(f.attribute(idx)) for f in layer.getFeatures()}) if idx >= 0 else []
+                                self.log(f"   🔎 Valori distinti 'Genere' in SuperficieCS: {valori}")
+                            except Exception as e:
+                                self.log(f"   ⚠️ Diagnostica Genere fallita: {e}", Qgis.Warning)
+
+                        # Diagnostica: come sopra per SuperficieCS, ma per "segno"/
+                        # "cippo_giurisdizionale" su Punto_di_confine/PCGiurisdizionale -
+                        # se un valore di "segno" non compare tra quelli attesi da
+                        # _gen_stile_punto_di_confine (termine_cippo/termine_artificiale/
+                        # bullone/campanile/croce_scolpito/croce/scolpito/tubo/
+                        # palo_picchetto/non_materializzato, eventualmente come percorso
+                        # puntato es. "altro.campanile"), il punto ricade sul fallback
+                        # "Punto generico" (cerchio pieno indifferenziato) invece del
+                        # glifo E/F/G/H/I atteso dal piano per il registro fondiario.
+                        if "punto_di_confine" in t_low or "pcgiurisdizionale" in t_low:
+                            try:
+                                idx = layer.fields().indexFromName("segno")
+                                valori = sorted({str(f.attribute(idx)) for f in layer.getFeatures()}) if idx >= 0 else []
+                                self.log(f"   🔎 Valori distinti 'segno' in {table}: {valori}")
+                                idx_g = layer.fields().indexFromName("cippo_giurisdizionale")
+                                if idx_g >= 0:
+                                    valori_g = sorted({str(f.attribute(idx_g)) for f in layer.getFeatures()})
+                                    self.log(f"   🔎 Valori distinti 'cippo_giurisdizionale' in {table}: {valori_g}")
+                            except Exception as e:
+                                self.log(f"   ⚠️ Diagnostica Segno fallita: {e}", Qgis.Warning)
+
+                        # Etichette per layer testuali: rimandate a dopo i join (Fase 3),
+                        # perche' il testo da scrivere vive quasi sempre sulla tabella
+                        # padre e diventa un campo del layer solo dopo il join.
+                        if "punto_quotato" in t_low or any(k in t_low for k, *_ in TEXT_LABEL_RULES):
+                            self.log("   📝 Etichette rimandate a dopo i join")
+                            pending_labels.append((layer, t_low, class_name))
+
+                        # Elemento_puntiforme/Elemento_lineare/Elemento_con_superficie non
+                        # hanno un campo "Genere" proprio: vive sulla tabella padre
+                        # Oggetto_singolo (confermato da Sym_MD01MUTI7MN95.gni), disponibile
+                        # solo dopo il join. Le regole sono gia' costruite su "Genere":
+                        # vanno solo ri-agganciate al campo giusto dopo la Fase 3.
+                        # SimboloSuperficieCS e' nella stessa situazione (FK a SuperficieCS,
+                        # niente campo Genere proprio - vedi commento ILI subito prima di
+                        # "TABLE SimboloSuperficieCS"), ma la sua rotazione (Ori) e' invece
+                        # un campo NATIVO della tabella stessa, gia' disponibile prima dei join.
+                        if any(k in t_low for k in ["elemento_puntiforme", "elemento_lineare",
+                                                     "elemento_con_superficie", "simbolosuperficiecs"]):
+                            self.log("   🔗 Filtri su \"Genere\" da ri-agganciare dopo i join")
+                            pending_genere_rebind.append(layer)
+                    else:
+                        self.log("   ⚠️ Nessun renderer specifico", Qgis.Warning)
+            except Exception as e:
+                self.log(f"   ❌ Errore imprevisto sul layer '{table}': {e}", Qgis.Critical)
+                self.log(f"   ⏭️ Layer '{table}' saltato, proseguo con gli altri", Qgis.Warning)
+                saltate.append((table, str(e)))
+                continue
+
+        # 2bis. Carica le tabelle attributo (senza geometria): niente stile/etichetta
+        # proprio, servono solo come sorgente per i join delle etichette (Fase 3bis).
+        attr_layers = []  # layer attributo puri (per il gruppo dedicato nell'albero, vedi Fase 4bis)
+        if attr_tables:
+            self.log("\n📎 Fase 2bis: Caricamento tabelle attributo (per i join)...")
+            for table in attr_tables:
+                layer_uri = f"{gpkg_path}|layername={table}"
+                layer = QgsVectorLayer(layer_uri, table, "ogr")
+                if layer.isValid():
+                    QgsProject.instance().addMapLayer(layer)
+                    loaded_layers.append(layer)
+                    attr_layers.append(layer)
+                    self.log(f"   ✅ {table}")
+                else:
+                    self.log(f"   ⚠️ Tabella attributo non valida: {table}", Qgis.Warning)
+                    saltate.append((table, "tabella attributo non valida"))
+
+        self.loaded_layers = loaded_layers
+        self.log(f"\n{'═' * 60}")
+        self.log(f"✅ Caricamento completato: {len(loaded_layers)} layer")
+        self.log(f"{'═' * 60}")
+
+        # Il comune per il cartiglio della planimetria si legge ORA dai dati
+        # appena importati: e' un'iscrizione obbligatoria (cap.1.5.7) e il
+        # modello la contiene, quindi non ha senso farla digitare.
+        comuni = self.aggiorna_comuni_da_dati()
+        data = getattr(self, "_data_dai_dati", "")
+        if data:
+            self.log("   📅 \"Stato al\" %s (%s)"
+                     % (data, getattr(self, "_origine_data", "?")))
+        else:
+            self.log("   ⚠️ Nessuna data ricavabile da ITF o dati: "
+                     "\"Stato al\" resta quella proposta", Qgis.Warning)
+        if comuni:
+            self.log("   🏛️ Comune letto dai dati INTERLIS: %s" % ", ".join(comuni))
+        else:
+            self.log("   ⚠️ Nessun comune nei dati (Layout_del_piano.Nome_comune, "
+                     "Comune.Nome): per la planimetria andra' indicato a mano",
+                     Qgis.Warning)
+
+        # Riepilogo in chiaro sopra la console: quanto e' entrato, cosa e'
+        # rimasto fuori e qual e' il passo successivo.
+        self._mostra_esito_importazione(len(loaded_layers), saltate, comuni)
+        if loaded_layers:
+            self._segna_scheda_fatta(self.pagina_import, "1. Importazione")
+
+        # Relazioni e join
+        self.log("\n🔗 Fase 3: Relazioni e join...")
+        self.setup_relations_and_joins(gpkg_path, loaded_layers)
+
+        # Etichette (dopo i join, cosi' i campi della tabella padre sono disponibili)
+        if pending_labels:
+            self.log(f"\n📝 Fase 3bis: Configurazione etichette ({len(pending_labels)} layer)...")
+            for layer, t_low, class_name in pending_labels:
+                self._apply_labels_to_layer(layer, t_low, class_name, mode == "gb")
+
+        # Ri-aggancio dei filtri su "genere" al campo reale (post-join) per
+        # Elemento_puntiforme/Elemento_lineare/Elemento_con_superficie.
+        # NB: genere_in() genera i filtri con il nome campo in minuscolo
+        # ("genere"), coerente col fatto che ili2db esporta sempre i nomi dei
+        # campi minuscoli indipendentemente dalla capitalizzazione nel modello
+        # ILI: la ricerca/sostituzione qui deve usare la stessa stringa esatta.
+        if pending_genere_rebind:
+            self.log(f"\n🔗 Fase 3ter: Ri-aggancio campo \"genere\" ({len(pending_genere_rebind)} layer)...")
+            for layer in pending_genere_rebind:
+                field = self._find_label_field(layer, ["genere"])
+                if not field:
+                    self.log(f"   ⚠️ Campo genere (diretto o da join) non trovato per {layer.name()}", Qgis.Warning)
+                    continue
+                renderer = layer.renderer()
+                if renderer is None or not hasattr(renderer, 'rootRule'):
+                    continue
+                n = self._rebind_field_in_rules(renderer.rootRule(), "genere", field)
+                layer.triggerRepaint()
+                self.log(f"   ✅ {layer.name()}: \"genere\" -> \"{field}\" ({n} regole)")
+
+        # Edificio_sotterraneo/Serbatoio: generi di Elemento_con_superficie
+        # (Oggetti_singoli), ma da trattare come Copertura del suolo per
+        # ordine di disegno e raggruppamento in legenda (richiesta esplicita
+        # dell'utente). QGIS non supporta un ordine di disegno per singola
+        # feature/genere ALL'INTERNO di un solo layer (setCustomLayerOrder
+        # opera per intero layer): l'unico modo e' isolare questi generi in
+        # un layer fisicamente separato, lasciando l'originale con tutti gli
+        # ALTRI generi della stessa tabella (muro_di_sostegno, arginatura, ecc.).
+        #
+        # DUE BUG REALI EVITATI QUI (trovati con test isolati contro un
+        # GeoPackage vero prima di questa modifica):
+        # 1. QgsVectorLayer.setSubsetString() passa il WHERE al provider OGR
+        #    grezzo, che NON conosce i campi aggiunti da un JOIN di QGIS -
+        #    serve una SUBQUERY SQL che ricostruisce il join a mano sulla
+        #    tabella fisica, usando la relazione gia' creata in Fase 3.
+        # 2. Un layer con un QgsVectorLayerJoinInfo GIA' attivo (come
+        #    l'originale, dopo Fase 3) fallisce silenziosamente
+        #    (featureCount()==-1, "unable to open database file") su
+        #    QUALSIASI setSubsetString successivo, anche rimuovendo il join
+        #    prima. Unico modo che funziona: filtrare su DUE OGGETTI
+        #    QgsVectorLayer completamente nuovi (mai toccati da alcun join),
+        #    poi ri-agganciare il join a entrambi solo DOPO il subsetString.
+        for i, (old_layer, t_low) in enumerate(zorder_layers):
+            if "elemento_con_superficie" in t_low and "oggetti_singoli" in t_low:
+                self.log("\n🏚️ Fase 3quater: Isolamento Edificio sotterraneo/Serbatoio...")
+                relations = QgsProject.instance().relationManager().referencingRelations(old_layer)
+                if not relations:
+                    self.log(f"   ⚠️ Nessuna relazione (Fase 3) trovata per {old_layer.name()}: split saltato", Qgis.Warning)
+                    break
+                relation = relations[0]
+                pairs = relation.fieldPairs()
+                if not pairs:
+                    self.log(f"   ⚠️ Relazione senza coppie di campi per {old_layer.name()}: split saltato", Qgis.Warning)
+                    break
+                child_col, parent_col = next(iter(pairs.items()))
+                parent_layer = relation.referencedLayer()
+                parent_table = _raw_table_name(parent_layer)
+                parent_genere_field = self._find_label_field(parent_layer, ["genere"])
+                if not parent_genere_field:
+                    self.log(f"   ⚠️ Campo genere non trovato su {parent_layer.name()}: split saltato", Qgis.Warning)
+                    break
+                values_sql = ", ".join(f"'{v}'" for v in EDIFICIO_SOTTERRANEO_GENERI)
+                subquery = (f'"{child_col}" IN (SELECT "{parent_col}" FROM {parent_table} '
+                            f'WHERE "{parent_genere_field}" IN ({values_sql}))')
+
+                raw_table = _raw_table_name(old_layer)
+                uri = old_layer.source()
+                sott = QgsVectorLayer(uri, f"{old_layer.name()} (sotterraneo)", "ogr")
+                rest = QgsVectorLayer(uri, old_layer.name(), "ogr")
+                if not sott.isValid() or not rest.isValid():
+                    self.log(f"   ⚠️ Impossibile ricaricare {raw_table} da zero: split saltato", Qgis.Warning)
+                    break
+                if not sott.setSubsetString(subquery):
+                    self.log(f"   ⚠️ setSubsetString fallito sul layer isolato: split saltato", Qgis.Warning)
+                    break
+                if not rest.setSubsetString(f'NOT ({subquery})'):
+                    self.log(f"   ⚠️ setSubsetString fallito sul layer rimanente: split annullato", Qgis.Warning)
+                    break
+
+                sott.setCrs(old_layer.crs())
+                rest.setCrs(old_layer.crs())
+                if old_layer.renderer() is not None:
+                    sott.setRenderer(old_layer.renderer().clone())
+                    rest.setRenderer(old_layer.renderer().clone())
+                if old_layer.labeling() is not None:
+                    sott.setLabeling(old_layer.labeling().clone())
+                    sott.setLabelsEnabled(old_layer.labelsEnabled())
+                    rest.setLabeling(old_layer.labeling().clone())
+                    rest.setLabelsEnabled(old_layer.labelsEnabled())
+
+                for target in (sott, rest):
+                    ji = QgsVectorLayerJoinInfo()
+                    ji.setJoinLayer(parent_layer)
+                    ji.setJoinFieldName(parent_col)
+                    ji.setTargetFieldName(child_col)
+                    ji.setUsingMemoryCache(True)
+                    ji.setPrefix(f"{parent_table}_")
+                    if not target.addJoin(ji):
+                        self.log(f"   ⚠️ Ri-aggancio join fallito su {target.name()}", Qgis.Warning)
+
+                QgsProject.instance().removeMapLayer(old_layer.id())
+                loaded_layers.remove(old_layer)
+                zorder_layers.pop(i)
+                QgsProject.instance().addMapLayer(rest)
+                QgsProject.instance().addMapLayer(sott)
+                loaded_layers.append(rest)
+                loaded_layers.append(sott)
+                zorder_layers.append((rest, t_low))
+                zorder_layers.append((sott, "copertura_dl_solo_superficiecs"))
+                self.log(f"   ✅ {sott.name()}: isolato ({sott.featureCount()} feature), "
+                         f"classificato come Copertura del suolo")
+                self.log(f"   ✅ {rest.name()}: resta Oggetti singoli "
+                         f"({rest.featureCount()} feature rimanenti)")
+                break
+
+        # Ordine di disegno (z-order): senza questo i layer si sovrappongono
+        # nell'ordine casuale di dichiarazione nel GeoPackage, non secondo la
+        # gerarchia cartografica del piano (punti fissi/di confine devono restare
+        # sempre in primo piano, le coperture del suolo sempre sullo sfondo).
+        if zorder_layers:
+            self.log(f"\n📐 Fase 4: Ordine di disegno ({len(zorder_layers)} layer)...")
+            # NB: QgsLayerTree.setCustomLayerOrder() passa la lista COSI' COM'E'
+            # (senza invertirla) a QgsMapSettings.setLayers() - verificato nel
+            # sorgente C++ (nessun reverse tra customLayerOrder() e
+            # mCanvas->setLayers()) e con un render headless reale (QGIS 4.2.0):
+            # il PRIMO elemento e' il layer in primo piano, l'ultimo lo sfondo.
+            # Un precedente .reverse() qui (basato su un'assunzione mai
+            # verificata contro il comportamento reale) mandava i punti di
+            # confine/fissi sullo sfondo invece che in primo piano: rimosso.
+            # Log dettagliato PRIMA di ordinare: una riga per layer con
+            # priorita' calcolata e il pattern/motivo esatto del match, cosi'
+            # un dubbio su "perche' X e' sopra/sotto Y" si risolve leggendo
+            # il log invece di dover essere investigato da capo ogni volta
+            # (vedi _zorder_debug_info).
+            for lyr, t_low in sorted(zorder_layers, key=lambda p: _zorder_priority(p[1])):
+                prio, reason = _zorder_debug_info(t_low)
+                self.log(f"      [{prio:3d}] {lyr.name()}  ({reason})")
+            ordered = [lyr for lyr, _ in sorted(zorder_layers, key=lambda p: _zorder_priority(p[1]))]
+            root = QgsProject.instance().layerTreeRoot()
+            root.setHasCustomLayerOrder(True)
+            root.setCustomLayerOrder(ordered)
+            self.log("   ✅ Ordine applicato (punti di confine/fissi in primo piano, coperture sullo sfondo)")
+
+        # Raggruppamento dell'albero layer (pannello Layers): puramente
+        # visuale, non tocca l'ordine di disegno appena impostato sopra.
+        if zorder_layers or attr_layers:
+            self.log("\n📁 Fase 4bis: Raggruppamento albero layer...")
+            for lyr, t_low in zorder_layers:
+                group, reason = _rf_group_debug_info(t_low)
+                self.log(f"      {lyr.name()}  ->  \"{group}\"  ({reason})")
+            self._reorganize_layer_tree(zorder_layers, attr_layers)
+
+        # Conformita' cartografica: dimensioni simboli/etichette corrette a
+        # qualunque scala di zoom (non solo 1:1000) + punti di confine
+        # tralasciati oltre 1:5000 come da piano ufficiale.
+        if zorder_layers:
+            self.log("\n📏 Fase 4ter: Conformità cartografica (§1.5.2/1.5.4)...")
+            self._apply_carto_conformity(zorder_layers)
+
+        # Ponte QGIS -> DXF per la legenda (vedi legend_manifest.py): scritto
+        # SEMPRE alla fine dello stile, cosi' il generatore DXF (Java) trova
+        # sempre il manifest piu' recente al prossimo export - non e' un
+        # collegamento live tra i due programmi, va rigenerato rilanciando lo
+        # stile e poi l'export, in quest'ordine.
+        if zorder_layers:
+            self.log("\n🗒️ Fase 4quater: Manifest legenda per il DXF...")
+            # Il lato Java cerca il manifest ACCANTO AL FILE ITF che sta
+            # convertendo (Av2geobau.doConversion), non accanto al GeoPackage:
+            # scriverlo solo nella cartella del GPKG lo rendeva invisibile
+            # all'export ogni volta che ITF e GPKG stanno in cartelle diverse
+            # (sono 2 campi indipendenti nella dialog) - la legenda spariva
+            # senza alcun errore. Si scrive quindi in ENTRAMBE le cartelle
+            # quando differiscono (il file e' di pochi KB).
+            try:
+                dest_dirs = [gpkg_path.parent]
+                itf_txt = self.txt_itf.text().strip()
+                if itf_txt:
+                    itf_dir = Path(itf_txt).parent
+                    if itf_dir != gpkg_path.parent:
+                        dest_dirs.append(itf_dir)
+                for dest_dir in dest_dirs:
+                    manifest_path = dest_dir / "legenda_manifest.txt"
+                    n_voci = write_legend_manifest(zorder_layers, manifest_path)
+                    self.log(f"   ✅ {n_voci} voci scritte in {manifest_path}")
+            except Exception as e:
+                self.log(f"   ⚠️ Errore scrittura manifest legenda: {str(e)}", Qgis.Warning)
+
+        # Layout PB-MU
+        if self.product_mode == "bp" and loaded_layers:
+            self.log("\n📐 Fase 5: Layout PB-MU...")
+            self.create_layout_bp()
+
+        # Aggiorna canvas. getattr perche' i test istanziano la dialog con
+        # __new__ (senza __init__): self._iface potrebbe non esistere affatto.
+        _iface = getattr(self, "_iface", None)
+        if _iface and _iface.mapCanvas():
+            _iface.mapCanvas().refresh()
+            self.log("\n🖼️ Canvas aggiornato")
+
+    def _reorganize_layer_tree(self, geom_layers, attr_layers):
+        """Raggruppa il pannello Layers secondo i 12 livelli di RF_LAYER_GROUPS
+        (circ154 cap. 1.5.4), invece di lasciare un elenco piatto di
+        decine/centinaia di tabelle con nomi tecnici. Puramente organizzativo:
+        NON tocca l'ordine di disegno (gia' impostato da setCustomLayerOrder
+        in Fase 4) ne' stili/etichette - sposta solo i nodi nell'albero.
+        'geom_layers': lista di (layer, t_low) come zorder_layers.
+        'attr_layers': layer attributo puri (senza geometria, solo per i join).
+        Rilanciabile: rimuove i gruppi RF di un run precedente prima di
+        ricrearli, cosi' ricaricare la legenda su un progetto gia' aperto
+        non li duplica."""
+        root = QgsProject.instance().layerTreeRoot()
+
+        # Rimuovi eventuali gruppi RF di un run precedente (stesso progetto,
+        # legenda ricaricata): stacca prima i layer nel nodo radice, cosi'
+        # restano nel progetto anche se il gruppo viene rimosso.
+        prefixes = tuple(f"{title.split()[0]} " for title, _ in RF_LAYER_GROUPS) + ("90 ", "99 ")
+        for child in list(root.children()):
+            if isinstance(child, QgsLayerTreeGroup) and child.name().startswith(prefixes):
+                for sub in list(child.findLayers()):
+                    root.insertChildNode(0, sub.clone())
+                    child.removeChildNode(sub)
+                root.removeChildNode(child)
+
+        group_nodes = {}
+        for title, _pats in RF_LAYER_GROUPS:
+            group_nodes[title] = root.addGroup(title)
+        other_group = root.addGroup("90 Altri layer geometrici")
+        attr_group = root.addGroup("99 Tabelle attributo (join)")
+
+        moved = 0
+        for lyr, t_low in geom_layers:
+            node = root.findLayer(lyr.id())
+            if node is None:
+                continue
+            title = _rf_group_for_table(t_low)
+            target = group_nodes.get(title, other_group) if title else other_group
+            target.insertChildNode(-1, node.clone())
+            parent = node.parent()
+            if parent is not None:
+                parent.removeChildNode(node)
+            moved += 1
+
+        for lyr in attr_layers:
+            node = root.findLayer(lyr.id())
+            if node is None:
+                continue
+            attr_group.insertChildNode(-1, node.clone())
+            parent = node.parent()
+            if parent is not None:
+                parent.removeChildNode(node)
+            moved += 1
+
+        # Rimuovi i gruppi rimasti vuoti (nessun layer di questo dataset
+        # rientrava in quella categoria - es. nessuna condotta nel comune).
+        for g in list(group_nodes.values()) + [other_group, attr_group]:
+            if len(g.children()) == 0:
+                root.removeChildNode(g)
+
+        self.log(f"   ✅ Albero raggruppato: {moved} layer in {len(RF_LAYER_GROUPS) + 2} categorie possibili")
+
+    # --- CONFORMITA' CARTOGRAFICA (§1.5.4) ---
+    # NOTA: esisteva anche un fattore di scala §1.5.2 (size_mm * 1000/@map_scale
+    # via proprieta' data-defined su simboli ed etichette), rimosso dopo un
+    # riscontro reale dell'utente: testi/simboli invisibili a qualunque scala
+    # diversa da 1:1000 (le dimensioni collassano sotto la soglia leggibile a
+    # scale piu' "zoomate fuori"), e marker a font disallineati (il loro
+    # offset di ancoraggio, _font_marker_offset, non veniva ri-scalato in
+    # sincrono). La visibilita' scala-dipendente sotto (§1.5.4, indipendente
+    # dalla dimensione) resta invece valida.
+    def _apply_scale_dependent_visibility(self, layer, t_low):
+        """§1.5.4: i punti di confine (non le altre geometrie) restano
+        visibili solo a scale piu' dettagliate di 1:CONFINE_POINTS_MIN_SCALE -
+        oltre, il piano ufficiale li tralascia."""
+        t = (t_low or layer.name()).lower()
+        is_confine_pt = (
+            ("punto_di_confine" in t or "pcgiurisdizionale" in t)
+            and "pospunto" not in t and "_pos" not in t and not t.startswith("pos")
+        )
+        if "tenuta_a_giorno" in t or t.endswith("prog"):
+            return False
+        if not is_confine_pt:
+            return False
+        try:
+            layer.setScaleBasedVisibility(True)
+            layer.setMinimumScale(float(CONFINE_POINTS_MIN_SCALE))
+            layer.setMaximumScale(0.0)
+            return True
+        except Exception as e:
+            self.log(f"   ⚠️ Impossibile impostare la visibilita' scala-dipendente "
+                      f"su {layer.name()}: {e}", Qgis.Warning)
+            return False
+
+    def _apply_carto_conformity(self, zorder_layers):
+        """Applica la visibilita' scala-dipendente dei punti di confine (§1.5.4)
+        a tutti i layer geometrici stilizzati."""
+        n_visibility = 0
+        for layer, t_low in zorder_layers:
+            if self._apply_scale_dependent_visibility(layer, t_low):
+                n_visibility += 1
+        self.log(f"   ✅ Visibilita' scala-dipendente §1.5.4 (punti di confine "
+                  f"oltre 1:{CONFINE_POINTS_MIN_SCALE}): {n_visibility} layer")
+
+    # --- ETICHETTE ---
+    @staticmethod
+    def _find_label_field(layer, candidates):
+        """Trova il primo campo tra i candidati sul layer. Le tabelle "PosX" del
+        modello ILI non contengono quasi mai il testo direttamente: vive sulla
+        tabella padre "X" e diventa un campo del layer solo dopo il join
+        (rinominato "{tabella_padre}_{campo}" da setup_relations_and_joins).
+        Cerchiamo quindi anche un campo che termini con "_<candidato>"."""
+        existing = {f.name().lower(): f.name() for f in layer.fields()}
+        for cand in candidates:
+            if cand.lower() in existing:
+                return existing[cand.lower()]
+        for cand in candidates:
+            suffix = ("_" + cand).lower()
+            for lname, orig in existing.items():
+                if lname.endswith(suffix):
+                    return orig
+        return None
+
+    @staticmethod
+    def _rebind_field_in_rules(rule, old_field, new_field):
+        """Sostituisce, in tutto l'albero di regole a partire da 'rule', ogni
+        riferimento a "old_field" nell'espressione di filtro con "new_field".
+        Usato per i renderer costruiti su un campo (es. "Genere") che esiste solo
+        sulla tabella padre e diventa disponibile sul layer solo dopo il join."""
+        count = 0
+        old_ref, new_ref = f'"{old_field}"', f'"{new_field}"'
+        if old_field != new_field:
+            expr = rule.filterExpression()
+            if old_ref in expr:
+                rule.setFilterExpression(expr.replace(old_ref, new_ref))
+                count += 1
+        for child in rule.children():
+            count += TIDashboardDialog._rebind_field_in_rules(child, old_field, new_field)
+        return count
+
+    def _apply_pos_text_attrs(self, layer, settings, keyword, base_size):
+        """Collega Ori/HAli/VAli/Dimensione/Stile (tabelle Pos* di
+        MD01MUTI7MN95.ili) alle proprieta' data-defined di QGIS, applicando
+        come default esplicito il valore "non_definito" dichiarato dal
+        modello per quell'attributo quando e' assente nei dati, invece di
+        lasciarlo a un default QGIS implicito.
+
+        - Ori: azimut in GON orario da Nord (0=Nord, 100=Est, coerente con
+          "E_Azimut ... Azimut 100 = E" del modello). QGIS vuole gradi orari
+          da Est (0=Est): gradi_qgis = (Ori_gon - 100) * 0.9 (segno opposto
+          alla stessa formula usata per il DXF in av2geobau_ti/Mapper.java,
+          che converte lo stesso Ori in gradi ANTIorari da Est).
+        - HAli/VAli: le proprieta' data-defined QgsPalLayerSettings.Hali/Vali
+          accettano LETTERALMENTE gli stessi valori del dominio ILI
+          (Left/Center/Right, Bottom/Base/Half/Cap/Top) - nessuna conversione,
+          solo il default giusto per tabella (Left/Bottom per le etichette-
+          numero di punto PFP/PFA/Segnale/Punto_quotato, Center/Half per
+          tutte le altre, secondo _POS_LEFT_BOTTOM_KEYWORDS).
+        - Dimensione (piccolo/medio/grande): il plugin ha gia' una dimensione
+          fissa in pt per ogni voce di TEXT_LABEL_RULES, che rappresenta il
+          caso "medio" (default dichiarato ovunque). +-25% per piccolo/grande
+          e' un'approssimazione (il valore pt esatto non e' specificato ne'
+          nel modello ne' in av2geobau, che non mappa affatto Dimensione).
+        - Stile (normale/spaziato): "spaziato" = testo con spaziatura lettere
+          allargata, via la proprieta' data-defined FontLetterSpacing
+          (assente il concetto in DXF/av2geobau); ampiezza approssimata
+          proporzionale alla dimensione del carattere.
+
+        Tutte le proprieta' hanno senso solo con placement "sopra al punto"
+        anziche' la ricerca automatica anti-sovrapposizione di QGIS
+        (AroundPoint, il default): viene quindi sempre impostato OverPoint,
+        analogo al posizionamento fisso di un TEXT DXF.
+        """
+        fields = layer.fields()
+        applied = []
+        left_bottom = keyword in _POS_LEFT_BOTTOM_KEYWORDS
+        hali_default = "Left" if left_bottom else "Center"
+        vali_default = "Bottom" if left_bottom else "Half"
+        dd = settings.dataDefinedProperties()
+
+        if fields.lookupField("ori") >= 0:
+            dd.setProperty(QgsPalLayerSettings.Property.LabelRotation,
+                            QgsProperty.fromExpression('(coalesce("ori", 100) - 100) * 0.9'))
+            applied.append("Ori")
+        if fields.lookupField("hali") >= 0:
+            dd.setProperty(QgsPalLayerSettings.Property.Hali,
+                            QgsProperty.fromExpression(f"coalesce(\"hali\", '{hali_default}')"))
+            applied.append("HAli")
+        if fields.lookupField("vali") >= 0:
+            dd.setProperty(QgsPalLayerSettings.Property.Vali,
+                            QgsProperty.fromExpression(f"coalesce(\"vali\", '{vali_default}')"))
+            applied.append("VAli")
+        if not left_bottom and fields.lookupField("dimensione") >= 0:
+            dd.setProperty(QgsPalLayerSettings.Property.Size, QgsProperty.fromExpression(
+                f'CASE "dimensione" '
+                f"WHEN 'piccolo' THEN {base_size * 0.8} "
+                f"WHEN 'grande' THEN {base_size * 1.25} "
+                f'ELSE {base_size} END'
+            ))
+            applied.append("Dimensione")
+        if keyword in _POS_STILE_KEYWORDS and fields.lookupField("stile") >= 0:
+            dd.setProperty(QgsPalLayerSettings.Property.FontLetterSpacing, QgsProperty.fromExpression(
+                f"CASE WHEN \"stile\" = 'spaziato' THEN {base_size * 0.3} ELSE 0 END"
+            ))
+            applied.append("Stile")
+
+        if applied:
+            settings.placement = Qgis.LabelPlacement.OverPoint
+        return applied
+
+    def _apply_labels_to_layer(self, layer, t_low, class_name, is_gb=False):
+        """Applica etichette ai layer testuali (cap. 5 Weisung-GB-it.pdf)."""
+        _ensure_cadastra_text_font_loaded()
+        # Punto quotato: la quota e' la componente Z della geometria (CoordA),
+        # non un attributo separato -> etichetta basata su espressione $z.
+        if "punto_quotato" in t_low:
+            settings = QgsPalLayerSettings()
+            settings.fieldName = "round($z, 2)"
+            settings.isExpression = True
+            text_format = QgsTextFormat()
+            text_format.setColor(gbc(is_gb, QColor(102, 51, 0)))
+            text_format.setFont(QFont(CADASTRA_TEXT_FAMILY))
+            # Punto quotato: estensione cantonale senza grandezza federale,
+            # allineato a 1.8mm come le altre etichette-numero.
+            text_format.setSize(_font_size_for_cap(1.8))
+            text_format.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+            settings.setFormat(text_format)
+            settings.enabled = True
+            applied = self._apply_pos_text_attrs(layer, settings, "punto_quotato", 1.8)
+            layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+            layer.setLabelsEnabled(True)
+            note = f" ({'+'.join(applied)} da Pos*)" if applied else ""
+            self.log(f"     ✅ Etichetta Punto_quotato su $z{note}")
+            return
+
+        for keyword, candidates, bold, italic, size in TEXT_LABEL_RULES:
+            if keyword not in t_low:
+                continue
+
+            field_name = self._find_label_field(layer, candidates)
+            if not field_name:
+                self.log(f"     ⚠️ Nessun campo tra {candidates} trovato per '{keyword}' "
+                          f"(join mancante o non riuscito?)", Qgis.Warning)
+                return
+
+            settings = QgsPalLayerSettings()
+            # PosNome_localizzazione: Indice_iniziale/Indice_finale delimitano
+            # una sottostringa di Testo da mostrare (default 1..ultimo
+            # carattere = tutto il testo), secondo MD01MUTI7MN95.ili.
+            if keyword == "posnome_localizzazione" and layer.fields().lookupField("indice_iniziale") >= 0:
+                settings.fieldName = (
+                    f'substr("{field_name}", coalesce("indice_iniziale", 1), '
+                    f'coalesce("indice_finale", length("{field_name}")) - coalesce("indice_iniziale", 1) + 1)'
+                )
+                settings.isExpression = True
+            else:
+                settings.fieldName = field_name
+            text_format = QgsTextFormat()
+            font = QFont(CADASTRA_TEXT_FAMILY)
+            font.setBold(bold)
+            font.setItalic(italic)
+            text_format.setFont(font)
+            # 'size' e' l'altezza della MAIUSCOLA in mm richiesta dalla norma:
+            # va convertita nella dimensione del font e resa in millimetri di
+            # stampa (a 1:1000 coincide col valore normativo). In punti
+            # tipografici, come prima, il rapporto fra le classi di scrittura
+            # non sarebbe quello prescritto.
+            text_format.setSize(_font_size_for_cap(size))
+            text_format.setSizeUnit(QgsUnitTypes.RenderMillimeters)
+            settings.setFormat(text_format)
+            settings.enabled = True
+            applied = self._apply_pos_text_attrs(layer, settings, keyword, size)
+            layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+            label_off = any(k in t_low for k in _LABEL_DISABLED_BY_DEFAULT)
+            layer.setLabelsEnabled(not label_off)
+            style = "grassetto" if bold else ("corsivo" if italic else "normale")
+            note = f" + {'+'.join(applied)} da Pos*" if applied else ""
+            off_note = " (etichetta creata ma spenta di default)" if label_off else ""
+            self.log(f"     ✅ Etichetta '{keyword}' su campo '{field_name}' (Cadastra {style} {size}mm{note}){off_note}")
+
+            if any(k in t_low for k in _LABEL_LAYER_OFF_BY_DEFAULT):
+                node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+                if node:
+                    node.setItemVisibilityChecked(False)
+                    self.log(f"     ✅ Layer spento di default (etichetta pronta, da riaccendere manualmente)")
+                else:
+                    self.log(f"     ⚠️ Nodo albero non trovato per {layer.name()}: layer resta acceso", Qgis.Warning)
+            return
+
+        self.log("     ⚠️ Nessuna regola di etichettatura corrispondente")
+
+    # --- RELAZIONI E JOIN ---
+    def setup_relations_and_joins(self, gpkg_path, loaded_layers):
+        """Crea relazioni e join tra i layer."""
+        if not loaded_layers:
+            self.log("   ⚠️ Nessun layer caricato, skip relazioni")
+            return
+
+        self.log(f"   📊 Layer caricati: {len(loaded_layers)}")
+        # BUG REALE (segnalato dall'utente: testi/etichette assenti su beni
+        # immobili e indirizzi degli edifici): le chiavi esterne lette da
+        # sqlite_master/t_ili2db_column_prop usano i nomi RAW delle tabelle
+        # del GeoPackage, ma qui sotto veniva indicizzato per layer.name() -
+        # gia' rinominato al nome "nice" in italiano (vedi _nice_layer_name,
+        # applicato in Fase 2, PRIMA di questa Fase 3) per la maggior parte
+        # dei layer. Il lookup falliva quindi silenziosamente (continue senza
+        # log) per ~123 join su 128 in un caso reale, lasciando i layer Pos*
+        # senza il campo testo della tabella padre e di conseguenza senza
+        # etichetta. Il nome di tabella RAW e' invece recuperabile in modo
+        # affidabile dalla source URI del layer OGR ("...gpkg|layername=xxx"),
+        # indipendente da come e' stato rinominato il layer.
+        layer_dict = {_raw_table_name(layer): layer for layer in loaded_layers}
+        fk_list = []
+        seen = set()
+
+        try:
+            conn = sqlite3.connect(str(gpkg_path))
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'gpkg_%' AND name NOT LIKE 'sqlite_%'")
+            tables = [row[0] for row in cursor.fetchall()]
+            self.log(f"   📋 Tabelle nel DB: {len(tables)}")
+
+            # 1. Vincoli FK reali (presenti solo se lo schema e' stato creato con --createFk)
+            # PRAGMA non supporta il binding '?' sui nomi tabella (solo sui valori),
+            # quindi l'identificatore va quotato a mano: raddoppiare gli apici interni
+            # e' la forma di escaping SQL standard per una stringa letterale.
+            for table in tables:
+                cursor.execute("PRAGMA foreign_key_list('%s')" % table.replace("'", "''"))
+                rows = cursor.fetchall()
+                for row in rows:
+                    child_col, parent_table, parent_col = row[3], row[2], row[4] if row[4] else "rowid"
+                    key = (table, child_col)
+                    if key not in seen:
+                        fk_list.append((table, child_col, parent_table, parent_col))
+                        seen.add(key)
+
+            # 2. Fallback: metadati ili2db (t_ili2db_column_prop, tag ch.ehi.ili2db.foreignKey).
+            # Popolata con --createMetaInfo anche SENZA --createFk: e' il modo con cui ili2db
+            # permette di ricostruire le relazioni quando lo schema non ha vincoli FK reali
+            # (che rifiuterebbero l'import di dati con riferimenti mancanti/tolleranti errori).
+            # I nomi delle tabelle di metadati ili2db sono in MAIUSCOLO
+            # (es. "T_ILI2DB_COLUMN_PROP", verificato sul GeoPackage): il confronto
+            # diretto su sqlite_master.name e' case-sensitive in SQLite, quindi
+            # serve un confronto case-insensitive esplicito.
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND lower(name)='t_ili2db_column_prop'")
+            if cursor.fetchone():
+                cursor.execute(
+                    "SELECT tablename, columnname, setting FROM t_ili2db_column_prop "
+                    "WHERE tag = 'ch.ehi.ili2db.foreignKey'")
+                for table, child_col, parent_table in cursor.fetchall():
+                    key = (table, child_col)
+                    if key not in seen:
+                        fk_list.append((table, child_col, parent_table, "T_Id"))
+                        seen.add(key)
+            else:
+                self.log("   ℹ️ t_ili2db_column_prop non presente (schemaimport senza --createMetaInfo)")
+
+            conn.close()
+            self.log(f"   🔗 Chiavi esterne trovate: {len(fk_list)}")
+        except Exception as e:
+            self.log(f"   ❌ Errore lettura FK: {str(e)}", Qgis.Warning)
+            return
+
+        relations_created = 0
+        joins_created = 0
+
+        for child_table, child_col, parent_table, parent_col in fk_list:
+            child_layer = layer_dict.get(child_table)
+            parent_layer = layer_dict.get(parent_table)
+
+            if not child_layer or not parent_layer:
+                continue
+
+            child_fields = [f.name() for f in child_layer.fields()]
+            parent_fields = [f.name() for f in parent_layer.fields()]
+
+            if child_col not in child_fields or parent_col not in parent_fields:
+                continue
+
+            relation = QgsRelation()
+            relation.setId(f"{child_table}_{parent_table}")
+            relation.setName(f"{child_table} → {parent_table}")
+            relation.setReferencingLayer(child_layer.id())
+            relation.setReferencedLayer(parent_layer.id())
+            relation.addFieldPair(child_col, parent_col)
+
+            if relation.isValid():
+                QgsProject.instance().relationManager().addRelation(relation)
+                relations_created += 1
+                self.log(f"   ✅ Relazione: {child_table}.{child_col} → {parent_table}.{parent_col}")
+
+            join_info = QgsVectorLayerJoinInfo()
+            # NB: QgsVectorLayerJoinInfo e' un binding SIP: l'assegnazione diretta di
+            # attributo (join_info.joinLayerId = ...) NON richiama il setter C++, crea
+            # solo un attributo Python "ombra" che addJoin() ignora completamente,
+            # lasciando il join configurato con valori vuoti/default (fallimento silenzioso).
+            # Vanno usati i metodi setter espliciti. setJoinLayer() (puntatore diretto)
+            # e' preferito a setJoinLayerId() per evitare qualsiasi dipendenza dalla
+            # risoluzione dell'ID tramite QgsProject al momento dell'uso del join.
+            join_info.setJoinLayer(parent_layer)
+            join_info.setJoinFieldName(parent_col)
+            join_info.setTargetFieldName(child_col)
+            join_info.setUsingMemoryCache(True)
+            join_info.setPrefix(f"{parent_table}_")
+            if child_layer.addJoin(join_info):
+                joins_created += 1
+                new_fields = [f.name() for f in child_layer.fields()
+                              if f.name().lower().startswith(f"{parent_table}_".lower())]
+                if not new_fields:
+                    all_fields = [f.name() for f in child_layer.fields()]
+                    self.log(f"   ⚠️ Join OK ma nessun campo con prefisso '{parent_table}_' su "
+                              f"{child_table} (campi attuali: {all_fields})", Qgis.Warning)
+            else:
+                self.log(f"   ⚠️ Join fallito: {child_table}.{child_col} → {parent_table}.{parent_col}", Qgis.Warning)
+
+        self.log(f"   📊 Relazioni create: {relations_created}")
+        self.log(f"   📊 Join creati: {joins_created}")
+
+    def create_layout_bp(self):
+        """Crea un layout per il piano di base (PB-MU): mappa a tutto foglio
+        (meno i margini per titolo e barra di scala), titolo e barra di scala
+        collegata alla mappa. La scala di stampa e' fissa a 1:5000
+        (hardcoded: scala tipica del piano di base per un intero foglio
+        comunale, richiesta corrente dell'utente) - ma ora e' applicata
+        DAVVERO alla mappa via setScale(5000), non solo scritta nel titolo:
+        la versione precedente creava un layout con la sola etichetta e una
+        barra di scala non collegata a nessuna mappa (niente QgsLayoutItemMap
+        nel layout, quindi il PDF esportato non mostrava alcuna mappa)."""
+        if not self.loaded_layers:
+            self.log("   ⚠️ Nessun layer caricato, skip layout")
+            return
+
+        self.log("   📐 Creazione layout PB-MU...")
+        project = QgsProject.instance()
+        # QgsPrintLayout, non QgsLayout: solo il primo ha setName e puo' essere
+        # registrato nel gestore dei layout. Con QgsLayout questo metodo
+        # sollevava AttributeError su QGIS 4, quindi il pulsante non produceva
+        # alcun layout.
+        layout = QgsPrintLayout(project)
+        layout.initializeDefaults()
+        layout.setName("Basisplan_PB-MU")
+
+        page = layout.pageCollection().page(0)
+        page_w = page.sizeWithUnits().width()
+        page_h = page.sizeWithUnits().height()
+
+        # Mappa: occupa il foglio meno un margine alto (per il titolo, ~30mm)
+        # e uno basso (per la barra di scala, ~20mm). Aggiunta PRIMA degli
+        # altri elementi, cosi' titolo e barra di scala le restano sopra
+        # nell'ordine di disegno del layout.
+        map_item = QgsLayoutItemMap(layout)
+        # Aggiunto al layout PRIMA di dimensionarlo e, soprattutto, con un CRS
+        # esplicito: senza CRS QGIS non sa legare le unita' della mappa ai
+        # millimetri del foglio e setScale() azzera l'estensione (misurato:
+        # 0x0 m), producendo un foglio vuoto. Vedi la stessa nota in
+        # planimetria.crea_planimetria.
+        layout.addLayoutItem(map_item)
+        map_item.setCrs(QgsCoordinateReferenceSystem("EPSG:2056"))
+        map_item.attemptSetSceneRect(QRectF(5, 30, page_w - 10, page_h - 55))
+        # Estensione: unione degli extent di tutti i layer caricati (i layer
+        # del plugin sono tutti in EPSG:2056, vedi load_and_style_layers -
+        # nessuna riproiezione necessaria). Se un layer e' vuoto/non
+        # spaziale il suo extent viene saltato.
+        extent = QgsRectangle()
+        extent.setMinimal()
+        n_ext = 0
+        for lyr in self.loaded_layers:
+            if lyr and lyr.isSpatial():
+                ext = lyr.extent()
+                if ext and not ext.isEmpty():
+                    extent.combineExtentWith(ext)
+                    n_ext += 1
+        if not extent.isEmpty():
+            map_item.setExtent(extent)          # centra la mappa sull'unione
+            map_item.setScale(5000)             # scala fissa 1:5000 (vedi docstring)
+            self.log(f"   🗺️ Mappa: extent da {n_ext} layer, scala 1:5000")
+        else:
+            self.log("   ⚠️ Nessun extent valido dai layer caricati: la mappa "
+                      "resta con l'estensione di default del layout.", Qgis.Warning)
+
+        _ensure_cadastra_text_font_loaded()
+        title_label = QgsLayoutItemLabel(layout)
+        title_label.setText(f"Piano di base della misurazione ufficiale\nScala: 1:5000\nData: {datetime.now().strftime('%d.%m.%Y')}\nLegenda: www.cadastre.ch/legende")
+        title_label.setFont(QFont(CADASTRA_TEXT_FAMILY, 10))
+        title_label.adjustSizeToText()
+        layout.addLayoutItem(title_label)
+        # attemptSetSceneRect, non setItemPosition/setItemSize: quei due metodi
+        # non esistono piu' nell'API dei layout di QGIS 4 e sollevavano
+        # AttributeError, interrompendo la creazione del layout a meta'.
+        title_label.attemptSetSceneRect(QRectF(10, 5, page_w - 20, 22))
+
+        scalebar = QgsLayoutItemScaleBar(layout)
+        scalebar.setStyle("Line Ticks Up")
+        scalebar.setUnitLabel("m")
+        layout.addLayoutItem(scalebar)
+        scalebar.attemptSetSceneRect(QRectF(10, page_h - 22, 60, 10))
+        # Collega la barra di scala alla mappa (senza linked map la barra non
+        # sa a quale scala riferirsi e resta vuota/indicativa).
+        scalebar.setLinkedMap(map_item)
+        scalebar.applyDefaultSize()
+        scalebar.update()
+
+        project.layoutManager().addLayout(layout)
+        self.log("   ✅ Layout creato: Basisplan_PB-MU")
+
+        reply = QMessageBox.question(self, "Esporta PDF", "Layout creato. Vuoi esportarlo in PDF/A?", _MB_SI | _MB_NO)
+        if reply == _MB_SI:
+            save_path, _ = QFileDialog.getSaveFileName(self, "Salva PDF", "", "PDF (*.pdf)")
+            if save_path:
+                try:
+                    exporter = QgsLayoutExporter(layout)
+                    settings = QgsLayoutExporter.PdfExportSettings()
+                    settings.forceVectorOutput = True
+                    result = exporter.exportToPdf(save_path, settings)
+                    if result == QgsLayoutExporter.Success:
+                        self.log(f"   ✅ PDF esportato: {save_path}")
+                    else:
+                        self.log(f"   ❌ Esportazione PDF fallita (codice {result}).", Qgis.Critical)
+                except Exception as e:
+                    self.log(f"   ❌ Errore PDF: {str(e)}", Qgis.Critical)
+
+    def _parametri_planimetria(self):
+        """Legge i controlli della sezione Planimetria. Ritorna
+        (formato, scala, rotazione_gon, comune, data_validita)."""
+        formato = self.combo_formato.currentText()
+        scala = int(self.combo_scala.currentText().split(":")[1])
+        return (formato, scala, self.spin_rotazione.value(),
+                self.combo_comune.currentText().strip(),
+                self.data_validita.date().toString("dd.MM.yyyy"))
+
+    # Nessun comune svizzero e' largo piu' di questo: oltre, l'estensione
+    # dichiarata non descrive i dati (vedi _centro_planimetria).
+    LARGHEZZA_MAX_COMUNE = 50000.0
+
+    def _estensione_reale(self, layer):
+        """Estensione VERA di un layer, calcolata dalle geometrie quando quella
+        dichiarata non e' credibile.
+
+        ili2gpkg scrive in gpkg_contents un riquadro segnaposto pari ai limiti
+        della Svizzera (E2480000..2850000, N1070000..1310000) invece
+        dell'estensione dei dati, e QGIS si fida di quel valore: verificato su
+        un GeoPackage reale di Chiasso, layer.extent() e updateExtents()
+        restituivano entrambi tutta la Svizzera, con centro E2665000 N1190000 -
+        cioe' l'Argovia. La planimetria di ripiego usciva quindi centrata a
+        150 km dai dati. Qui si riconosce il segnaposto dalla larghezza e si
+        ricalcola scorrendo le geometrie."""
+        estensione = layer.extent()
+        if estensione.width() <= self.LARGHEZZA_MAX_COMUNE:
+            return estensione
+        vera = QgsRectangle()
+        vera.setMinimal()
+        for f in layer.getFeatures():
+            g = f.geometry()
+            if g and not g.isEmpty():
+                vera.combineExtentWith(g.boundingBox())
+        # Se il layer non ha geometrie si torna VUOTO, non il segnaposto:
+        # restituendo quest'ultimo bastava un solo layer vuoto - e ce ne sono
+        # decine, tutte le tabelle *Prog - a riportare l'unione a tutta la
+        # Svizzera, annullando il ricalcolo fatto su tutti gli altri.
+        return vera
+
+    # Layer su cui centrare il foglio quando non c'e' una vista: sono l'oggetto
+    # stesso del piano, ed e' li' che si centra un estratto.
+    LAYER_DI_CENTRAMENTO = ("bene_immobile", "punto_di_confine")
+
+    def _centro_planimetria(self):
+        """Centro del foglio: il centro della vista corrente se la mappa di
+        QGIS e' disponibile (cosi' l'utente inquadra e stampa quel che vede),
+        altrimenti il centro dei fondi.
+
+        NON si usa l'unione di TUTTI i layer, come faceva prima: basta un solo
+        layer con geometrie anomale a portare il centro altrove. Riscontrato sui
+        dati reali di Chiasso - Geometria_AN (aree di numerazione, 29 oggetti)
+        ha geometrie che si estendono da E2485409 a E2833842, cioe' mezza
+        Svizzera, e da sola spostava il centro di 100 km. Centrare sui fondi e'
+        anche piu' corretto nel merito: sono l'oggetto del piano."""
+        _iface = getattr(self, "_iface", None)
+        if _iface and _iface.mapCanvas():
+            return _iface.mapCanvas().extent().center()
+
+        for chiave in self.LAYER_DI_CENTRAMENTO:
+            for lyr in (self.loaded_layers or []):
+                if not (lyr and lyr.isSpatial()):
+                    continue
+                nome = _raw_table_name(lyr).lower()
+                if nome.endswith(chiave) and lyr.featureCount() > 0:
+                    reale = self._estensione_reale(lyr)
+                    if not reale.isEmpty():
+                        return reale.center()
+
+        # Ripiego: unione di tutto, com'era prima. Meglio di niente quando la
+        # consegna non porta i fondi.
+        estensione = QgsRectangle()
+        estensione.setMinimal()
+        for lyr in (self.loaded_layers or []):
+            if not (lyr and lyr.isSpatial()):
+                continue
+            reale = self._estensione_reale(lyr)
+            if not reale.isEmpty():
+                estensione.combineExtentWith(reale)
+        return None if estensione.isEmpty() else estensione.center()
+
+    def run_planimetria(self):
+        """Crea il layout della planimetria e lo apre nel compositore."""
+        centro = self._centro_planimetria()
+        if centro is None:
+            QMessageBox.warning(self, "Planimetria",
+                                "Nessuna mappa inquadrata e nessun layer caricato: "
+                                "non so su cosa centrare il foglio.")
+            return
+        formato, scala, rotazione, comune, data_validita = self._parametri_planimetria()
+        # Il comune e' una delle sette iscrizioni obbligatorie del cap.1.5.7:
+        # senza, il cartiglio stampava "Comune di —" e la planimetria usciva
+        # non conforme senza che nulla lo segnalasse.
+        if not comune:
+            # Ultimo tentativo di leggerlo dai dati prima di disturbare
+            # l'utente: puo' essere che i layer siano stati caricati da un
+            # progetto salvato, senza passare dall'importazione.
+            trovati = self.aggiorna_comuni_da_dati()
+            if trovati:
+                comune = self.combo_comune.currentText().strip()
+                self.log("   ℹ️ Comune letto dai dati INTERLIS: %s" % comune)
+        if not comune:
+            QMessageBox.warning(self, "Planimetria",
+                                "Comune non trovato nei dati INTERLIS "
+                                "(Layout_del_piano.Nome_comune, Comune.Nome): "
+                                "indicalo a mano, e' un'iscrizione obbligatoria "
+                                "del cartiglio (cap.1.5.7).")
+            self.combo_comune.setFocus()
+            return
+        self.log("\n\U0001F4D0 PLANIMETRIA")
+        try:
+            layout = _planimetria.crea_planimetria(
+                QgsProject.instance(), self.loaded_layers, centro, scala,
+                formato=formato, rotazione_gon=rotazione, comune=comune,
+                data_validita=data_validita, prodotto=self.product_mode,
+                log=self.log)
+        except ValueError as e:
+            QMessageBox.warning(self, "Planimetria", str(e))
+            self.log("   \u274C %s" % e, Qgis.Warning)
+            return
+        self._ultima_planimetria = layout
+        self._segna_scheda_fatta(self.pagina_plan, "3. Planimetria")
+        self.log("   \u2705 Centrata su %.3f, %.3f" % (centro.x(), centro.y()))
+        _iface = getattr(self, "_iface", None)
+        if _iface:
+            try:
+                _iface.openLayoutDesigner(layout)
+            except Exception:
+                self.log("   \u2139\uFE0F Layout creato: aprilo da Progetto > Gestore dei layout di stampa")
+
+    def run_planimetria_pdf(self):
+        """Esporta in PDF l'ultima planimetria creata."""
+        layout = getattr(self, "_ultima_planimetria", None)
+        # Se l'utente ha eliminato il layout dal gestore, il riferimento Python
+        # resta appeso a un oggetto C++ distrutto e qualunque accesso solleva
+        # RuntimeError: si verifica leggendone il nome prima di usarlo.
+        if layout is not None:
+            try:
+                layout.name()
+            except RuntimeError:
+                layout = None
+                self._ultima_planimetria = None
+        if layout is None:
+            QMessageBox.information(self, "Planimetria",
+                                    "Crea prima una planimetria con 'CREA PLANIMETRIA'.")
+            return
+        percorso, _ = QFileDialog.getSaveFileName(self, "Salva planimetria",
+                                                  "planimetria.pdf", "PDF (*.pdf)")
+        if not percorso:
+            return
+        ok, msg = _planimetria.esporta_pdf(layout, percorso)
+        if ok:
+            self.log("   \u2705 PDF esportato: %s" % msg, Qgis.Success)
+            QMessageBox.information(self, "Planimetria", "PDF esportato:\n%s" % msg)
+        else:
+            self.log("   \u274C Export PDF fallito: %s" % msg, Qgis.Critical)
+            QMessageBox.critical(self, "Planimetria", "Export fallito: %s" % msg)
+
+    def _sblocca_itf_dxf(self, sbloccato):
+        """La spunta "ITF diverso" apre il campo della scheda DXF. Togliendola
+        si torna a rispecchiare l'ITF dell'importazione, cosi' non resta un
+        valore vecchio che nessuno si ricorda di aver scritto."""
+        self.txt_geobau_itf.setReadOnly(not sbloccato)
+        self._btn_sfoglia_itf_dxf.setEnabled(sbloccato)
+        self.txt_geobau_itf.setPlaceholderText(
+            "Seleziona il file dati .itf..." if sbloccato
+            else "Come nella scheda \"1. Importazione\"")
+        if not sbloccato:
+            self._sync_geobau_itf(self.txt_itf.text())
+
+    def _sync_geobau_itf(self, text):
+        """Tiene allineato il campo ITF della scheda DXF con quello
+        dell'importazione. Con la spunta "ITF diverso" attiva non tocca
+        nulla: li' il valore lo decide l'utente."""
+        if getattr(self, "chk_itf_diverso", None) is not None \
+                and self.chk_itf_diverso.isChecked():
+            return
+        self.txt_geobau_itf.setText(text)
+        self._geobau_itf_auto = text
+
+    def _sync_geobau_dxf(self, text):
+        """Come _sync_geobau_itf, per il campo DXF: propone stesso nome/
+        cartella del GeoPackage di output, con estensione .dxf."""
+        current = self.txt_geobau_dxf.text()
+        if current and current != getattr(self, '_geobau_dxf_auto', None):
+            return
+        text = text.strip()
+        dxf_text = ""
+        if text:
+            gpkg_path = Path(text)
+            if gpkg_path.name:
+                dxf_text = str(gpkg_path.with_suffix('.dxf'))
+        self.txt_geobau_dxf.setText(dxf_text)
+        self._geobau_dxf_auto = dxf_text
+
+    def run_geobau(self):
+        """Esegue la conversione DXF con av2geobau (fork av2geobau_ti: legge
+        MD01MUTI7MN95 direttamente, senza la finta "TRANSLATION OF" verso il
+        modello tedesco usata dal jar ufficiale per gli altri modelli - vedi
+        commento su AV2GEOBAU_JAR). Traduttore e modello .ili sono entrambi
+        quelli in dotazione (MODELLO_ILI serve a risolvere --modeldir)."""
+        # Guardia contro il doppio avvio (vedi run_import).
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "Operazione in corso",
+                                "Un processo e' gia' in esecuzione: attendi che termini "
+                                "(o chiudi la finestra per interromperlo).")
+            self.log("⚠️ Avvio rifiutato: un processo e' gia' in esecuzione.", Qgis.Warning)
+            return
+
+        # Il traduttore si prende dalla costante, non dal campo di testo: il
+        # campo e' li' per mostrare quale motore gira, non per sceglierlo.
+        jar_path = Path(AV2GEOBAU_JAR)
+        ili_path = Path(MODELLO_ILI)
+        for percorso, cosa in ((jar_path, "Il traduttore DXF"),
+                               (ili_path, "Il modello INTERLIS")):
+            if not percorso.is_file():
+                QMessageBox.warning(self, "Risorsa mancante",
+                                    "%s in dotazione non e' presente "
+                                    "nell'installazione del plugin:\n%s\n\n"
+                                    "Reinstalla %s." % (cosa, percorso, NOME_PLUGIN))
+                self.log("   ❌ Risorsa in dotazione mancante: %s" % percorso, Qgis.Critical)
+                return
+        itf_path = Path(self.txt_geobau_itf.text().strip())
+        dxf_path = Path(self.txt_geobau_dxf.text().strip())
+
+        self.log("\n⚙️ AVVIO av2geobau")
+        self.log(f"   JAR: {jar_path}")
+        self.log(f"   ITF: {itf_path}")
+        self.log(f"   DXF: {dxf_path}")
+        self.log(f"   Modello ILI: {ili_path}")
+
+        if not all([jar_path.name, itf_path.name, dxf_path.name, ili_path.name]):
+            QMessageBox.warning(self, "Dati Mancanti",
+                                 "Compila tutti i campi di av2geobau (JAR, ITF, DXF e il modello .ili "
+                                 "nel gruppo 1, necessario per risolvere --modeldir).")
+            self.log("   ❌ Campi mancanti!")
+            return
+
+        java_exe = self.find_java()
+        if not java_exe:
+            QMessageBox.critical(self, "Errore", "Java non trovato.")
+            self.log("   ❌ Java non trovato!")
+            return
+
+        # --modeldir: prima la cartella del modello in dotazione, poi i modelli
+        # dentro il jar, poi il repository ufficiale IN HTTPS.
+        #
+        # Due modifiche di sicurezza rispetto a prima:
+        #  - il repository era "http://models.interlis.ch/", in CHIARO. La
+        #    definizione del modello governa l'interpretazione dei dati
+        #    catastali, e su HTTP chiunque sia in mezzo alla connessione puo'
+        #    sostituirla. Verificato che il sito risponde in HTTPS (200) e che
+        #    da solo NON reindirizza da http a https: senza questa modifica il
+        #    traffico restava davvero in chiaro.
+        #  - tolto il placeholder %ITF_DIR, che faceva prevalere un .ili posato
+        #    accanto al file di dati: il modello lo sceglieva chi fornisce
+        #    l'ITF, non noi.
+        #
+        # Per i dati ticinesi (MD01MUTI7MN95) la rete non serve comunque: il
+        # modello in dotazione e' INTERLIS 1 senza IMPORTS, quindi
+        # autosufficiente - verificato convertendo un ITF reale con il solo
+        # modeldir locale. Il ripiego di rete resta per i modelli federali
+        # (MD01MUCH24MN95I, DM01AVCH24LV95D...), che non sono in dotazione.
+        model_dir = ili_path.parent
+        ilidirs = os.pathsep.join([str(model_dir), "%JAR_DIR/ilimodels",
+                                   "https://models.interlis.ch/"])
+        cmd = [java_exe, "-jar", str(jar_path), "--modeldir", ilidirs, str(itf_path), str(dxf_path)]
+        self.log(f"   Comando: {' '.join(cmd)}")
+
+        self.btn_import.setEnabled(False)
+        self.btn_geobau.setEnabled(False)
+        self._inizio_lavoro("Traduzione av2geobau")
+        self.worker = JavaWorker(cmd, "av2geobau")
+        self.worker.log_signal.connect(self.log)
+        self.worker.finished_signal.connect(self.on_geobau_finished)
+        self.worker.start()
+
+    def on_geobau_finished(self, returncode, task_type):
+        self.log(f"\n📊 Risultato av2geobau: Codice ritorno = {returncode}")
+        self._fine_lavoro()
+        self.btn_import.setEnabled(True)
+        self.btn_geobau.setEnabled(True)
+        if returncode == 0:
+            self.log("✅ Esportazione DXF completata!", Qgis.Success)
+            self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
+            # Il codice di ritorno del processo Java da solo non basta: il jar
+            # puo' uscire con successo (0) anche quando il file prodotto e'
+            # strutturalmente incompleto/vuoto - un controllo minimo qui
+            # (dimensione, EOF, conteggio entita') avrebbe segnalato subito
+            # problemi come "Error in APPID Table" scoperti solo aprendo il
+            # file in AutoCAD, senza dover aspettare quel passaggio manuale.
+            dxf_path = self.txt_geobau_dxf.text().strip()
+            if dxf_path:
+                self.log("\n🔎 Verifica struttura DXF...")
+                self._validate_dxf(dxf_path)
+        else:
+            self.log("❌ Esportazione DXF fallita.", Qgis.Critical)
+
+    def _count_dxf_entities_stream(self, dxf_path, max_layers_sample=12):
+        """Conta i tipi di entita' (group 0) nella sezione ENTITIES leggendo
+        il file riga per riga, senza caricarlo tutto in memoria (i DXF di un
+        piano cadastrale reale arrivano facilmente a decine di MB)."""
+        stats = {}
+        total = 0
+        layers = []
+        layer_seen = set()
+        in_entities = False
+        expect_type = False
+        expect_layer = False
+        try:
+            with open(dxf_path, "r", encoding="latin-1", errors="replace") as f:
+                for raw in f:
+                    s = raw.strip()
+                    if not in_entities:
+                        if s == "ENTITIES":
+                            in_entities = True
+                        continue
+                    if s == "ENDSEC":
+                        break
+                    if expect_type:
+                        if s and not s.isdigit():
+                            stats[s] = stats.get(s, 0) + 1
+                            total += 1
+                        expect_type = False
+                        continue
+                    if expect_layer:
+                        if s and s not in layer_seen and len(layer_seen) < max_layers_sample:
+                            layer_seen.add(s)
+                            layers.append(s)
+                        expect_layer = False
+                        continue
+                    if s == "0":
+                        expect_type = True
+                    elif s == "8":
+                        expect_layer = True
+        except OSError as e:
+            return {"_error": str(e), "_total": 0, "_layers_sample": []}
+        stats["_total"] = total
+        stats["_layers_sample"] = layers
+        return stats
+
+    def _validate_dxf(self, dxf_path):
+        """Controlli strutturali minimi su un DXF appena esportato: esiste,
+        non e' vuoto, ha SECTION/EOF, contiene almeno un'entita' geometrica.
+        Non ripara nulla (i problemi noti - LTYPE a lunghezza 0, $HANDSEED
+        placeholder - sono gia' risolti alla fonte nel writer Java): serve
+        solo a far emergere subito un file strutturalmente incompleto,
+        invece di scoprirlo solo aprendolo in AutoCAD."""
+        path = Path(dxf_path)
+        if not path.is_file():
+            self.log(f"   ❌ DXF non creato: {path}", Qgis.Critical)
+            return False
+        size = path.stat().st_size
+        self.log(f"   📏 Dimensione DXF: {size} byte")
+        if size < 200:
+            self.log("   ❌ DXF sospettosamente piccolo (probabile file vuoto/corrotto).", Qgis.Critical)
+            return False
+
+        head_lines = []
+        tail_lines = []
+        try:
+            with open(path, "r", encoding="latin-1", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i >= 80:
+                        break
+                    head_lines.append(line.rstrip("\n"))
+                f.seek(max(0, size - 8000))
+                tail_lines = f.read().splitlines()[-40:]
+        except OSError as e:
+            self.log(f"   ⚠️ Lettura DXF fallita: {e}", Qgis.Warning)
+            return False
+
+        if not any(l.strip() == "SECTION" for l in head_lines):
+            self.log("   ⚠️ Nessuna SECTION trovata in testa al DXF (formato inatteso).", Qgis.Warning)
+
+        has_eof = any(l.strip() == "EOF" for l in tail_lines) or any(l.strip() == "EOF" for l in head_lines)
+        if has_eof:
+            self.log("   ✅ EOF presente")
+        else:
+            self.log("   ⚠️ EOF assente in coda al DXF (file troncato?).", Qgis.Warning)
+
+        stats = self._count_dxf_entities_stream(path)
+        if "_error" in stats:
+            self.log(f"   ⚠️ Analisi entità fallita: {stats['_error']}", Qgis.Warning)
+            return True
+        total = stats.pop("_total", 0)
+        layers_sample = stats.pop("_layers_sample", [])
+        self.log(f"   📊 Entità in ENTITIES: {total}")
+        if total <= 0:
+            self.log("   ❌ Nessuna entità geometrica trovata nel DXF.", Qgis.Critical)
+            return False
+        top = sorted(stats.items(), key=lambda kv: -kv[1])[:8]
+        self.log("   📊 Tipi principali: " + ", ".join(f"{k}={v}" for k, v in top))
+        if layers_sample:
+            self.log("   📋 Layer (campione): " + ", ".join(layers_sample))
+        return True
+
+# ==================================================================================================================
+# 5. ENTRY POINT PLUGIN QGIS
+# ==================================================================================================================
+class TIDashboardPlugin:
+    def __init__(self, iface):
+        self.iface = iface
+        self.plugin_dir = Path(__file__).parent
+        self.actions = []
+        self.menu_name = "&TIDashboard"
+        self.toolbar = self.iface.addToolBar("TIDashboard")
+        self.toolbar.setObjectName("TIDashboard")
+        self.dialog = None
+
+    def initGui(self):
+        icon_path = self.plugin_dir / "icon.png"
+        icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
+        action = QAction(icon, "TIDashboard", self.iface.mainWindow())
+        action.triggered.connect(self.run)
+        self.iface.addPluginToMenu(self.menu_name, action)
+        self.toolbar.addAction(action)
+        self.actions.append(action)
+
+        action_link_manager = QAction(icon, "Analizza collegamenti...", self.iface.mainWindow())
+        action_link_manager.triggered.connect(lambda: open_link_manager_for_active_layer(self.iface))
+        self.iface.addPluginToMenu(self.menu_name, action_link_manager)
+        self.toolbar.addAction(action_link_manager)
+        self.actions.append(action_link_manager)
+
+    def unload(self):
+        for action in self.actions:
+            self.iface.removePluginMenu(self.menu_name, action)
+            self.iface.removeToolBarIcon(action)
+        del self.toolbar
+
+    def run(self):
+        if self.dialog is None:
+            self.dialog = TIDashboardDialog(self.iface.mainWindow(), iface=self.iface)
+        self.dialog.show()
+        self.dialog.raise_()
+        self.dialog.activateWindow()
