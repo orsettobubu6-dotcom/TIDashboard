@@ -446,6 +446,50 @@ class TestAnnotazioniGriglia(unittest.TestCase):
             self.assertEqual(griglia.annotationDisplay(lato), G.ShowAll)
 
 
+class TestFrecciaNord(unittest.TestCase):
+    """La freccia deve puntare al nord del TERRENO cosi' come appare sul
+    foglio, non verso l'alto del foglio: ruotando la mappa il nord si sposta e
+    la freccia deve seguirlo.
+
+    La direzione attesa non e' presa dal codice della freccia ma ricavata da
+    'impronta_foglio', che a sua volta e' stata verificata contro
+    visibleExtentPolygon(). L'impronta manda la direzione locale del foglio
+    (dx, dy) sul terreno con una rotazione di +a; il nord del terreno (0, 1)
+    finisce quindi sul foglio in (sin a, cos a), cioe' a 'a' gradi in senso
+    orario rispetto all'alto del foglio."""
+
+    @staticmethod
+    def _freccia(layout):
+        for i in layout.items():
+            if i.__class__.__name__ == "QgsLayoutItemPicture":
+                return i
+        return None
+
+    def test_segue_la_rotazione_del_foglio(self):
+        for gon in (0, 50, 100, 150, 200, 333):
+            lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                     QgsPointXY(CX, CY), 1000, rotazione_gon=gon,
+                                     comune="Giubiasco", nome="Nord%s" % gon)
+            atteso = P.gon_a_gradi(gon) % 360
+            reale = self._freccia(lay).pictureRotation() % 360
+            scarto = (reale - atteso + 180) % 360 - 180
+            self.assertAlmostEqual(scarto, 0.0, places=3,
+                                   msg="a %s gon il nord del terreno cade a %.1f gradi "
+                                       "dall'alto del foglio ma la freccia punta a %.1f"
+                                       % (gon, atteso, reale))
+
+    def test_agganciata_alla_mappa_e_al_nord_reticolato(self):
+        """Se il collegamento salta la freccia resta ferma a 0 e il test sopra
+        passerebbe comunque per la sola rotazione nulla."""
+        lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                 QgsPointXY(CX, CY), 1000, rotazione_gon=50,
+                                 comune="Giubiasco", nome="NordLink")
+        freccia = self._freccia(lay)
+        from qgis.core import QgsLayoutItemPicture as Pic
+        self.assertIs(freccia.linkedMap(), _mappa(lay))
+        self.assertEqual(freccia.northMode(), Pic.GridNorth)
+
+
 class TestNomiUnivoci(unittest.TestCase):
     def test_estratti_diversi_non_si_sovrascrivono(self):
         prj = QgsProject.instance()

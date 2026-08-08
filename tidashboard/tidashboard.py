@@ -33,7 +33,8 @@ from qgis.core import (
     QgsPrintLayout, QgsLayoutItemLabel, QgsLayoutItemScaleBar, QgsLayoutItemMap,
     QgsLayoutExporter, QgsLayerTreeGroup, QgsRectangle,
     QgsPalLayerSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling, QgsProperty,
-    QgsUnitTypes, QgsGeometry, QgsWkbTypes, QgsSettings
+    QgsUnitTypes, QgsGeometry, QgsWkbTypes, QgsSettings,
+    QgsMapLayerLegendUtils
 )
 # NB: niente import di iface da qgis.utils a livello di modulo: renderebbe il
 # modulo non importabile fuori da QGIS (es. test headless) e dipendente da un
@@ -1956,6 +1957,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                     if renderer:
                         layer.setRenderer(renderer)
                         self.log("   ✅ Renderer applicato")
+                        self._nascondi_legenda_se_invisibile(layer, renderer)
 
                         if hasattr(renderer, 'rootRule'):
                             root_rule = renderer.rootRule()
@@ -2338,6 +2340,35 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 root.removeChildNode(g)
 
         self.log(f"   ✅ Albero raggruppato: {moved} layer in {len(RF_LAYER_GROUPS) + 2} categorie possibili")
+
+    def _nascondi_legenda_se_invisibile(self, layer, renderer):
+        """Toglie dalla legenda le voci dei layer con simbolo invisibile.
+
+        Sono i punti di iscrizione delle etichette (le tabelle Pos* di
+        copertura del suolo, oggetti singoli e altri temi) e le tabelle che il
+        piano non rappresenta: il loro simbolo e' un marcatore da 0.01 mm
+        trasparente, ma QGIS in legenda lo disegna comunque come un punto nero,
+        e cosi' l'albero dei layer si riempie di decine di pallini che non
+        corrispondono a nulla di visibile sulla mappa.
+
+        Il riconoscimento passa dall'etichetta della regola radice, che
+        _gen_stile_invisibile imposta a "Invisibile": e' l'unico marcatore che
+        distingue quel renderer dagli altri rule-based."""
+        try:
+            radice = renderer.rootRule() if hasattr(renderer, "rootRule") else None
+            if radice is None or radice.label() != "Invisibile":
+                return False
+            nodo = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+            if nodo is None:
+                return False
+            # Ordine vuoto = nessuna voce di legenda per questo layer.
+            QgsMapLayerLegendUtils.setLegendNodeOrder(nodo, [])
+            nodo.setCustomProperty("legend/node-order-updated", True)
+            return True
+        except Exception as e:
+            self.log("   ⚠️ Legenda non nascosta per %s: %s" % (layer.name(), e),
+                     Qgis.Warning)
+            return False
 
     # --- CONFORMITA' CARTOGRAFICA (§1.5.4) ---
     # NOTA: esisteva anche un fattore di scala §1.5.2 (size_mm * 1000/@map_scale
