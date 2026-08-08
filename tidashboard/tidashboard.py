@@ -293,18 +293,28 @@ class TIDashboardDialog(StiliMixin, QDialog):
         layout_amb.addWidget(self.btn_verifica)
 
         # Solo indirizzi di cui si conosce con certezza la destinazione: un
-        # link inventato manda l'utente a cercare altrove il problema.
+        # link inventato manda l'utente a cercare altrove il problema. I due
+        # operativi sono stati indicati dall'utente e verificati:
+        #  - interlis.ch/downloads/ili2db offre davvero ili2gpkg (insieme a
+        #    ili2pg e ili2fgdb): e' la pagina ufficiale, non un mirror;
+        #  - data.geo.ti.ch con questo parametro e' la misurazione ufficiale
+        #    ticinese, scaricabile "in interlis 1 per i dati della misurazione
+        #    ufficiale" - cioe' proprio l'ITF che serve qui. Il "7_mn95" nel
+        #    parametro corrisponde al modello MD01MUTI7MN95 in dotazione.
         aiuto = QLabel(
             'Dove si trovano le cose:<br>'
+            '• <b>File ITF</b> — è la consegna della misurazione ufficiale, non '
+            'si produce con questo plugin. Per il Ticino: '
+            '<a href="https://data.geo.ti.ch/?p=ti_mu_version1_7_mn95">'
+            'data.geo.ti.ch</a> (scegliere <i>INTERLIS 1</i>, il formato dei '
+            'dati della misurazione ufficiale).<br>'
+            '• <b>ili2gpkg</b> — '
+            '<a href="https://www.interlis.ch/downloads/ili2db">'
+            'interlis.ch/downloads/ili2db</a> (nella pagina, la voce '
+            '<i>ili2gpkg</i>: le altre due sono per PostgreSQL e FileGDB).<br>'
             '• <b>Java</b> — serve la versione 8 o superiore, si installa a parte; '
             'il plugin lo cerca da solo in PATH, JAVA_HOME e nelle cartelle dei '
             'principali fornitori.<br>'
-            '• <b>ili2gpkg</b> — si scarica dai rilasci di ili2db: '
-            '<a href="https://github.com/claeis/ili2db/releases">'
-            'github.com/claeis/ili2db/releases</a><br>'
-            '• <b>File ITF</b> — è la consegna della misurazione ufficiale: la '
-            'fornisce il geometra revisore o il portale cantonale. Non si '
-            'produce con questo plugin.<br>'
             '• <b>Misurazione ufficiale svizzera</b> — '
             '<a href="https://www.cadastre.ch">cadastre.ch</a>')
         aiuto.setWordWrap(True)

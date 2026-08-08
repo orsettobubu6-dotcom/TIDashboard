@@ -26,7 +26,13 @@ base della misurazione ufficiale** (a colori).
 - **Java 8** o superiore, installato separatamente — il plugin lo cerca da solo
   in PATH, `JAVA_HOME` e nelle cartelle dei principali fornitori
 - **Windows** — è l'unico sistema su cui è stato provato
-- Il file **ili2gpkg.jar**, da indicare nella prima scheda
+- Il file **ili2gpkg.jar**, da indicare una volta sola nella scheda *0. Ambiente*:
+  si scarica da [interlis.ch/downloads/ili2db](https://www.interlis.ch/downloads/ili2db)
+  (la voce *ili2gpkg*; le altre due sono per PostgreSQL e FileGDB)
+- Un **file ITF** della misurazione ufficiale. Non si produce con questo plugin:
+  per il Ticino si scarica da
+  [data.geo.ti.ch](https://data.geo.ti.ch/?p=ti_mu_version1_7_mn95), scegliendo
+  **INTERLIS 1**, che è il formato dei dati della misurazione ufficiale
 
 Il modello INTERLIS e il traduttore DXF sono in dotazione e non si scelgono.
 
