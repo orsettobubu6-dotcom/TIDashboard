@@ -106,9 +106,10 @@ quelle già completate.
 ## Norme di riferimento
 
 Documenti, indirizzi verificati e — importante — **su quale versione** è
-costruita la rappresentazione: vedi [NORME.md](NORME.md). Lì è segnalato anche
-che l'istruzione federale usata (circ. 154, versione marzo 2007) è stata
-aggiornata allo stato 1° febbraio 2014, e in che cosa le due differiscono.
+costruita la rappresentazione: vedi [NORME.md](NORME.md). La circolare
+ticinese 154, citata ovunque nel codice, è **annullata dal 2012**: l'ordine di
+disegno segue ora la versione federale in vigore (stato 1° febbraio 2014), il
+resto della simbologia è ancora da riverificare sul testo aggiornato.
 
 ## Licenza
 

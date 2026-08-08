@@ -15,53 +15,103 @@
 # compaiono nel GeoPackage.
 
 
-# Ordine di disegno (z-order) del piano, derivato DIRETTAMENTE dalla sequenza dei
-# gruppi "LegendEntry.Title" nell'export legenda GEOS Pro (Leg_PpiRF_MD01MUTI7MN95.txt):
-# l'ordine in cui il software ufficiale definisce i simboli rispecchia l'ordine con
-# cui li disegna, dal primo piano (punti fissi/di confine, indice 0) allo sfondo
-# (colori della copertura del suolo, ultimo indice). Senza gestirlo esplicitamente,
-# QGIS disegna i layer nell'ordine casuale di dichiarazione delle tabelle nel
-# GeoPackage. Le voci pure testuali ("_txt", posizioni di iscrizione) sono escluse:
-# le etichette QGIS si disegnano comunque sempre sopra a tutti i layer, indipendentemente
-# dall'ordine z, quindi non necessitano di una voce qui.
+# Ordine di disegno (z-order) del piano: tabella delle PRIORITA' del cap.1.5.4
+# dell'istruzione federale "Rappresentazione del «Piano per il registro
+# fondiario»", dal primo piano (indice 0) allo sfondo. Senza gestirlo
+# esplicitamente, QGIS disegna i layer nell'ordine casuale di dichiarazione
+# delle tabelle nel GeoPackage.
+#
+# VERSIONE DI RIFERIMENTO: del 9 marzo 2007, STATO 1° FEBBRAIO 2014 - cioe'
+# quella IN VIGORE, non la "versione marzo 2007" allegata alla circolare
+# ticinese 154. La 154 e' stata annullata e sostituita dalla circolare 202 del
+# 27 settembre 2012 ("Questa circolare annulla e sostituisce la circolare 154
+# del 30 maggio 2007"), e la tabella e' stata poi ancora modificata dalla
+# circolare federale MO 2014/01, trasmessa in Ticino con la circolare 210.
+# Vedi NORME.md.
+#
+# Le tre differenze rispetto alla versione 2007, che questa sequenza recepisce:
+#   1. la CROCE DELLA RETE passa da ULTIMA a PRIMA della tabella;
+#   2. i segni di superficie degli OGGETTI SINGOLI escono dal blocco "Oggetti
+#      singoli" (che resta con punti e linee) e vanno in PENULTIMA posizione;
+#   3. la RIPARTIZIONE DEI PIANI sale sopra i segni di superficie della
+#      copertura del suolo.
+#
+# Le voci pure testuali ("_txt", posizioni di iscrizione) sono escluse: le
+# etichette QGIS si disegnano comunque sempre sopra a tutti i layer,
+# indipendentemente dall'ordine z.
 GEOS_ZORDER_SEQUENCE = (
+    # 1. Margine_di_piano: croce della rete. Nel 2007 era l'ULTIMA riga della
+    # tabella; ora e' la prima, cioe' le croci vanno sopra ogni altra cosa.
+    "margine_del_piano_crocetta_reticolo",
+    # 2. Punti di confini giurisdizionali.
     "confini_comunali_pcgiurisdizionale",
+    # 3. Punti fissi, nell'ordine dato: PFP1, PFA1, PFP2, PFA2, PFP3, PFA3.
     "punti_fissctgria1_pfp1", "punti_fissctgria1_pfa1",
     "punti_fissctgria2_pfp2", "punti_fissctgria2_pfa2",
     "punti_fissctgria3_pfp3", "punti_fissctgria3_pfa3",
+    # 4. Beni immobili: punto di confine / simbolo di materializzazione.
     "beni_immobili_punto_di_confine",
+    # 5-8. Confini, dal nazionale al comunale.
     "confini_nazionali_parte_confine_nazionale",
     "confini_cantonali_parte_confine_cantonale",
     "confini_dstrttali_parteconfinedistrettuale",
     "confini_comunali_confine_comunale",
-    # Beni immobili (circ154_allegato2 cap.1.5.4, secondo livello): priorita'
-    # 1. Linea ausiliaria, 2. Numero dell'immobile, 3. Geometria dei beni
-    # immobili - la linea ausiliaria va quindi disegnata PRIMA (piu' in primo
-    # piano) della geometria bene_immobile/dpssp/miniera, non dopo.
+    # 9. Beni immobili: 1. Linea ausiliaria, 2. Numero dell'immobile,
+    # 3. Geometria - la linea ausiliaria va quindi disegnata PRIMA (piu' in
+    # primo piano) della geometria, non dopo.
     "beni_immobili_posfondo_linea_ausiliaria",
     "beni_immobili_posfondoprog_linea_ausiliaria",
     "beni_immobili_bene_immobile",
     "beni_immobili_dpssp",
     "beni_immobili_miniera",
-    # Condotte (circ154_allegato2 cap.1.5.4): priorita' 1. Indicazione del
-    # gestore, 2. Oggetti con simboli puntuali, 3. Oggetti lineari,
-    # 4. Oggetti con simboli associati a superficie - quindi puntiforme prima
-    # di lineare prima di con_superficie, non il contrario.
+    # 10. Zone di franamento (territori di spostamento permanente di terreno,
+    # art. 660a CC): riga NUOVA rispetto al 2007. In Ticino la circolare 202 la
+    # dichiara OBBLIGATORIA sul piano rilasciato nel Cantone; la visibilita' e'
+    # decisa altrove (stili.py), qui conta solo dove va disegnata.
+    "zone_di_movimento_movimento",
+    # 11-13. Nomenclatura, CAP e localita', Indirizzo degli edifici: sono tutte
+    # ISCRIZIONI, quindi etichette - vedi la nota sopra, non hanno voce qui.
+    # 14. Oggetti singoli: 1. segni convenzionali dei PUNTI, 2. delle LINEE.
+    # I segni di SUPERFICIE non stanno piu' qui: sono scesi in fondo (punto 19).
+    "oggetti_singoli_elemento_puntiforme",
+    "oggetti_singoli_simboloelemento_lineare",
+    "oggetti_singoli_elemento_lineare",
+    # Estensione cantonale (circ.202 allegato 2): il limite legale del bosco e'
+    # un oggetto lineare degli oggetti singoli, quindi resta in questo blocco.
+    # La voce "prog" va PRIMA della piu' corta: _zorder_priority sceglie la
+    # prima voce contenuta nel nome della tabella, e "..._limite_del_bosco" e'
+    # sottostringa di "..._limite_del_boscoprog" - con l'ordine inverso la
+    # seconda non veniva mai raggiunta (voce morta). Qui i due indici sono
+    # adiacenti, quindi non cambiava il disegno, ma la trappola resta.
+    "limit_lgl_dl_bsco_limite_del_boscoprog",
+    "limit_lgl_dl_bsco_limite_del_bosco",
+    # 15. Copertura del suolo: oggetti LINEARI. Nel nostro caso sono i contorni
+    # del poligono SuperficieCS, che e' un layer solo e non si puo' spezzare in
+    # due posizioni z: vedi la nota al punto 20.
+    # 16. Condotte: 1. gestore, 2. puntuali, 3. lineari. Nella versione in
+    # vigore il blocco NON contiene piu' gli oggetti con superficie; quello che
+    # abbiamo lo si tiene qui, adiacente ai lineari, perche' la tabella non gli
+    # assegna piu' una posizione propria.
     "condotte_segnale",
     "condotte_elemento_puntiforme",
     "condotte_elemento_lineare",
     "condotte_elemento_con_superficie",
-    "copertura_dl_solo_simbolosuperficiecs",
-    "oggetti_singoli_simboloel_con_superficie",
-    "oggetti_singoli_simboloelemento_lineare",
-    "oggetti_singoli_elemento_puntiforme",
-    "limit_lgl_dl_bsco_limite_del_bosco",
-    "limit_lgl_dl_bsco_limite_del_boscoprog",
-    "oggetti_singoli_elemento_lineare",
-    "margine_del_piano_elemento_lineare",
-    "oggetti_singoli_elemento_con_superficie",
-    "copertura_dl_solo_superficiecs",
+    # 17. Ripartizione dei piani: geometria del confine. Prima stava quasi in
+    # fondo; ora sta SOPRA i segni di superficie.
     "ripartizin_d_pani_geometria_piano",
+    # 18. Copertura del suolo: segni di superficie tipo "Edificio" (griglia).
+    # NON SEPARABILE: gli edifici sono regole dentro lo stesso layer poligonale
+    # della copertura del suolo, e un layer QGIS occupa una sola posizione z.
+    # Restano quindi con il resto della copertura, al punto 20. E' l'unico
+    # punto della tabella che non si riesce a riprodurre per intero.
+    # 19. Oggetti singoli: segni delle SUPERFICI - penultima posizione.
+    "oggetti_singoli_elemento_con_superficie",
+    "oggetti_singoli_simboloel_con_superficie",
+    # 20. Copertura del suolo: segni di superficie, altri tipi - ultima.
+    "copertura_dl_solo_superficiecs",
+    "copertura_dl_solo_simbolosuperficiecs",
+    # Fuori tabella: elementi di impaginazione del foglio, sempre sul fondo.
+    "margine_del_piano_elemento_lineare",
     "margine_del_piano_superficie_disegno",
 )
 

@@ -64,8 +64,38 @@ class TestGenereIn(unittest.TestCase):
 
 
 class TestZOrderPriority(unittest.TestCase):
-    def test_prima_voce_e_indice_zero(self):
-        self.assertEqual(cd._zorder_priority("confini_comunali_pcgiurisdizionale"), 0)
+    def test_la_croce_della_rete_e_prima_di_tutto(self):
+        """Nella versione in vigore del cap.1.5.4 (stato 1.2.2014) la croce
+        della rete e' la PRIMA riga della tabella; nella versione marzo 2007
+        era l'ultima. Prima non era nemmeno elencata e finiva nel ripiego,
+        cioe' disegnata quasi in fondo."""
+        self.assertEqual(cd._zorder_priority("margine_del_piano_crocetta_reticolo"), 0)
+        self.assertEqual(cd._zorder_priority("confini_comunali_pcgiurisdizionale"), 1)
+
+    def test_i_segni_di_superficie_degli_oggetti_singoli_sono_penultimi(self):
+        """La modifica dichiarata dalla circolare federale MO 2014/01: i segni
+        convenzionali di superficie degli "objets divers" spostati in
+        penultima posizione, cioe' sotto la ripartizione dei piani e sopra la
+        sola copertura del suolo."""
+        os_sup = cd._zorder_priority("oggetti_singoli_elemento_con_superficie")
+        cs = cd._zorder_priority("copertura_dl_solo_superficiecs")
+        ripartizione = cd._zorder_priority("ripartizin_d_pani_geometria_piano")
+        os_linee = cd._zorder_priority("oggetti_singoli_elemento_lineare")
+        self.assertLess(ripartizione, os_sup, "la ripartizione dei piani va sopra")
+        self.assertLess(os_sup, cs, "la copertura del suolo resta l'ultima")
+        self.assertLess(os_linee, ripartizione,
+                        "le linee degli oggetti singoli restano nel loro blocco, in alto")
+
+    def test_nessuna_voce_ne_intercetta_un_altra_per_sottostringa(self):
+        """_zorder_priority sceglie la prima voce CONTENUTA nel nome tabella:
+        due voci in cui una e' sottostringa dell'altra si ruberebbero il
+        posto a seconda dell'ordine."""
+        seq = cd.GEOS_ZORDER_SEQUENCE
+        for i, voce in enumerate(seq):
+            for j, altra in enumerate(seq):
+                if i < j and voce in altra:
+                    self.fail("'%s' (indice %d) intercetta '%s' (indice %d)"
+                              % (voce, i, altra, j))
 
     def test_punto_di_confine_prima_di_bene_immobile(self):
         # Regressione concettuale: i punti di confine devono restare in

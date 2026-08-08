@@ -23,18 +23,32 @@ quello che stiamo implementando è ancora quello in vigore.
 | Direttive UCR (elenco delle circolari) | <https://www4.ti.ch/dfe/de/ucr/documentazione/direttive> | |
 | Circ. 154, allegato 2 — istruzioni federali | <https://m4.ti.ch/fileadmin/DFE/DE-UCR/circolari/circ154_allegato2.pdf> | «**Versione marzo 2007**», 24 pagine |
 | Circ. 154, allegato 4 — complemento cantonale | <https://www4.ti.ch/fileadmin/DFE/DE-UCR/circolari/circ154_allegato4.pdf> | |
-| Circ. 202 — commenti cantonali, agosto 2012 | <https://www4.ti.ch/fileadmin/DFE/DE-UCR/circolari/Circ202.pdf> | |
+| **Circ. 202 — annulla e sostituisce la 154** | <https://www4.ti.ch/fileadmin/DFE/DE-UCR/circolari/Circ202.pdf> | 27.9.2012; istruzioni federali versione agosto 2012, in vigore dall'1.9.2012 |
+| Circ. 202 allegato 2 — complemento cantonale | <https://www4.ti.ch/fileadmin/DFE/DE-UCR/circolari/Circ202_Allegato2_.pdf> | «Versione settembre 2012»; sostituisce l'allegato 4 della 154 |
 | **Circ. 210 — aggiornamento delle istruzioni federali** | <https://www4.ti.ch/fileadmin/DFE/DE-UCR/circolari/Circ210.pdf> | 17.2.2014; allegato = circolare federale MO 2014/01 |
 | Dati della misurazione ufficiale TI (ITF) | <https://data.geo.ti.ch/?p=ti_mu_version1_7_mn95> | scaricare in **INTERLIS 1** |
 
 ---
 
-## ⚠️ La versione su cui è costruito il plugin non è l'ultima
+## ⚠️ La circolare 154 è annullata dal 2012
 
 Il codice cita ovunque `circ154_allegato2`, che è la **versione marzo 2007**.
-L'istruzione federale corrispondente è però stata aggiornata: la versione in
-vigore è **del 9 marzo 2007, stato 1° febbraio 2014**, ed è quella scaricabile
-da cadastre-manual (`Weisung-GB-it.pdf`).
+Quella circolare non è più in vigore: la **circolare 202** del 27 settembre
+2012 dice testualmente «*Questa circolare annulla e sostituisce la circolare
+154 del 30 maggio 2007 e, di conseguenza, le istruzioni federali e cantonali
+del 2007 sono sostituite dalle nuove istruzioni in oggetto*», con termine di
+attuazione **1° gennaio 2013**. Anche l'allegato 4 (complemento cantonale) è
+sostituito, dal complemento «versione settembre 2012».
+
+La versione federale in vigore è **del 9 marzo 2007, stato 1° febbraio 2014**,
+scaricabile da cadastre-manual (`Weisung-GB-it.pdf`). Fra il 2007 e oggi ci
+sono quindi **due** passaggi: agosto 2012 (circ. 202: piano a colori e zone di
+spostamento permanente di terreno, entrambi opzionali per la Confederazione ma
+le zone **obbligatorie** in Ticino) e 1° febbraio 2014 (circ. 210).
+
+Il confronto dei **tipi di tratto** del complemento cantonale 2012 con quanto
+implementato non ha mostrato differenze: facciata_aperta → interrotto2,
+parte_interrata → punteggiato, sentiero → interrotto1 e gli altri corrispondono.
 
 La modifica è dichiarata dalla circolare federale MO **2014/01** del 28 gennaio
 2014, trasmessa in Ticino con la **circolare 210**:
@@ -55,21 +69,35 @@ Confrontate le due tabelle del cap. 1.5.4, la coda è cambiata così:
 | | | **Oggetti singoli: segni delle superfici** ← penultima |
 | | | Copertura del suolo: segni di superficie **altri tipi** (griglia) ← ultima |
 
-Ne discendono differenze concrete rispetto a `GEOS_ZORDER_SEQUENCE` in
-`ordinamento.py`:
+## L'ordine di disegno è stato allineato
 
-1. la **ripartizione dei piani** è quasi in fondo da noi, mentre la versione in
-   vigore la mette *sopra* i segni di superficie della copertura del suolo;
-2. la copertura del suolo è per noi **un solo livello**, mentre la versione in
-   vigore la **divide in due** — la griglia degli edifici sopra i segni di
-   superficie degli oggetti singoli, gli altri tipi sotto;
-3. gli oggetti singoli con superficie e le condotte con superficie non
-   compaiono più dove li abbiamo messi.
+`GEOS_ZORDER_SEQUENCE` in `ordinamento.py` **segue ora la tabella in vigore**
+(stato 1.2.2014). Prima non seguiva nemmeno quella del 2007: era derivata
+dall'export della legenda di **GEOS Pro**, e metteva condotte e copertura del
+suolo *sopra* gli oggetti singoli, mentre entrambe le versioni della norma li
+vogliono sotto. L'allineamento corregge quindi due cose insieme.
 
-**Non è ancora stato deciso se allineare l'ordine di disegno alla versione in
-vigore**: è una modifica che cambia il disegno prodotto, non una correzione
-ovvia. Fino ad allora il plugin segue la versione marzo 2007, ed è questo che
-va detto a chi chiede su quale norma si basa.
+Sui dati reali di Chiasso, **56 layer su 121** cambiano posizione. I movimenti
+principali:
+
+| layer | prima | dopo |
+|---|---|---|
+| croce della rete | 52 | **0** |
+| zone di franamento | 57 | 22 |
+| oggetti singoli: punti | 29 | 23 |
+| oggetti singoli: linee | 32 | 25 |
+| condotte (4 layer) | 21-24 | 28-31 |
+| ripartizione dei piani | — | 28ª voce, sopra i segni di superficie |
+| oggetti singoli: superfici | — | penultima |
+| copertura del suolo | — | ultima |
+
+**Un punto della tabella non è riproducibile.** La versione in vigore divide i
+segni di superficie della copertura del suolo in *due* posizioni — la griglia
+del tipo «Edificio» sopra i segni di superficie degli oggetti singoli, gli
+altri tipi sotto. Gli edifici però sono regole dentro lo stesso layer
+poligonale della copertura del suolo, e **un layer QGIS occupa una sola
+posizione z**: separarli richiederebbe di spezzare il layer in due. Per ora
+tutta la copertura del suolo sta nell'ultima posizione.
 
 Il cap. 1.5.7 (iscrizioni obbligatorie) è invece **invariato** fra le due
 versioni: le sette iscrizioni implementate nel cartiglio restano quelle giuste.
