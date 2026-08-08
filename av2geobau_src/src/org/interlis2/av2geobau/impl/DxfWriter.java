@@ -344,15 +344,26 @@ public class DxfWriter {
             d2 = Double.valueOf(string4);
         }
         stringBuffer.append(DxfUtil.toString(50, d2 != null ? d2 : 0.0));
-        // Maschera di sfondo, impostazioni ESATTE della finestra "Background
-        // Mask" di AutoCAD fornita dall'utente: 90=2 significa "usa il colore
-        // di sfondo del disegno" (con 90=1 servirebbe invece un colore ACI
-        // fisso nel group 63, qui volutamente non scritto perche' irrilevante
-        // in modalita' 2); 45=1.0 e' il "border offset factor" (il default
-        // AutoCAD sarebbe 1.5). E' il motivo per cui questi testi sono MTEXT
-        // e non TEXT: il TEXT non supporta la maschera.
-        stringBuffer.append(DxfUtil.toString(90, 2));
+        // Maschera di sfondo, impostazioni della finestra "Background Mask" di
+        // AutoCAD: 45=1.0 e' il "border offset factor" (il default AutoCAD
+        // sarebbe 1.5), 90=2 significa "usa il colore di sfondo del disegno".
+        // E' il motivo per cui questi testi sono MTEXT e non TEXT: il TEXT non
+        // supporta la maschera.
+        //
+        // ORDINE E COMPLETEZZA SONO VINCOLANTI, non stilistici. I tre group
+        // 45, 90 e 63 vanno scritti tutti e tre e IN QUEST'ORDINE: AutoCAD
+        // legge il 45 e pretende il 90 subito dopo. Scrivendo prima 90 e poi
+        // 45 - come faceva la versione precedente - quando AutoCAD incontra il
+        // 45 il 90 e' gia' passato, arriva a fine entita' senza trovarlo e
+        // ABORTISCE L'INTERO DISEGNO:
+        //   "while reading in MTEXT ... Missing DXF group code: 90
+        //    Invalid or incomplete DXF input -- drawing discarded."
+        // Il 63 (colore ACI dello sfondo) e' obbligatorio anche in modalita'
+        // 2, dove poi viene ignorato: si scrive 0, lo stesso valore che usa
+        // ezdxf per questo caso ("required but ignored").
         stringBuffer.append(DxfUtil.toString(45, 1.0));
+        stringBuffer.append(DxfUtil.toString(90, 2));
+        stringBuffer.append(DxfUtil.toString(63, 0));
         return stringBuffer.toString();
     }
 
