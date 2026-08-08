@@ -39,10 +39,24 @@ estensioni sperimentali* nelle impostazioni del gestore.
 
 ## Uso
 
-Le tre schede seguono l'ordine del lavoro. Un segno di spunta sul titolo indica
+Sopra le schede una riga mostra il percorso di lavoro e **cosa manca per
+finire**:
+
+```
+Ambiente ✔ → Importazione ✔ → DXF → Planimetria (manca: comune) → PDF
+```
+
+Ogni passo è cliccabile: porta alla sua scheda e mette il fuoco sul campo che
+lo sta bloccando.
+
+Le schede seguono l'ordine del lavoro. Un segno di spunta sul titolo indica
 quelle già completate.
 
-1. **Importazione** — indica ili2gpkg, il file ITF e dove salvare il GeoPackage.
+0. **Ambiente** — si configura una volta sola. Un semaforo per Java, ili2gpkg,
+   traduttore DXF e modello INTERLIS, con il pulsante *Verifica ambiente* e i
+   riferimenti per procurarsi ciò che manca. Al primo avvio il plugin si apre
+   qui.
+1. **Importazione** — indica il file ITF e dove salvare il GeoPackage.
    Il pulsante resta spento finché i percorsi non sono validi.
 2. **Conversione DXF** — usa lo stesso ITF dell'importazione.
 3. **Planimetria** — formato, scala, rotazione. Comune e data sono letti dai dati.

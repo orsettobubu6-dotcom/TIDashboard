@@ -265,12 +265,60 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # lasciano la console sempre visibile sotto.
         self.schede = QTabWidget()
 
-        group_import = QGroupBox("1. Importazione Dati (ITF -> GeoPackage)")
-        layout_import = QVBoxLayout()
+        # --- 0. Ambiente --------------------------------------------------
+        # Prima di questa scheda l'utente doveva indovinare da solo che serve
+        # Java, che ili2gpkg e' un jar da procurarsi altrove, e in che ordine
+        # fare le cose: se Java mancava se ne accorgeva a meta' importazione,
+        # da un errore di processo. Qui si vede tutto prima di cominciare.
+        # ili2gpkg sta QUI e non nella scheda 1 perche' e' configurazione -
+        # si sceglie una volta e resta - non un dato del singolo lavoro.
+        group_amb = QGroupBox("0. Ambiente (si configura una volta sola)")
+        layout_amb = QVBoxLayout()
 
         self.txt_jar = QLineEdit()
         self.txt_jar.setPlaceholderText("Seleziona ili2gpkg-x.x.jar...")
-        layout_import.addLayout(self.create_file_row("ili2gpkg JAR:", self.txt_jar, "JAR files (*.jar)", False, "import"))
+        layout_amb.addLayout(self.create_file_row(
+            "ili2gpkg JAR:", self.txt_jar, "JAR files (*.jar)", False, "import"))
+
+        self._spie_ambiente = {}
+        for chiave, etichetta in (("java", "Java"),
+                                  ("ili2gpkg", "ili2gpkg"),
+                                  ("av2geobau", "Traduttore DXF"),
+                                  ("modello", "Modello INTERLIS")):
+            layout_amb.addLayout(self._riga_ambiente(chiave, etichetta))
+
+        self.btn_verifica = QPushButton("🔍 VERIFICA AMBIENTE")
+        self.btn_verifica.setStyleSheet(_STILE_PULSANTE % "#455A64")
+        self.btn_verifica.clicked.connect(self.verifica_ambiente)
+        layout_amb.addWidget(self.btn_verifica)
+
+        # Solo indirizzi di cui si conosce con certezza la destinazione: un
+        # link inventato manda l'utente a cercare altrove il problema.
+        aiuto = QLabel(
+            'Dove si trovano le cose:<br>'
+            '• <b>Java</b> — serve la versione 8 o superiore, si installa a parte; '
+            'il plugin lo cerca da solo in PATH, JAVA_HOME e nelle cartelle dei '
+            'principali fornitori.<br>'
+            '• <b>ili2gpkg</b> — si scarica dai rilasci di ili2db: '
+            '<a href="https://github.com/claeis/ili2db/releases">'
+            'github.com/claeis/ili2db/releases</a><br>'
+            '• <b>File ITF</b> — è la consegna della misurazione ufficiale: la '
+            'fornisce il geometra revisore o il portale cantonale. Non si '
+            'produce con questo plugin.<br>'
+            '• <b>Misurazione ufficiale svizzera</b> — '
+            '<a href="https://www.cadastre.ch">cadastre.ch</a>')
+        aiuto.setWordWrap(True)
+        aiuto.setOpenExternalLinks(True)
+        aiuto.setStyleSheet("color: #757575;")
+        layout_amb.addWidget(aiuto)
+
+        layout_amb.addStretch()
+        group_amb.setLayout(layout_amb)
+        self.pagina_ambiente = self._in_scheda(group_amb)
+        self.schede.addTab(self.pagina_ambiente, "0. Ambiente")
+
+        group_import = QGroupBox("1. Importazione Dati (ITF -> GeoPackage)")
+        layout_import = QVBoxLayout()
 
         self.txt_itf = QLineEdit()
         self.txt_itf.setPlaceholderText("Seleziona il file dati .itf...")
@@ -575,6 +623,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.schede.addTab(self.pagina_errori, "Errori nei dati")
         self.schede.setTabEnabled(self.schede.indexOf(self.pagina_errori), False)
 
+        # Percorso di lavoro sopra le schede. Le spunte sui titoli dicono cosa
+        # e' fatto, ma non cosa MANCA per finire: qui ogni passo dichiara il
+        # motivo per cui e' fermo, ed e' cliccabile - porta alla sua scheda e
+        # mette il fuoco sul campo che lo blocca.
+        self._passi_fatti = set()
+        self.lbl_percorso = QLabel()
+        self.lbl_percorso.setWordWrap(True)
+        self.lbl_percorso.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_percorso.linkActivated.connect(self._vai_al_passo)
+        self.lbl_percorso.setStyleSheet(
+            "padding: 4px; border: 1px solid palette(mid); border-radius: 3px;")
+        layout.addWidget(self.lbl_percorso)
+
         layout.addWidget(self.schede)
 
         # Sincronizza ITF/DXF del gruppo 2 con i campi del gruppo 1 (stesso
@@ -660,9 +721,29 @@ class TIDashboardDialog(StiliMixin, QDialog):
         layout.addWidget(self.txt_log)
 
         self.setLayout(layout)
+        # Il comune fa parte del percorso di lavoro: se resta vuoto la
+        # planimetria e' bloccata, e la riga sopra le schede deve dirlo subito.
+        self.combo_comune.currentTextChanged.connect(self._aggiorna_percorso)
         self._convalida_percorsi()
         self._aggiorna_conteggio_log()
         self._ripristina_impostazioni()
+        # _ripristina_impostazioni ha appena riempito i campi: la convalida va
+        # rifatta, altrimenti il percorso resta quello del dialogo vuoto.
+        self._convalida_percorsi()
+
+        # La verifica si esegue SEMPRE all'apertura, non solo al primo avvio:
+        # e' l'unica cosa che popola la cache di Java, e senza quella il
+        # percorso di lavoro direbbe "manca: java" a chi Java ce l'ha
+        # benissimo - solo perche' nessuno era ancora andato a cercarlo.
+        # Costa una scansione dei candidati, una volta per finestra.
+        self.verifica_ambiente()
+
+        # PRIMO AVVIO: senza un ili2gpkg salvato non si puo' fare nulla, e la
+        # scheda giusta da guardare e' quella dell'ambiente. Ci si apre sopra,
+        # invece di lasciare l'utente sulla scheda dell'importazione con un
+        # pulsante spento e nessuna spiegazione.
+        if not self.txt_jar.text().strip():
+            self.schede.setCurrentIndex(self.schede.indexOf(self.pagina_ambiente))
 
     def _in_scheda(self, widget):
         """Impacchetta un QGroupBox in una scheda con un po' di margine."""
@@ -974,6 +1055,191 @@ class TIDashboardDialog(StiliMixin, QDialog):
         riga.addWidget(nota)
         return riga
 
+    # --- PERCORSO DI LAVORO -------------------------------------------------
+    # (chiave, titolo, pagina, campo su cui mettere il fuoco quando manca)
+    def _passi_percorso(self):
+        return (
+            ("ambiente", "Ambiente", self.pagina_ambiente, self.txt_jar),
+            ("import", "Importazione", self.pagina_import, self.txt_itf),
+            ("dxf", "DXF", self.pagina_dxf, self.txt_geobau_dxf),
+            ("plan", "Planimetria", self.pagina_plan, self.combo_comune),
+            ("pdf", "PDF", self.pagina_plan, None),
+        )
+
+    def _stato_passi(self):
+        """(fatto, motivo_se_bloccato) per ogni passo. Un passo puo' essere
+        fatto, fermo per un motivo dichiarato, o semplicemente non ancora
+        cominciato: sono tre stati diversi e vanno distinti."""
+        amb = self._controlla_ambiente(ricerca_java=False)
+        # ok è False (assente) o None (non ancora verificato): sono cose
+        # diverse e non vanno confuse in un unico "manca". Dire "manca: java"
+        # a chi Java ce l'ha, solo perché nessuno l'ha ancora cercato, manda
+        # a installare qualcosa che c'è già.
+        mancano_amb = [k for k, (ok, _t) in amb.items() if ok is False]
+        da_verificare = [k for k, (ok, _t) in amb.items() if ok is None]
+        stato = {}
+        if mancano_amb:
+            stato["ambiente"] = (False, "manca: " + ", ".join(sorted(mancano_amb)))
+        elif da_verificare:
+            stato["ambiente"] = (False, "da verificare: " + ", ".join(sorted(da_verificare)))
+        else:
+            stato["ambiente"] = (True, "")
+        stato["import"] = ("import" in self._passi_fatti, "")
+        if not stato["import"][0] and not self.txt_itf.text().strip():
+            stato["import"] = (False, "manca: file ITF")
+        stato["dxf"] = ("dxf" in self._passi_fatti, "")
+        comune = self.combo_comune.currentText().strip()
+        if "plan" in self._passi_fatti:
+            stato["plan"] = (True, "")
+        elif not comune:
+            # Il comune e' un'iscrizione obbligatoria del cartiglio (cap.1.5.7)
+            # e si legge dai dati: se manca, di solito manca l'importazione.
+            stato["plan"] = (False, "manca: comune")
+        else:
+            stato["plan"] = (False, "")
+        stato["pdf"] = ("pdf" in self._passi_fatti, "")
+        return stato
+
+    def _aggiorna_percorso(self):
+        if not hasattr(self, "lbl_percorso"):
+            return
+        stato = self._stato_passi()
+        pezzi = []
+        for chiave, titolo, _pagina, _campo in self._passi_percorso():
+            fatto, motivo = stato.get(chiave, (False, ""))
+            if fatto:
+                colore, coda = self._verde_ok(), " ✔"
+            elif motivo:
+                colore, coda = "#E65100", " (%s)" % motivo
+            else:
+                colore, coda = "#9E9E9E", ""
+            pezzi.append(
+                "<a href='%s' style='color:%s; text-decoration:none;'>%s%s</a>"
+                % (chiave, colore, titolo, coda))
+        self.lbl_percorso.setText(
+            "<span style='color:#9E9E9E;'> → </span>".join(pezzi))
+
+    def _vai_al_passo(self, chiave):
+        """Porta alla scheda del passo e, se e' fermo per un campo, mette il
+        fuoco proprio su quello: dire "manca il comune" senza portarci
+        costringe a cercarlo."""
+        for k, _titolo, pagina, campo in self._passi_percorso():
+            if k != chiave:
+                continue
+            indice = self.schede.indexOf(pagina)
+            if indice >= 0:
+                self.schede.setCurrentIndex(indice)
+            fatto, motivo = self._stato_passi().get(chiave, (False, ""))
+            if campo is not None and not fatto and motivo:
+                campo.setFocus()
+                self._lampeggia(campo)
+            return
+
+    def _lampeggia(self, widget):
+        """Bordo rosso temporaneo sul campo che blocca il passo. Il tempo di
+        ripristino e' l'unico modo per non lasciare il campo rosso per sempre
+        una volta corretto."""
+        precedente = widget.styleSheet()
+        widget.setStyleSheet(precedente + "; border: 2px solid %s;"
+                             % self._rosso_avviso())
+        QTimer.singleShot(1500, lambda: widget.setStyleSheet(precedente))
+
+    def _segna_passo(self, chiave):
+        self._passi_fatti.add(chiave)
+        self._aggiorna_percorso()
+
+    # --- AMBIENTE -----------------------------------------------------------
+    def _riga_ambiente(self, chiave, etichetta):
+        """Riga a semaforo della scheda Ambiente: spia, nome, esito esteso."""
+        riga = QHBoxLayout()
+        spia = QLabel("•")
+        spia.setMinimumWidth(16)
+        spia.setStyleSheet("color: #9E9E9E; font-weight: bold;")
+        riga.addWidget(spia)
+        nome = QLabel(etichetta)
+        nome.setMinimumWidth(130)
+        riga.addWidget(nome)
+        esito = QLabel("da verificare")
+        esito.setStyleSheet("color: #9E9E9E;")
+        esito.setWordWrap(True)
+        riga.addWidget(esito, 1)
+        self._spie_ambiente[chiave] = (spia, esito)
+        return riga
+
+    def _controlla_ambiente(self, ricerca_java=True):
+        """Stato dei quattro requisiti: {chiave: (ok, testo)}.
+
+        'ricerca_java' a False evita la scansione dei percorsi Java, che
+        esegue 'java -version' su ogni candidato: va bene al primo avvio e
+        quando si preme il pulsante, non a ogni battuta di tasto."""
+        stato = {}
+        if ricerca_java:
+            java = self.find_java()
+            stato["java"] = (bool(java), java if java else
+                             "non trovato: installa Java 8 o superiore, "
+                             "oppure indica JAVA_HOME")
+        else:
+            cache = getattr(self, "_java_path_cache", None)
+            if cache is None:
+                stato["java"] = (None, "non ancora verificato")
+            else:
+                stato["java"] = (bool(cache), cache or "non trovato")
+
+        jar = self.txt_jar.text().strip()
+        if not jar:
+            stato["ili2gpkg"] = (False, "non indicato: scegli il file ili2gpkg-x.x.jar")
+        elif not os.path.isfile(jar):
+            stato["ili2gpkg"] = (False, "il file indicato non esiste: %s" % jar)
+        else:
+            stato["ili2gpkg"] = (True, jar)
+
+        for chiave, percorso, cosa in (
+                ("av2geobau", AV2GEOBAU_JAR, "il traduttore DXF"),
+                ("modello", MODELLO_ILI, "il modello INTERLIS")):
+            if os.path.isfile(percorso):
+                stato[chiave] = (True, "in dotazione: %s" % os.path.basename(percorso))
+            else:
+                stato[chiave] = (False, "%s in dotazione manca: installazione "
+                                        "incompleta del plugin" % cosa)
+        return stato
+
+    def _mostra_ambiente(self, stato):
+        for chiave, (ok, testo) in stato.items():
+            coppia = self._spie_ambiente.get(chiave)
+            if coppia is None:
+                continue
+            spia, esito = coppia
+            if ok is None:
+                simbolo, colore = "•", "#9E9E9E"
+            elif ok:
+                simbolo, colore = "✔", self._verde_ok()
+            else:
+                simbolo, colore = "✖", self._rosso_avviso()
+            spia.setText(simbolo)
+            spia.setStyleSheet("color: %s; font-weight: bold;" % colore)
+            esito.setText(testo)
+            esito.setStyleSheet("color: %s;" % ("#9E9E9E" if ok is None else colore))
+
+    def verifica_ambiente(self):
+        """Rilancia i controlli da capo, buttando via la cache di Java: e' il
+        senso del pulsante, altrimenti dopo aver installato Java direbbe
+        ancora di no."""
+        self._java_path_cache = None
+        self.log("\n🔍 Verifica dell'ambiente...")
+        stato = self._controlla_ambiente(ricerca_java=True)
+        self._mostra_ambiente(stato)
+        for chiave, (ok, testo) in sorted(stato.items()):
+            self.log("   %s %-16s %s" % ("✅" if ok else "❌", chiave, testo),
+                     Qgis.Info if ok else Qgis.Warning)
+        mancanti = [k for k, (ok, _t) in stato.items() if not ok]
+        if mancanti:
+            self.log("   ⚠️ Manca: %s. Le fasi che ne dipendono restano spente."
+                     % ", ".join(mancanti), Qgis.Warning)
+        else:
+            self.log("   ✅ Ambiente completo: si puo' importare.")
+        self._aggiorna_percorso()
+        return stato
+
     # --- CONVALIDA DEI PERCORSI ---------------------------------------------
     def _stato_percorso(self, testo, is_save):
         """(simbolo, colore, motivo) per un campo-percorso. Il campo vuoto non
@@ -1056,6 +1322,12 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 pulsante.setEnabled(self.product_mode == "bp" and not occupato)
             else:
                 pulsante.setEnabled(not occupato)
+
+        # Le spie della scheda Ambiente e la riga di percorso si aggiornano
+        # insieme ai campi. Java NON viene ricercato qui: la scansione esegue
+        # 'java -version' sui candidati e non puo' girare a ogni battuta.
+        self._mostra_ambiente(self._controlla_ambiente(ricerca_java=False))
+        self._aggiorna_percorso()
 
     # --- AVANZAMENTO --------------------------------------------------------
     def _mostra_avanzamento(self, visibile):
@@ -2184,6 +2456,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._mostra_esito_importazione(len(loaded_layers), saltate, comuni)
         if loaded_layers:
             self._segna_scheda_fatta(self.pagina_import, "1. Importazione")
+            self._segna_passo("import")
 
         # Relazioni e join
         self.log("\n🔗 Fase 3: Relazioni e join...")
@@ -3122,6 +3395,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return
         self._ultima_planimetria = layout
         self._segna_scheda_fatta(self.pagina_plan, "3. Planimetria")
+        self._segna_passo("plan")
         self.log("   \u2705 Centrata su %.3f, %.3f" % (centro.x(), centro.y()))
         _iface = getattr(self, "_iface", None)
         if _iface:
@@ -3153,6 +3427,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         ok, msg = _planimetria.esporta_pdf(layout, percorso)
         if ok:
             self.log("   \u2705 PDF esportato: %s" % msg, Qgis.Success)
+            self._segna_passo("pdf")
             QMessageBox.information(self, "Planimetria", "PDF esportato:\n%s" % msg)
         else:
             self.log("   \u274C Export PDF fallito: %s" % msg, Qgis.Critical)
@@ -3285,6 +3560,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if returncode == 0:
             self.log("✅ Esportazione DXF completata!", Qgis.Success)
             self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
+            self._segna_passo("dxf")
             # Il codice di ritorno del processo Java da solo non basta: il jar
             # puo' uscire con successo (0) anche quando il file prodotto e'
             # strutturalmente incompleto/vuoto - un controllo minimo qui

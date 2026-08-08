@@ -77,8 +77,9 @@ class TestSchede(unittest.TestCase):
     def test_tre_schede_nell_ordine_del_flusso(self):
         dlg = TIDashboardDialog()
         titoli = [dlg.schede.tabText(i) for i in range(dlg.schede.count())]
-        self.assertEqual(titoli, ["1. Importazione", "2. Conversione DXF",
-                                  "3. Planimetria", "Errori nei dati"])
+        self.assertEqual(titoli, ["0. Ambiente", "1. Importazione",
+                                  "2. Conversione DXF", "3. Planimetria",
+                                  "Errori nei dati"])
 
     def test_scheda_errori_spenta_finche_non_ce_ne_sono(self):
         dlg = TIDashboardDialog()
@@ -91,11 +92,14 @@ class TestSpunteSulleSchede(unittest.TestCase):
 
     def test_la_spunta_compare_e_non_raddoppia(self):
         dlg = TIDashboardDialog()
-        self.assertEqual(dlg.schede.tabText(0), "1. Importazione")
+        # Per indice di PAGINA, non per posizione: l'aggiunta della scheda
+        # "0. Ambiente" ha spostato tutte le altre di uno.
+        i = dlg.schede.indexOf(dlg.pagina_import)
+        self.assertEqual(dlg.schede.tabText(i), "1. Importazione")
         dlg._segna_scheda_fatta(dlg.pagina_import, "1. Importazione")
-        self.assertEqual(dlg.schede.tabText(0), "✔ 1. Importazione")
+        self.assertEqual(dlg.schede.tabText(i), "✔ 1. Importazione")
         dlg._segna_scheda_fatta(dlg.pagina_import, "1. Importazione")
-        self.assertEqual(dlg.schede.tabText(0), "✔ 1. Importazione")
+        self.assertEqual(dlg.schede.tabText(i), "✔ 1. Importazione")
 
     def test_non_si_cambia_scheda_da_soli(self):
         """Dopo l'importazione i passi possibili sono due (DXF o planimetria):
@@ -398,6 +402,127 @@ class TestRotazione(unittest.TestCase):
             self.assertAlmostEqual(dlg.spin_rotazione.value(), float(b.text()), places=3)
 
 
+class TestSchedaAmbiente(unittest.TestCase):
+    """Java, ili2gpkg, traduttore e modello: prima si scoprivano mancanti a
+    meta' importazione, da un errore di processo."""
+
+    def test_quattro_semafori(self):
+        dlg = TIDashboardDialog()
+        self.assertEqual(sorted(dlg._spie_ambiente),
+                         ["av2geobau", "ili2gpkg", "java", "modello"])
+
+    def test_ili2gpkg_mancante_e_rosso_e_spiegato(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_jar.setText("")
+        stato = dlg._controlla_ambiente(ricerca_java=False)
+        ok, testo = stato["ili2gpkg"]
+        self.assertFalse(ok)
+        self.assertIn("non indicato", testo)
+        spia, esito = dlg._spie_ambiente["ili2gpkg"]
+        self.assertEqual(spia.text(), "✖")
+        self.assertIn("non indicato", esito.text())
+
+    def test_ili2gpkg_valido_e_verde(self):
+        dlg = TIDashboardDialog()
+        jar = os.path.join(tempfile.mkdtemp(), "ili2gpkg.jar")
+        open(jar, "w").close()
+        dlg.txt_jar.setText(jar)
+        self.assertTrue(dlg._controlla_ambiente(ricerca_java=False)["ili2gpkg"][0])
+        self.assertEqual(dlg._spie_ambiente["ili2gpkg"][0].text(), "✔")
+
+    def test_le_risorse_in_dotazione_sono_presenti(self):
+        dlg = TIDashboardDialog()
+        stato = dlg._controlla_ambiente(ricerca_java=False)
+        self.assertTrue(stato["av2geobau"][0], stato["av2geobau"][1])
+        self.assertTrue(stato["modello"][0], stato["modello"][1])
+
+    def test_java_viene_cercato_all_apertura(self):
+        """Se non lo si cerca all'apertura, il percorso di lavoro dichiara
+        "manca: java" a chi Java ce l'ha - solo perche' nessuno era ancora
+        andato a guardare."""
+        dlg = TIDashboardDialog()
+        self.assertIsNotNone(dlg._java_path_cache)
+        self.assertIsNotNone(dlg._controlla_ambiente(ricerca_java=False)["java"][0])
+
+    def test_non_verificato_non_e_mancante(self):
+        dlg = TIDashboardDialog()
+        # Serve isolare il caso: un ili2gpkg davvero assente e' un "manca" e
+        # prevarrebbe, nascondendo quello che questo test vuole vedere.
+        jar = os.path.join(tempfile.mkdtemp(), "ili2gpkg.jar")
+        open(jar, "w").close()
+        dlg.txt_jar.setText(jar)
+        dlg._java_path_cache = None
+        fatto, motivo = dlg._stato_passi()["ambiente"]
+        self.assertFalse(fatto)
+        self.assertIn("da verificare", motivo)
+        self.assertNotIn("manca", motivo)
+
+    def test_senza_cercare_java_non_si_inventa_un_esito(self):
+        """La ricerca esegue 'java -version' su ogni candidato: non puo'
+        girare a ogni battuta di tasto, e finche' non e' stata fatta lo stato
+        e' "non verificato", non "assente"."""
+        dlg = TIDashboardDialog()
+        dlg._java_path_cache = None
+        ok, testo = dlg._controlla_ambiente(ricerca_java=False)["java"]
+        self.assertIsNone(ok)
+        self.assertIn("non ancora verificato", testo)
+
+
+class TestPercorsoDiLavoro(unittest.TestCase):
+    """Le spunte sui titoli dicono cosa e' fatto, non cosa manca per finire."""
+
+    def test_cinque_passi_nell_ordine(self):
+        dlg = TIDashboardDialog()
+        self.assertEqual([k for k, _t, _p, _c in dlg._passi_percorso()],
+                         ["ambiente", "import", "dxf", "plan", "pdf"])
+
+    def test_la_planimetria_dichiara_che_manca_il_comune(self):
+        dlg = TIDashboardDialog()
+        dlg.combo_comune.setCurrentText("")
+        self.assertEqual(dlg._stato_passi()["plan"], (False, "manca: comune"))
+        self.assertIn("manca: comune", dlg.lbl_percorso.text())
+
+    def test_col_comune_il_motivo_sparisce(self):
+        dlg = TIDashboardDialog()
+        dlg.combo_comune.setCurrentText("Chiasso")
+        self.assertEqual(dlg._stato_passi()["plan"], (False, ""))
+        self.assertNotIn("manca: comune", dlg.lbl_percorso.text())
+
+    def test_un_passo_fatto_resta_fatto(self):
+        dlg = TIDashboardDialog()
+        dlg._segna_passo("import")
+        self.assertTrue(dlg._stato_passi()["import"][0])
+        self.assertIn("Importazione ✔", dlg.lbl_percorso.text())
+
+    def test_ogni_passo_e_cliccabile(self):
+        dlg = TIDashboardDialog()
+        for chiave, _t, _p, _c in dlg._passi_percorso():
+            self.assertIn("href='%s'" % chiave, dlg.lbl_percorso.text())
+
+    def test_il_click_porta_alla_scheda_e_al_campo(self):
+        dlg = TIDashboardDialog()
+        dlg.combo_comune.setCurrentText("")
+        dlg._vai_al_passo("plan")
+        self.assertEqual(dlg.schede.currentIndex(),
+                         dlg.schede.indexOf(dlg.pagina_plan))
+        # focusWidget e non hasFocus: hasFocus vuole una finestra ATTIVA, e i
+        # test non mostrano mai il dialogo - sarebbe sempre False, cioe' un
+        # test che passa o fallisce per il motivo sbagliato.
+        self.assertIs(dlg.focusWidget(), dlg.combo_comune)
+
+    def test_un_passo_gia_fatto_non_mette_il_fuoco_da_nessuna_parte(self):
+        """Portare alla scheda si', ma non segnalare in rosso un campo che
+        non ha nessun problema."""
+        dlg = TIDashboardDialog()
+        dlg.combo_comune.setCurrentText("Chiasso")
+        dlg._segna_passo("plan")
+        dlg.txt_itf.setFocus()
+        dlg._vai_al_passo("plan")
+        self.assertEqual(dlg.schede.currentIndex(),
+                         dlg.schede.indexOf(dlg.pagina_plan))
+        self.assertIs(dlg.focusWidget(), dlg.txt_itf)
+
+
 class TestOrigineData(unittest.TestCase):
     """"Stato al" e' un'iscrizione obbligatoria e nessuna delle due fonti e'
     una data del contenuto INTERLIS. La fonte finiva solo in console al momento
@@ -502,7 +627,12 @@ class TestPulsanteLayoutBP(unittest.TestCase):
 
     def test_sempre_visibile_e_spento_fuori_da_pb_mu(self):
         dlg = TIDashboardDialog()
-        self.assertTrue(dlg.btn_layout.isVisibleTo(dlg))
+        # isHidden e non isVisibleTo: il difetto originale era un
+        # setVisible(False) esplicito sul pulsante. isVisibleTo guarda anche
+        # gli antenati, e la pagina che lo contiene e' nascosta da QTabWidget
+        # ogni volta che la scheda corrente e' un'altra - per esempio al primo
+        # avvio, che si apre su "0. Ambiente".
+        self.assertFalse(dlg.btn_layout.isHidden())
         self.assertFalse(dlg.btn_layout.isEnabled())
         self.assertIn("PB-MU", dlg.btn_layout.toolTip())
         dlg.combo_product.setCurrentIndex(1)      # Piano di base
