@@ -103,6 +103,13 @@ quelle già completate.
 - Le date di aggiornamento provengono dal timestamp del file ITF, che non è un
   dato contenuto nel file.
 
+## Norme di riferimento
+
+Documenti, indirizzi verificati e — importante — **su quale versione** è
+costruita la rappresentazione: vedi [NORME.md](NORME.md). Lì è segnalato anche
+che l'istruzione federale usata (circ. 154, versione marzo 2007) è stata
+aggiornata allo stato 1° febbraio 2014, e in che cosa le due differiscono.
+
 ## Licenza
 
 **GPL-2.0-or-later** — vedi [LICENSE](LICENSE). È la convenzione dei plugin

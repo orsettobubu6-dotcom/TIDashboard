@@ -60,7 +60,7 @@ with zipfile.ZipFile(ZIP) as z:
               "colori.py", "etichette.py", "ordinamento.py", "simbologia.py",
               "stili.py",
               # documenti richiesti per la pubblicazione
-              "icon.png", "README.md", "CHANGELOG.md", "CREDITI.md",
+              "icon.png", "README.md", "CHANGELOG.md", "CREDITI.md", "NORME.md",
               "av2geobau/av2geobau_ti.jar", "models/MD01MUTI7MN95.ili"]
     for rel in attesi:
         voce = "%s/%s" % (NOME, rel)
