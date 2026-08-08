@@ -129,6 +129,131 @@ class TestPuntoDiConfineFieldGuard(unittest.TestCase):
         self.assertIn("cippo_giurisdizionale", termine_rule.filterExpression())
 
 
+class _Stili(cd.StiliMixin):
+    """Gli stili stanno tutti in un mixin, quindi si possono provare senza
+    costruire la finestra. Un TIDashboardDialog creato con __new__ non ha la
+    coda di righe della console, e _get_renderer_for_table logga: assegnargli
+    un log finto non basta, perche' su un QDialog mai inizializzato anche il
+    solo hasattr solleva RuntimeError."""
+
+    def log(self, *a, **k):
+        pass
+
+
+def _dlg():
+    return _Stili()
+
+
+def _renderer(class_name, t_low, geom="Point", layer=None, mode="gb"):
+    return _Stili()._get_renderer_for_table(class_name, t_low, mode, geom, layer)
+
+
+class TestOrientamentoPuntoDiConfine(unittest.TestCase):
+    """L'orientamento del simbolo sta in SimboloPunto_di_confine, che non ha
+    geometria: arriva qui come campo unito. Sui dati reali di Chiasso 5637
+    punti su 67919 ne portano uno non nullo, e prima erano tutti dritti."""
+
+    def test_senza_il_campo_nessuna_rotazione(self):
+        layer = QgsVectorLayer("Point?field=segno:string", "pdc", "memory")
+        r = _dlg()._gen_stile_punto_di_confine(True, layer)
+        for regola in r.rootRule().children():
+            sym = regola.symbol()
+            if sym is not None:
+                self.assertFalse(sym.dataDefinedAngle().isActive())
+
+    def test_col_campo_tutte_le_regole_ruotano(self):
+        layer = QgsVectorLayer(
+            "Point?field=segno:string&field=%s:double" % cd.CAMPO_ORI_SIMBOLO,
+            "pdc", "memory")
+        r = _dlg()._gen_stile_punto_di_confine(True, layer)
+        figlie = [c for c in r.rootRule().children() if c.symbol() is not None]
+        self.assertTrue(figlie)
+        for regola in figlie:
+            prop = regola.symbol().dataDefinedAngle()
+            self.assertTrue(prop.isActive(), regola.label())
+            # gon -> gradi, senza offset: convenzione gia' verificata per
+            # SimboloSuperficieCS (setDataDefinedAngle ruota in senso orario
+            # da un glifo gia' orientato a nord, come "Ori").
+            self.assertIn("0.9", prop.expressionString())
+            self.assertIn(cd.CAMPO_ORI_SIMBOLO, prop.expressionString())
+
+
+class TestTabelleSimbolo(unittest.TestCase):
+    """Le undici tabelle Simbolo* del modello non sono un gruppo omogeneo:
+    ognuna deve avere una destinazione motivata, non un fallback unico."""
+
+    def test_simbolo_su_superficie_cs(self):
+        r = _renderer("SimboloSuperficieCS", "copertura_dl_solo_simbolosuperficiecs")
+        self.assertEqual(r.rootRule().label(), "SimboloSuperficieCS")
+
+    def test_la_variante_in_progetto_resta_fuori_dal_piano(self):
+        """SimboloSuperficieCSProg finisce nel ramo "oggetti in progetto",
+        che il cap.1.5.3 esclude dal contenuto del piano: e' corretto che non
+        arrivi affatto al ramo dei simboli."""
+        r = _renderer("SimboloSuperficieCSProg", "copertura_dl_solo_simbolosuperficiecsprog")
+        self.assertEqual(r.rootRule().label(), "Invisibile")
+
+    def test_layout_del_piano_non_va_sul_foglio(self):
+        """Genere_simbolo = (freccia_nord, altro): e' la freccia nord di
+        impaginazione. Il cartiglio ne disegna gia' una, agganciata alla
+        rotazione della mappa."""
+        r = _renderer("SimboloLayout_del_piano", "margine_del_piano_simbololayout_del_piano")
+        self.assertEqual(r.rootRule().label(), "Invisibile")
+
+    def test_punto_fisso_ausiliario_non_va_sul_piano_rf(self):
+        """Il modello lo dice sul padre: "Non sono rappresentati nel piano
+        per il registro fondiario"."""
+        r = _renderer("SimboloPto_fisso_ausil", "punti_fissctgria3_simbolopto_fisso_ausil")
+        self.assertEqual(r.rootRule().label(), "Invisibile")
+
+    def test_tabelle_di_solo_orientamento(self):
+        """Senza geometria non c'e' nulla da disegnare: il loro Ori viene
+        usato sul padre."""
+        for t in ("beni_immobili_simbolopunto_di_confine",
+                  "confini_comunali_simbolopcgiurisdizionale",
+                  "punti_fissctgria1_simbolopfp1"):
+            r = _renderer("SimboloX", t, geom="Point")
+            self.assertEqual(r.rootRule().label(), "Invisibile", t)
+
+
+class TestSimboloSuOggettoSingolo(unittest.TestCase):
+    """Sui dati reali di Chiasso i 102 simboli su elemento lineare stanno
+    tutti su acque correnti (101 ruscello, 1 acqua sotterranea canalizzata):
+    sono frecce di direzione della corrente, e prima erano invisibili."""
+
+    def test_il_genere_si_cerca_a_due_salti(self):
+        layer = QgsVectorLayer(
+            "Point?field=ori:double&field=el_genere_di_linea:string"
+            "&field=el_os_genere:string", "sim", "memory")
+        self.assertEqual(
+            _Stili._campo_genere_del_padre(layer), "el_os_genere")
+
+    def test_genere_di_linea_non_viene_scambiato_per_il_genere(self):
+        """Elemento_lineare ha "Genere_di_linea" (facciata_chiusa,
+        parte_interrata, parte_sporgente), che e' un'altra cosa: un controllo
+        ingenuo sul suffisso "genere" lo prenderebbe."""
+        layer = QgsVectorLayer(
+            "Point?field=ori:double&field=el_genere_di_linea:string", "sim", "memory")
+        self.assertIsNone(_Stili._campo_genere_del_padre(layer))
+
+    def test_freccia_della_corrente_orientata(self):
+        layer = QgsVectorLayer(
+            "Point?field=ori:double&field=el_os_genere:string", "sim", "memory")
+        r = _renderer("SimboloElemento_lineare",
+                      "oggetti_singoli_simboloelemento_lineare", layer=layer)
+        figlie = r.rootRule().children()
+        self.assertEqual([c.label() for c in figlie], ["Direzione della corrente"])
+        prop = figlie[0].symbol().dataDefinedAngle()
+        self.assertTrue(prop.isActive())
+        self.assertIn("ruscello", figlie[0].filterExpression())
+
+    def test_senza_il_genere_non_si_disegna_una_freccia_a_caso(self):
+        layer = QgsVectorLayer("Point?field=ori:double", "sim", "memory")
+        r = _renderer("SimboloElemento_lineare",
+                      "oggetti_singoli_simboloelemento_lineare", layer=layer)
+        self.assertEqual(r.rootRule().label(), "Invisibile")
+
+
 class TestFindLabelField(unittest.TestCase):
     """_find_label_field: campo diretto, campo rinominato da un join
     ("{tabella_padre}_{campo}"), case-insensitivity, nessun match."""

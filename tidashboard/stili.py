@@ -36,6 +36,18 @@ except ImportError:
                             make_point_pattern, make_simple_marker,
                             make_true_font_marker_with_mask)
 
+try:
+    from .ordinamento import CAMPO_ORI_SIMBOLO
+except ImportError:
+    from ordinamento import CAMPO_ORI_SIMBOLO
+
+# Alias del costruttore di simboli. Serve agli stili che devono AVVOLGERE
+# build_sym per aggiungere qualcosa a tutti i simboli che producono (p.es. la
+# rotazione dei punti di confine): assegnando "build_sym" dentro una funzione
+# il nome diventa locale in TUTTO il corpo, e la versione originale non
+# sarebbe piu' raggiungibile da li'. L'alias e' catturato qui, fuori.
+_build_sym = build_sym
+
 
 # Denominatore da cui il PB-MU cambia il colore dell'edificio
 # (Weisung-BP-AV §2.3.2: "1:2'500 e 1:5'000" da una parte, "1:10'000" dall'altra).
@@ -102,24 +114,56 @@ class StiliMixin:
             self.log("   🏷️ Punto di iscrizione etichetta -> simbolo invisibile (gestito dalle etichette)")
             return self._gen_stile_invisibile(geom_type_name)
 
-        # Tabelle "SimboloX": simboli ausiliari opzionali (direzione della corrente,
-        # freccia nord, ecc.) che dipendono dal Genere della tabella "X" associata
-        # (non disponibile qui senza un join). Per non lasciarle con il colore
-        # casuale di default, usiamo un punto invisibile finche' non e' implementata
-        # la logica specifica per ciascun tipo. SimboloSuperficieCS fa eccezione:
-        # implementata (vedi _gen_stile_simbolo_superficie_cs), esclusa qui per
-        # evitare che sia intercettata da questo fallback generico.
-        if (t_low.startswith("simbolo") or "_simbolo" in t_low) and "simbolosuperficiecs" not in t_low:
-            self.log("   🏷️ Simbolo ausiliario -> simbolo invisibile (non ancora differenziato per Genere)")
+        # Tabelle "Simbolo*". NON sono un gruppo omogeneo in attesa di un join:
+        # lette nel modello sono TRE famiglie con destini diversi, e ognuna ha
+        # ora la sua ragione documentata invece di un "non ancora fatto".
+        #
+        #  a) SENZA GEOMETRIA - SimboloPunto_di_confine, SimboloPCGiurisdizionale,
+        #     SimboloPFP1/2/3: portano solo "Ori", cioe' l'orientamento del
+        #     simbolo del punto a cui si riferiscono. Non sono disegnabili: non
+        #     hanno nulla da disegnare. Il loro "Ori" viene portato sul padre da
+        #     _join_orientamento_simboli e usato la' come angolo del marcatore.
+        #  b) CON GEOMETRIA, genere dal padre - SimboloSuperficieCS(Prog),
+        #     SimboloElemento_lineare, SimboloEl_con_superficie: si disegnano,
+        #     vedi i rami dedicati sotto.
+        #  c) CON GEOMETRIA e genere proprio - SimboloLayout_del_piano
+        #     (Genere_simbolo = freccia_nord|altro) e SimboloPto_fisso_ausil:
+        #     entrambi NON vanno sul piano, per i motivi scritti sotto.
+        if t_low.startswith("simbolo") or "_simbolo" in t_low:
+            if "simbolosuperficiecs" in t_low:      # copre anche ...csprog
+                self.log("   🎯 Riconosciuto: SimboloSuperficieCS -> simbolo su superficie")
+                return self._gen_stile_simbolo_superficie_cs(is_gb)
+            if "simboloelemento_lineare" in t_low or "simboloel_lineare" in t_low \
+                    or "simboloel_con_superficie" in t_low:
+                self.log("   🎯 Riconosciuto: simbolo su oggetto singolo -> direzione della corrente")
+                return self._gen_stile_simbolo_oggetto_singolo(is_gb, layer)
+            if "simbololayout_del_piano" in t_low:
+                # Genere_simbolo = (freccia_nord, altro): e' la freccia nord del
+                # foglio ufficiale, cioe' un elemento di IMPAGINAZIONE, non un
+                # oggetto del terreno. La planimetria disegna la propria freccia
+                # nel cartiglio (cap.1.5.7), agganciata alla rotazione della
+                # mappa; ridisegnare anche questa darebbe due nord sullo stesso
+                # foglio, e quello dei dati sarebbe fermo alla rotazione con cui
+                # era stato impaginato l'originale.
+                self.log("   ⏭️ SimboloLayout_del_piano (freccia nord di impaginazione) "
+                         "-> non rappresentato: il nord lo disegna il cartiglio")
+                return self._gen_stile_invisibile(geom_type_name)
+            if "simbolopto_fisso_ausil" in t_low:
+                # Il modello e' esplicito sul padre (TABLE Punto_fisso_ausiliario):
+                # "Non sono rappresentati nel piano per il registro fondiario".
+                self.log("   ⏭️ SimboloPto_fisso_ausil -> non rappresentato "
+                         "(modello: i punti fissi ausiliari non vanno sul piano RF)")
+                return self._gen_stile_invisibile(geom_type_name)
+            # Famiglia (a): niente geometria, niente da disegnare. Il renderer
+            # serve solo a non lasciare il colore casuale di QGIS se la tabella
+            # venisse comunque caricata come layer.
+            self.log("   🧭 %s: porta solo l'orientamento del simbolo del padre "
+                     "(nessuna geometria propria)" % class_name)
             return self._gen_stile_invisibile(geom_type_name)
 
-        # SimboloSuperficieCS: DEVE precedere il controllo generico "superficiecs"
-        # subito sotto (_gen_stile_superficiecs, per il poligono SuperficieCS) -
-        # "superficiecs" e' una sottostringa di "simbolosuperficiecs", quindi
-        # verrebbe intercettata per prima se il controllo fosse dopo.
-        if "SimboloSuperficieCS" in class_name or "simbolosuperficiecs" in t_low:
-            self.log("   🎯 Riconosciuto: SimboloSuperficieCS -> Stile simbolo su superficie")
-            return self._gen_stile_simbolo_superficie_cs(is_gb)
+        # NB: il blocco "Simbolo*" qui sopra deve restare PRIMA del controllo
+        # generico "superficiecs" - "superficiecs" e' una sottostringa di
+        # "simbolosuperficiecs", quindi il poligono intercetterebbe il simbolo.
 
         # === SUPERFICI ===
         if "SuperficieCS" in class_name or "superficiecs" in t_low:
@@ -700,6 +744,67 @@ class StiliMixin:
 
         return QgsRuleBasedRenderer(root)
 
+    @staticmethod
+    def _campo_genere_del_padre(layer):
+        """Nome del campo che porta il Genere dell'Oggetto_singolo su un layer
+        Simbolo*, o None se il join non l'ha portato.
+
+        Serve perche' il Genere sta a DUE SALTI: SimboloElemento_lineare ->
+        Elemento_lineare -> Oggetto_singolo. Elemento_lineare ha solo
+        "Genere_di_linea" (facciata_chiusa/parte_interrata/parte_sporgente),
+        che e' un'altra cosa: il genere vero dell'oggetto sta sul nonno.
+        Verificato che i join di QGIS si propagano attraverso due salti, in
+        entrambi gli ordini di creazione; il nome finale dipende pero' dai
+        prefissi, quindi si cerca per suffisso invece di ricostruirlo.
+        Il campo va scartato se e' "genere_di_linea", che finirebbe per
+        suffisso in un controllo ingenuo su "genere"."""
+        for f in layer.fields() if layer is not None else []:
+            nome = f.name().lower()
+            if nome.endswith("genere") and not nome.endswith("genere_di_linea"):
+                return f.name()
+        return None
+
+    def _gen_stile_simbolo_oggetto_singolo(self, is_gb, layer=None):
+        """Simboli posati su un Oggetto singolo lineare o con superficie
+        (SimboloElemento_lineare, SimboloEl_con_superficie).
+
+        Il modello li esemplifica con "direzione della corrente di un
+        ruscello" e "traghetto". Sui dati reali di Chiasso i 102 simboli su
+        elemento lineare stanno tutti su acque correnti - 101 su 'ruscello' e
+        1 su 'acqua_sotterranea_canalizzata' - e hanno tutti un orientamento
+        non nullo: sono frecce di direzione della corrente, lo stesso tasto
+        'a' gia' usato da _gen_stile_simbolo_superficie_cs per
+        acque.corso_acqua. Finora erano invisibili.
+
+        Per i generi diversi dalle acque non si inventa un simbolo: restano
+        invisibili, ma con una regola esplicita in legenda invece che per
+        omissione, cosi' un caso non coperto si vede invece di sparire."""
+        root = QgsRuleBasedRenderer.Rule(None)
+        root.setLabel("Simbolo su oggetto singolo")
+        campo = self._campo_genere_del_padre(layer)
+        if campo is None:
+            # Senza il genere del nonno non si puo' decidere: meglio non
+            # disegnare nulla che disegnare la freccia sbagliata ovunque.
+            self.log("   ⚠️ Genere dell'oggetto singolo non disponibile "
+                     "(join a due salti assente): simbolo non disegnato")
+            root.setLabel("Invisibile")
+            return self._gen_stile_invisibile("Point")
+
+        corrente = build_sym('point', make_true_font_marker_with_mask(
+            'a', sz=6.0, c=gbc(is_gb, C_ACQUA)))
+        # Stessa conversione gon->gradi verificata per SimboloSuperficieCS:
+        # setDataDefinedAngle ruota in senso orario dal glifo gia' orientato a
+        # nord, che e' la convenzione di "Ori". Nessun offset di -100 (quello
+        # serve solo alla rotazione del TESTO).
+        corrente.setDataDefinedAngle(
+            QgsProperty.fromExpression('coalesce("ori", 0) * 0.9'))
+        apply_rule(root, corrente,
+                   genere_in(['corso_acqua', 'fiume', 'torrente', 'canale',
+                              'ruscello', 'acqua_sotterranea_canalizzata'],
+                             field=campo),
+                   "Direzione della corrente")
+        return QgsRuleBasedRenderer(root)
+
     def _gen_stile_bene_immobile(self, is_gb):
         """Stile per Bene_immobile - spessori verificati sulla legenda ufficiale
         cantonale (Leg_PpiRF_MD01MUTI7MN95, gruppo Ben_X_Bene_immobile_Genere_di_linea):
@@ -841,6 +946,24 @@ class StiliMixin:
         has_giur_field = layer is not None and layer.fields().indexFromName("cippo_giurisdizionale") >= 0
         root = QgsRuleBasedRenderer.Rule(None)
         root.setLabel("Punto_di_confine")
+
+        # Orientamento del simbolo. Sta in SimboloPunto_di_confine, che NON ha
+        # geometria: _join_orientamento_simboli lo porta qui come
+        # CAMPO_ORI_SIMBOLO. Sui dati reali di Chiasso 5637 punti su 67919 ne
+        # portano uno non nullo e finora venivano disegnati tutti dritti.
+        # La rotazione si applica a TUTTI i simboli di questo stile tramite
+        # build_sym, non regola per regola: su un tasto tondo (bollone) non si
+        # vede, su termine e croce si'.
+        ruota = (layer is not None
+                 and layer.fields().indexFromName(CAMPO_ORI_SIMBOLO) >= 0)
+
+        def build_sym(tipo, strati, _ruota=ruota):
+            # Stessa conversione gon->gradi verificata per SimboloSuperficieCS.
+            sym = _build_sym(tipo, strati)
+            if _ruota and hasattr(sym, "setDataDefinedAngle"):
+                sym.setDataDefinedAngle(QgsProperty.fromExpression(
+                    'coalesce("%s", 0) * 0.9' % CAMPO_ORI_SIMBOLO))
+            return sym
         # Il dominio Materiale e' gerarchico (croce_scolpito(croce, scolpito),
         # altro(campanile, altro)): usa genere_in(field="segno") invece del
         # confronto diretto, per lo stesso motivo di Genere_CS/Genere_OS.

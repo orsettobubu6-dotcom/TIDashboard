@@ -53,7 +53,8 @@ try:
     from .simbologia import *      # noqa: F401,F403 - costruttori di simboli
     from .etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
                             _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
-    from .ordinamento import (_raw_table_name, _rf_group_debug_info,
+    from .ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
+                              _raw_table_name, _rf_group_debug_info,
                               _rf_group_for_table, _zorder_debug_info,
                               _zorder_priority)
     from .simbologia import (_CAP_HEIGHT_RATIO, _ensure_cadastra_text_font_loaded,
@@ -73,7 +74,8 @@ except ImportError:
     from simbologia import *       # noqa: F401,F403
     from etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
                            _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
-    from ordinamento import (_raw_table_name, _rf_group_debug_info,
+    from ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
+                             _raw_table_name, _rf_group_debug_info,
                              _rf_group_for_table, _zorder_debug_info,
                              _zorder_priority)
     from simbologia import (_CAP_HEIGHT_RATIO, _ensure_cadastra_text_font_loaded,
@@ -2837,6 +2839,62 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
         self.log(f"   📊 Relazioni create: {relations_created}")
         self.log(f"   📊 Join creati: {joins_created}")
+        self._join_orientamento_simboli(fk_list, layer_dict)
+
+    def _join_orientamento_simboli(self, fk_list, layer_dict):
+        """Porta l'orientamento del simbolo dalle tabelle "Simbolo*" SENZA
+        geometria sul layer del padre, con un join nel verso opposto a tutti
+        gli altri.
+
+        Cinque delle undici tabelle Simbolo* del modello - SimboloPunto_di_
+        confine, SimboloPCGiurisdizionale, SimboloPFP1/2/3 - non hanno alcuna
+        geometria: portano solo "Ori", cioe' l'orientamento con cui va disegnato
+        il simbolo del punto a cui si riferiscono, e la relazione e' 1-c (IDENT
+        sul riferimento), quindi al piu' una riga per padre. Non sono
+        disegnabili di per se': l'unico modo di usarle e' portare "Ori" sul
+        padre, che la geometria ce l'ha. Tutti gli altri join di questo metodo
+        vanno figlio -> padre; questo e' l'unico che va padre <- figlio.
+
+        Sui dati reali di Chiasso: 5637 punti di confine su 67919 portano un
+        orientamento non nullo, e finora venivano disegnati tutti dritti.
+
+        Il prefisso e' fisso (PREFISSO_SIMBOLO) e non derivato dal nome della
+        tabella: gli stili cercano "simbolo_ori", che e' uguale per tutti i
+        temi, invece di dover ricostruire nomi come
+        "beni_immobili_simbolopunto_di_confine_ori"."""
+        fatti = 0
+        for child_table, child_col, parent_table, parent_col in fk_list:
+            nome = child_table.lower()
+            if "simbolo" not in nome:
+                continue
+            child_layer = layer_dict.get(child_table)
+            parent_layer = layer_dict.get(parent_table)
+            if not child_layer or not parent_layer:
+                continue
+            # Solo le tabelle SENZA geometria: quelle che ce l'hanno si
+            # disegnano da se' e il loro "Ori" lo usa il loro stesso stile.
+            if child_layer.geometryType() != QgsWkbTypes.NullGeometry:
+                continue
+            if child_layer.fields().indexFromName("ori") < 0:
+                continue
+            if parent_layer.fields().indexFromName(CAMPO_ORI_SIMBOLO) >= 0:
+                continue
+            join = QgsVectorLayerJoinInfo()
+            join.setJoinLayer(child_layer)
+            join.setJoinFieldName(child_col)      # la FK del figlio...
+            join.setTargetFieldName(parent_col)   # ...contro la chiave del padre
+            join.setUsingMemoryCache(True)
+            join.setPrefix(PREFISSO_SIMBOLO)
+            join.setJoinFieldNamesSubset(["ori"])
+            if parent_layer.addJoin(join):
+                fatti += 1
+                self.log("   🧭 Orientamento simbolo: %s.ori → %s.%s"
+                         % (child_table, parent_table, CAMPO_ORI_SIMBOLO))
+            else:
+                self.log("   ⚠️ Join orientamento fallito: %s → %s"
+                         % (child_table, parent_table), Qgis.Warning)
+        if fatti:
+            self.log("   📊 Orientamenti di simbolo collegati: %d" % fatti)
 
     def create_layout_bp(self):
         """Crea un layout per il piano di base (PB-MU): mappa a tutto foglio

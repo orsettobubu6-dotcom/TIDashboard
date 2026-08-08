@@ -89,6 +89,14 @@ EDIFICIO_SOTTERRANEO_GENERI = ("edificio_sotterraneo", "edificio_sotterraneo_ind
                                "parte_sotterranea_di_edificio", "serbatoio")
 
 
+# Prefisso del join INVERSO che porta l'orientamento del simbolo dalle tabelle
+# "Simbolo*" senza geometria sul layer del padre. Fisso e corto apposta: gli
+# stili devono poter cercare un nome prevedibile ("simbolo_ori") invece di
+# ricostruire il nome della tabella figlia, che cambia da tema a tema.
+PREFISSO_SIMBOLO = "simbolo_"
+CAMPO_ORI_SIMBOLO = PREFISSO_SIMBOLO + "ori"
+
+
 def _raw_table_name(layer):
     """Nome RAW della tabella GeoPackage sorgente di un layer OGR (es.
     "oggetti_singoli_elemento_con_superficie"), indipendente da come il
