@@ -46,7 +46,6 @@ try:
     from . import dati_comune as _dati_comune
     from . import simbologia as _simbologia
     from .stili import StiliMixin
-    from .link_manager_dialog import open_link_manager_for_active_layer
     from .legend_manifest import write_legend_manifest
     from .colori import *          # noqa: F401,F403 - costanti C_*
     from .etichette import *       # noqa: F401,F403 - regole di etichettatura
@@ -67,7 +66,6 @@ except ImportError:
     import dati_comune as _dati_comune
     import simbologia as _simbologia
     from stili import StiliMixin
-    from link_manager_dialog import open_link_manager_for_active_layer
     from legend_manifest import write_legend_manifest
     from colori import *           # noqa: F401,F403
     from etichette import *        # noqa: F401,F403
@@ -3247,12 +3245,6 @@ class TIDashboardPlugin:
         self.iface.addPluginToMenu(self.menu_name, action)
         self.toolbar.addAction(action)
         self.actions.append(action)
-
-        action_link_manager = QAction(icon, "Analizza collegamenti...", self.iface.mainWindow())
-        action_link_manager.triggered.connect(lambda: open_link_manager_for_active_layer(self.iface))
-        self.iface.addPluginToMenu(self.menu_name, action_link_manager)
-        self.toolbar.addAction(action_link_manager)
-        self.actions.append(action_link_manager)
 
     def unload(self):
         for action in self.actions:
