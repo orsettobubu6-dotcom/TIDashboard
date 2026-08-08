@@ -7,6 +7,10 @@
 /*
 
 !/.gitignore
+# Il README di RADICE e' quello che GitHub mostra sulla pagina del repository:
+# l'allowlist qui sopra lo escluderebbe, e la pagina resterebbe con il
+# segnaposto generato da GitHub mentre il README vero sta in tidashboard/.
+!/README.md
 !/tidashboard/
 !/av2geobau_src/
 !/crea_zip_plugin.py
