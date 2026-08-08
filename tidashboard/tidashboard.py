@@ -651,6 +651,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # Sincronizza ITF/DXF del gruppo 2 con i campi del gruppo 1 (stesso
         # dataset), senza sovrascrivere un valore che l'utente ha gia'
         # inserito a mano direttamente nel gruppo 2.
+        # Catena dei nomi automatici: ITF -> GeoPackage -> DXF. Va collegata in
+        # quest'ordine, cosi' scegliendo l'ITF si popolano gli altri due.
+        self.txt_itf.textChanged.connect(self._sync_gpkg_da_itf)
         self.txt_itf.textChanged.connect(self._sync_geobau_itf)
         self.txt_gpkg.textChanged.connect(self._sync_geobau_dxf)
         # Cambiando il GeoPackage cambia anche il comune da proporre.
@@ -731,6 +734,17 @@ class TIDashboardDialog(StiliMixin, QDialog):
         layout.addWidget(self.txt_log)
 
         self.setLayout(layout)
+
+        # Trascinamento dei file sulla finestra. Le QLineEdit accettano i
+        # rilasci PER CONTO LORO e ci scriverebbero dentro il testo dell'url
+        # ("file:///C:/..."), che non e' un percorso valido: vanno zittite,
+        # cosi' l'evento arriva al dialogo e lo smista sul campo giusto in
+        # base all'estensione, indipendentemente da dove e' stato lasciato.
+        self.setAcceptDrops(True)
+        for campo in (self.txt_jar, self.txt_itf, self.txt_gpkg,
+                      self.txt_geobau_itf, self.txt_geobau_dxf):
+            campo.setAcceptDrops(False)
+
         # Il comune fa parte del percorso di lavoro: se resta vuoto la
         # planimetria e' bloccata, e la riga sopra le schede deve dirlo subito.
         self.combo_comune.currentTextChanged.connect(self._aggiorna_percorso)
@@ -3464,6 +3478,109 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return
         self.txt_geobau_itf.setText(text)
         self._geobau_itf_auto = text
+
+    def _sync_gpkg_da_itf(self, text):
+        """Propone il GeoPackage di uscita accanto all'ITF, con lo stesso nome.
+
+        Chiude la catena dei nomi automatici: ITF -> GeoPackage -> DXF. Il
+        secondo anello c'era gia' (_sync_geobau_dxf), il primo no, quindi il
+        percorso di uscita andava scritto o cercato a mano ogni volta pur
+        essendo, nella pratica, sempre lo stesso nome nella stessa cartella.
+
+        Stesso patto degli altri campi automatici: se il valore attuale non e'
+        quello proposto da noi, l'utente l'ha scelto e non si tocca."""
+        attuale = self.txt_gpkg.text()
+        if attuale and attuale != getattr(self, "_gpkg_auto", None):
+            return
+        text = (text or "").strip()
+        proposto = ""
+        if text:
+            itf = Path(text)
+            if itf.name:
+                proposto = str(itf.with_suffix(".gpkg"))
+        self.txt_gpkg.setText(proposto)
+        self._gpkg_auto = proposto
+
+    # --- TRASCINAMENTO ------------------------------------------------------
+    def dragEnterEvent(self, evento):
+        """Accetta il trascinamento solo se c'e' almeno un file che sappiamo
+        dove mettere: accettare tutto e poi ignorare in silenzio farebbe
+        sembrare il rilascio riuscito."""
+        if evento.mimeData().hasUrls() and self._percorsi_utili(evento.mimeData()):
+            evento.acceptProposedAction()
+
+    dragMoveEvent = dragEnterEvent
+
+    @staticmethod
+    def _percorsi_utili(mime):
+        buoni = []
+        for url in mime.urls():
+            percorso = url.toLocalFile()
+            if not percorso:
+                continue          # url remota: non e' un file da aprire
+            # normpath: su Windows toLocalFile() restituisce le barre IN
+            # AVANTI ("C:/Users/..."), che unite a un nome con os.path.join
+            # danno un percorso misto ("C:/Users/dati\file.itf"). Windows lo
+            # accetta, ma resta brutto nel campo e - peggio - non coincide
+            # con il valore che ci siamo annotati come "proposto da noi",
+            # quindi il nome automatico smetterebbe di aggiornarsi.
+            percorso = os.path.normpath(percorso)
+            if os.path.isdir(percorso):
+                buoni.append(percorso)
+            elif os.path.splitext(percorso)[1].lower() in (".itf", ".jar", ".gpkg"):
+                buoni.append(percorso)
+        return buoni
+
+    def dropEvent(self, evento):
+        """Smista i file trascinati sul campo giusto in base all'estensione.
+
+        Una cartella significa due cose diverse a seconda di cosa contiene, e
+        va detto quale delle due si e' fatta: se dentro c'e' UN SOLO .itf lo
+        si prende, se ce ne sono tanti non si indovina, se non ce ne sono la
+        cartella diventa la destinazione dell'uscita."""
+        for percorso in self._percorsi_utili(evento.mimeData()):
+            if os.path.isdir(percorso):
+                self._rilascia_cartella(percorso)
+                continue
+            estensione = os.path.splitext(percorso)[1].lower()
+            if estensione == ".itf":
+                self.txt_itf.setText(percorso)
+                self.log("   📥 ITF: %s" % percorso)
+            elif estensione == ".jar":
+                self.txt_jar.setText(percorso)
+                self.log("   📥 ili2gpkg: %s" % percorso)
+                self.verifica_ambiente()
+            elif estensione == ".gpkg":
+                self.txt_gpkg.setText(percorso)
+                self._gpkg_auto = None    # scelto a mano: non piu' automatico
+                self.log("   📥 GeoPackage: %s" % percorso)
+        evento.acceptProposedAction()
+
+    def _rilascia_cartella(self, cartella):
+        itf = sorted(f for f in os.listdir(cartella)
+                     if f.lower().endswith(".itf")
+                     and os.path.isfile(os.path.join(cartella, f)))
+        if len(itf) == 1:
+            percorso = os.path.join(cartella, itf[0])
+            self.txt_itf.setText(percorso)
+            self.log("   📥 Unico ITF nella cartella: %s" % percorso)
+            return
+        if len(itf) > 1:
+            self.log("   ⚠️ Nella cartella ci sono %d file ITF (%s): "
+                     "trascina quello giusto, non la cartella."
+                     % (len(itf), ", ".join(itf[:4])
+                        + (", …" if len(itf) > 4 else "")), Qgis.Warning)
+            return
+        # Nessun ITF: la cartella vale come destinazione dell'uscita.
+        base = Path(self.txt_itf.text().strip()).stem if self.txt_itf.text().strip() else ""
+        if not base:
+            self.log("   ⚠️ Cartella senza file ITF e nessun ITF indicato: "
+                     "non so che nome dare all'uscita.", Qgis.Warning)
+            return
+        proposto = str(Path(cartella) / (base + ".gpkg"))
+        self.txt_gpkg.setText(proposto)
+        self._gpkg_auto = proposto
+        self.log("   📥 Cartella di destinazione: %s" % proposto)
 
     def _sync_geobau_dxf(self, text):
         """Come _sync_geobau_itf, per il campo DXF: propone stesso nome/

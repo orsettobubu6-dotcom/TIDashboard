@@ -64,6 +64,15 @@ quelle già completate.
    qui.
 1. **Importazione** — indica il file ITF e dove salvare il GeoPackage.
    Il pulsante resta spento finché i percorsi non sono validi.
+
+   I file si possono **trascinare sulla finestra**, da qualunque scheda: un
+   `.itf` e un `.jar` finiscono da soli nel campo giusto. Trascinando una
+   cartella, se contiene un solo `.itf` viene preso quello; se non ne contiene
+   nessuno diventa la destinazione dell'uscita.
+
+   Indicato l'ITF, gli altri due percorsi si compilano da soli con lo stesso
+   nome nella stessa cartella — `nome.itf` → `nome.gpkg` → `nome.dxf` — e
+   restano modificabili: un valore scelto a mano non viene più sovrascritto.
 2. **Conversione DXF** — usa lo stesso ITF dell'importazione.
 3. **Planimetria** — formato, scala, rotazione. Comune e data sono letti dai dati.
    La spunta «Mostra sulla mappa l'ingombro del foglio» disegna sul canvas il

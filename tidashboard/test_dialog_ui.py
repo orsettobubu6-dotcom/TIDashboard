@@ -402,6 +402,113 @@ class TestRotazione(unittest.TestCase):
             self.assertAlmostEqual(dlg.spin_rotazione.value(), float(b.text()), places=3)
 
 
+def _rilascia(dlg, *percorsi):
+    """Simula un rilascio vero sulla finestra: costruisce il QDropEvent con
+    gli url dei file e lo consegna al dialogo, invece di chiamare a mano il
+    gestore. Cosi' il test copre anche l'accettazione del trascinamento."""
+    from qgis.PyQt.QtCore import QMimeData, QPointF, QUrl, Qt
+    from qgis.PyQt.QtGui import QDragEnterEvent, QDropEvent
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(p) for p in percorsi])
+    entrata = QDragEnterEvent(
+        QPointF(1, 1).toPoint(), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    dlg.dragEnterEvent(entrata)
+    caduta = QDropEvent(
+        QPointF(1, 1), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    dlg.dropEvent(caduta)
+    return entrata.isAccepted()
+
+
+class TestNomiAutomatici(unittest.TestCase):
+    """La catena ITF -> GeoPackage -> DXF aveva solo il secondo anello: il
+    percorso di uscita andava scritto a mano pur essendo, in pratica, sempre
+    lo stesso nome nella stessa cartella."""
+
+    def test_il_gpkg_segue_l_itf(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText("")
+        dlg.txt_itf.setText(os.path.join("C:", os.sep, "dati", "5254010100.itf"))
+        self.assertEqual(dlg.txt_gpkg.text(),
+                         os.path.join("C:", os.sep, "dati", "5254010100.gpkg"))
+
+    def test_e_il_dxf_segue_il_gpkg(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText("")
+        dlg.txt_itf.setText(os.path.join("C:", os.sep, "dati", "5254010100.itf"))
+        self.assertEqual(dlg.txt_geobau_dxf.text(),
+                         os.path.join("C:", os.sep, "dati", "5254010100.dxf"))
+
+    def test_una_scelta_a_mano_non_viene_sovrascritta(self):
+        dlg = TIDashboardDialog()
+        mio = os.path.join("C:", os.sep, "altrove", "mio.gpkg")
+        dlg.txt_gpkg.setText(mio)
+        dlg.txt_itf.setText(os.path.join("C:", os.sep, "dati", "5254010100.itf"))
+        self.assertEqual(dlg.txt_gpkg.text(), mio)
+
+
+class TestTrascinamento(unittest.TestCase):
+    def test_itf_e_jar_finiscono_nei_campi_giusti(self):
+        dlg = TIDashboardDialog()
+        cartella = tempfile.mkdtemp()
+        itf = os.path.join(cartella, "5254010100.itf")
+        jar = os.path.join(cartella, "ili2gpkg-5.5.2.jar")
+        for p in (itf, jar):
+            open(p, "w").close()
+        self.assertTrue(_rilascia(dlg, itf, jar))
+        self.assertEqual(dlg.txt_itf.text(), itf)
+        self.assertEqual(dlg.txt_jar.text(), jar)
+        # e la catena dei nomi e' scattata anche da qui
+        self.assertEqual(dlg.txt_gpkg.text(),
+                         os.path.join(cartella, "5254010100.gpkg"))
+
+    def test_un_tipo_che_non_sappiamo_dove_mettere_non_viene_accettato(self):
+        """Accettare tutto e poi ignorare in silenzio farebbe sembrare il
+        rilascio riuscito."""
+        dlg = TIDashboardDialog()
+        altro = os.path.join(tempfile.mkdtemp(), "lettera.pdf")
+        open(altro, "w").close()
+        self.assertFalse(_rilascia(dlg, altro))
+
+    def test_cartella_con_un_solo_itf(self):
+        dlg = TIDashboardDialog()
+        cartella = tempfile.mkdtemp()
+        itf = os.path.join(cartella, "unico.itf")
+        open(itf, "w").close()
+        _rilascia(dlg, cartella)
+        self.assertEqual(dlg.txt_itf.text(), itf)
+
+    def test_cartella_con_piu_itf_non_indovina(self):
+        dlg = TIDashboardDialog()
+        cartella = tempfile.mkdtemp()
+        for nome in ("a.itf", "b.itf"):
+            open(os.path.join(cartella, nome), "w").close()
+        prima = dlg.txt_itf.text()
+        _rilascia(dlg, cartella)
+        self.assertEqual(dlg.txt_itf.text(), prima)
+
+    def test_cartella_senza_itf_diventa_la_destinazione(self):
+        dlg = TIDashboardDialog()
+        origine = tempfile.mkdtemp()
+        itf = os.path.join(origine, "5254010100.itf")
+        open(itf, "w").close()
+        dlg.txt_itf.setText(itf)
+        destinazione = tempfile.mkdtemp()
+        _rilascia(dlg, destinazione)
+        self.assertEqual(dlg.txt_gpkg.text(),
+                         os.path.join(destinazione, "5254010100.gpkg"))
+
+    def test_le_caselle_non_intercettano_il_rilascio(self):
+        """Se accettassero i rilasci per conto loro ci scriverebbero dentro
+        il testo dell'url ("file:///C:/..."), che non e' un percorso."""
+        dlg = TIDashboardDialog()
+        for campo in (dlg.txt_jar, dlg.txt_itf, dlg.txt_gpkg,
+                      dlg.txt_geobau_itf, dlg.txt_geobau_dxf):
+            self.assertFalse(campo.acceptDrops())
+        self.assertTrue(dlg.acceptDrops())
+
+
 class TestSchedaAmbiente(unittest.TestCase):
     """Java, ili2gpkg, traduttore e modello: prima si scoprivano mancanti a
     meta' importazione, da un errore di processo."""
