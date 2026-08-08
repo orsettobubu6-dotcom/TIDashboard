@@ -485,10 +485,22 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.data_validita.setDate(QDate.currentDate())
         self.data_validita.setToolTip(
             "Data riportata nel cartiglio (cap.1.5.7), non quella di stampa. "
-            "Viene proposta la data di estrazione dell'ITF; se l'ITF non e' "
-            "disponibile, la mutazione piu' recente presente nei dati.")
+            "Viene proposta la data di estrazione dell'ITF; se l'ITF non è "
+            "disponibile, la mutazione più recente presente nei dati.")
         riga_plan2.addWidget(self.data_validita)
         layout_plan.addLayout(riga_plan2)
+
+        # Da dove viene la data. "Stato al" e' un'iscrizione obbligatoria
+        # (cap.1.5.7) e nessuna delle due fonti disponibili e' una data del
+        # contenuto INTERLIS: l'ITF non ne porta nessuna e il timestamp del
+        # file e' un dato del file system. Finora la fonte finiva solo in
+        # console al momento dell'importazione, quindi chi apriva questa scheda
+        # dopo vedeva una data e basta, senza sapere quanto fidarsene.
+        self.lbl_origine_data = QLabel()
+        self.lbl_origine_data.setWordWrap(True)
+        layout_plan.addWidget(self.lbl_origine_data)
+        self.data_validita.dateChanged.connect(self._aggiorna_origine_data)
+        self._aggiorna_origine_data()
 
         # Anteprima dell'ingombro: senza, formato, scala e rotazione si
         # scelgono alla cieca e il risultato si vede solo a layout creato.
@@ -511,7 +523,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             "Fattore alla lettera della norma (cap. 1.5.2)")
         self.chk_lettera_norma.setToolTip(
             "Applica il fattore esatto riferimento/scala, senza il limite di "
-            "leggibilita'. Da' la proporzione prescritta, ma alle scale piccole "
+            "leggibilità. Dà la proporzione prescritta, ma alle scale piccole "
             "le scritture scendono sotto la soglia di stampa e spariscono.")
         self.chk_lettera_norma.toggled.connect(self._aggiorna_nota_fattore)
         layout_plan.addWidget(self.chk_lettera_norma)
@@ -668,6 +680,46 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._aggiorna_nota_fattore()
         self.log(f"🔄 Prodotto selezionato: {self.combo_product.currentText()}")
 
+    def _aggiorna_origine_data(self):
+        """Dichiara accanto al campo da dove viene la data di "Stato al".
+
+        Nessuna delle due fonti e' una data del contenuto INTERLIS, e le due
+        sbagliano in modo DIVERSO: il timestamp dell'ITF puo' essere piu'
+        recente della consegna (se il file e' stato ricopiato male), mentre
+        l'ultima mutazione presente nei dati e' per costruzione un limite
+        inferiore. Dirlo e' l'unico modo perche' chi firma il foglio sappia
+        cosa sta attestando; la data resta modificabile e la modifica a mano
+        viene riconosciuta, perche' e' la sola fonte che qualcuno abbia
+        davvero verificato."""
+        if not hasattr(self, "lbl_origine_data"):
+            return
+        dai_dati = getattr(self, "_data_dai_dati", "")
+        origine = getattr(self, "_origine_data", "")
+        corrente = self.data_validita.date().toString("dd.MM.yyyy")
+        if dai_dati and corrente == dai_dati and origine == "estrazione ITF":
+            colore = "#E65100"
+            testo = ("Fonte: <b>data di modifica del file ITF</b>. È un dato del "
+                     "file system, non del contenuto: l'ITF non contiene alcuna "
+                     "data. Cambia se il file viene ricopiato con strumenti che "
+                     "non conservano il timestamp.")
+        elif dai_dati and corrente == dai_dati:
+            colore = "#E65100"
+            testo = ("Fonte: <b>mutazione più recente presente nei dati</b> "
+                     "(Tenuta_a_giorno). È un limite inferiore: un comune senza "
+                     "mutazioni recenti dà una data più vecchia del suo stato "
+                     "reale.")
+        elif dai_dati:
+            colore = "#2E7D32"
+            testo = ("Fonte: <b>indicata a mano</b> (dai dati risultava %s)."
+                     % dai_dati)
+        else:
+            colore = "#B71C1C"
+            testo = ("<b>Nessuna fonte nei dati</b>: né un ITF né le tabelle di "
+                     "attualizzazione. La data qui sopra non è ricavata dai "
+                     "dati e va indicata a mano.")
+        self.lbl_origine_data.setText(
+            "<span style='color:%s'>%s</span>" % (colore, testo))
+
     def _aggiorna_nota_fattore(self):
         """Scrive sotto la casella quale fattore del cap.1.5.2 verra' applicato
         alla scala scelta, e avvisa quando si discosta dalla norma o quando la
@@ -689,10 +741,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
                  "scrittura minima %.2f mm)" % (fattore, riferimento, altezza))
         if illeggibile:
             colore, coda = "#B71C1C", ("<br>Sotto la soglia di stampa di %.2f mm: "
-                                       "le scritture piu' piccole non si vedranno."
+                                       "le scritture più piccole non si vedranno."
                                        % _planimetria.CAP_HEIGHT_MINIMA_STAMPA)
         elif nota:
-            colore, coda = "#E65100", "<br>" + nota + ". Sara' scritto nel cartiglio."
+            colore, coda = "#E65100", "<br>" + nota + ". Sarà scritto nel cartiglio."
         else:
             colore, coda = "#2E7D32", "<br>Proporzione esatta della norma."
         self.lbl_fattore.setText("<span style='color:%s'>%s%s</span>"
@@ -1053,9 +1105,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
             data = _dati_comune.leggi_data_validita(percorso)
             self._origine_data = "ultima mutazione nei dati" if data else ""
         if data:
+            # _data_dai_dati va assegnata PRIMA di setDate: setDate emette
+            # dateChanged, che rilegge l'etichetta della fonte; con il vecchio
+            # ordine l'etichetta si sarebbe calcolata sul valore precedente e
+            # avrebbe dichiarato "modificata a mano" una data appena letta.
+            self._data_dai_dati = data
             giorno, mese, anno = (int(x) for x in data.split("."))
             self.data_validita.setDate(QDate(anno, mese, giorno))
-            self._data_dai_dati = data
+        else:
+            self._data_dai_dati = ""
+        self._aggiorna_origine_data()
         nomi = _dati_comune.leggi_comuni(percorso)
         if not nomi:
             return []

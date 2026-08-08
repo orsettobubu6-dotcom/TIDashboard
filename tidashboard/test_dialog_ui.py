@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qgis.core import (QgsApplication, QgsProject, QgsVectorLayer, QgsFeature,
                        QgsGeometry, QgsPointXY, QgsRectangle, Qgis)
+from qgis.PyQt.QtCore import QDate
 from qgis.PyQt.QtWidgets import QMessageBox, QPushButton
 
 # True: servono i widget veri, non la modalita' senza interfaccia.
@@ -40,6 +41,21 @@ def _gpkg_con_comuni(nome_piano=None, comuni=("Giubiasco",)):
         con.execute("CREATE TABLE margine_del_piano_layout_del_piano (nome_comune TEXT)")
         con.execute("INSERT INTO margine_del_piano_layout_del_piano VALUES (?)",
                     (nome_piano,))
+    con.commit()
+    con.close()
+    return percorso
+
+
+def _gpkg_con_tenuta_a_giorno(in_vigore, comuni=("Giubiasco",)):
+    """GeoPackage con una tabella di attualizzazione: e' la seconda fonte di
+    "Stato al", quella usata quando non c'e' un ITF da cui leggere il
+    timestamp."""
+    percorso = _gpkg_con_comuni(comuni=comuni)
+    con = sqlite3.connect(percorso)
+    con.execute("CREATE TABLE confini_comunali_tenuta_a_giorno_comune "
+                "(in_vigore TEXT)")
+    con.execute("INSERT INTO confini_comunali_tenuta_a_giorno_comune VALUES (?)",
+                (in_vigore,))
     con.commit()
     con.close()
     return percorso
@@ -380,6 +396,61 @@ class TestRotazione(unittest.TestCase):
         for b in scatti:
             b.click()
             self.assertAlmostEqual(dlg.spin_rotazione.value(), float(b.text()), places=3)
+
+
+class TestOrigineData(unittest.TestCase):
+    """"Stato al" e' un'iscrizione obbligatoria e nessuna delle due fonti e'
+    una data del contenuto INTERLIS. La fonte finiva solo in console al momento
+    dell'importazione: chi apriva la scheda dopo vedeva una data e basta."""
+
+    def test_senza_dati_dichiara_che_non_ha_fonti(self):
+        dlg = TIDashboardDialog()
+        testo = dlg.lbl_origine_data.text()
+        self.assertIn("Nessuna fonte", testo)
+        self.assertIn("B71C1C", testo, "va segnalato in rosso")
+
+    def test_da_itf_dichiara_il_file_system(self):
+        dlg = TIDashboardDialog()
+        itf = os.path.join(tempfile.mkdtemp(), "prova.itf")
+        with open(itf, "w") as f:
+            f.write("MTID\n")
+        dlg.txt_itf.setText(itf)
+        dlg.txt_gpkg.setText(_gpkg_con_comuni())
+        dlg.aggiorna_comuni_da_dati()
+        testo = dlg.lbl_origine_data.text()
+        self.assertIn("file system", testo)
+        self.assertIn("file ITF", testo)
+
+    def test_senza_itf_dichiara_la_mutazione_nei_dati(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText("")
+        dlg.txt_gpkg.setText(_gpkg_con_tenuta_a_giorno("2024-03-15"))
+        dlg.aggiorna_comuni_da_dati()
+        testo = dlg.lbl_origine_data.text()
+        self.assertIn("mutazione pi", testo)
+        self.assertIn("limite inferiore", testo)
+
+    def test_modificata_a_mano_smette_di_attribuirla_ai_dati(self):
+        """Il caso che conta: se l'operatore corregge la data, l'etichetta non
+        deve continuare a dichiarare una fonte che non e' piu' quella."""
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText("")
+        dlg.txt_gpkg.setText(_gpkg_con_tenuta_a_giorno("2024-03-15"))
+        dlg.aggiorna_comuni_da_dati()
+        self.assertIn("mutazione pi", dlg.lbl_origine_data.text())
+        dlg.data_validita.setDate(QDate(2025, 7, 1))
+        testo = dlg.lbl_origine_data.text()
+        self.assertIn("a mano", testo)
+        self.assertIn("15.03.2024", testo, "va ricordato cosa dicevano i dati")
+
+    def test_rimettendo_la_data_dei_dati_torna_la_fonte(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText("")
+        dlg.txt_gpkg.setText(_gpkg_con_tenuta_a_giorno("2024-03-15"))
+        dlg.aggiorna_comuni_da_dati()
+        dlg.data_validita.setDate(QDate(2025, 7, 1))
+        dlg.data_validita.setDate(QDate(2024, 3, 15))
+        self.assertIn("mutazione pi", dlg.lbl_origine_data.text())
 
 
 class TestNotaFattore(unittest.TestCase):
