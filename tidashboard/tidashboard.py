@@ -502,6 +502,26 @@ class TIDashboardDialog(StiliMixin, QDialog):
             controllo.currentIndexChanged.connect(self._aggiorna_ingombro)
         self.spin_rotazione.valueChanged.connect(self._aggiorna_ingombro)
 
+        # Fattore di proporzionalita' (cap.1.5.2). Il limite di leggibilita'
+        # morde su 4 delle 8 scale ufficiali del piano RF, e fino a stamattina
+        # lo scostamento era scritto solo nel README: chi sceglieva 1:5000 non
+        # aveva modo di sapere che i segni uscivano quattro volte piu' grandi
+        # della lettera della norma. Ora si vede qui e finisce nel cartiglio.
+        self.chk_lettera_norma = QCheckBox(
+            "Fattore alla lettera della norma (cap. 1.5.2)")
+        self.chk_lettera_norma.setToolTip(
+            "Applica il fattore esatto riferimento/scala, senza il limite di "
+            "leggibilita'. Da' la proporzione prescritta, ma alle scale piccole "
+            "le scritture scendono sotto la soglia di stampa e spariscono.")
+        self.chk_lettera_norma.toggled.connect(self._aggiorna_nota_fattore)
+        layout_plan.addWidget(self.chk_lettera_norma)
+
+        self.lbl_fattore = QLabel()
+        self.lbl_fattore.setWordWrap(True)
+        layout_plan.addWidget(self.lbl_fattore)
+        self.combo_scala.currentIndexChanged.connect(self._aggiorna_nota_fattore)
+        self._aggiorna_nota_fattore()
+
         self.btn_planimetria = QPushButton("\U0001F4D0 CREA PLANIMETRIA")
         self.btn_planimetria.setStyleSheet(_STILE_PULSANTE % "#00695C")
         self.btn_planimetria.clicked.connect(self.run_planimetria)
@@ -642,7 +662,41 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def on_product_changed(self, index):
         self.product_mode = self.combo_product.currentData()
         self._aggiorna_pulsante_layout()
+        # Il fattore dipende dal prodotto: la scala di riferimento e' 1:1000 per
+        # il piano RF e 1:5000 per il piano di base, quindi cambiando prodotto
+        # cambia anche quanto il limite di leggibilita' morde.
+        self._aggiorna_nota_fattore()
         self.log(f"🔄 Prodotto selezionato: {self.combo_product.currentText()}")
+
+    def _aggiorna_nota_fattore(self):
+        """Scrive sotto la casella quale fattore del cap.1.5.2 verra' applicato
+        alla scala scelta, e avvisa quando si discosta dalla norma o quando la
+        lettera della norma rende il foglio non stampabile."""
+        if not hasattr(self, "lbl_fattore"):
+            return
+        try:
+            scala = int(self.combo_scala.currentText().split(":")[1])
+        except (ValueError, IndexError, AttributeError):
+            self.lbl_fattore.setText("")
+            return
+        lettera = self.chk_lettera_norma.isChecked()
+        prodotto = self.product_mode
+        fattore = _planimetria.fattore_proporzionale(scala, prodotto, lettera)
+        riferimento = _planimetria.SCALA_RIFERIMENTO.get(prodotto, 1000)
+        altezza, illeggibile = _planimetria.fattore_illeggibile(fattore)
+        nota = _planimetria.nota_fattore(scala, prodotto, lettera)
+        testo = ("Fattore cap.1.5.2: <b>x%.2f</b> (riferimento 1:%d, "
+                 "scrittura minima %.2f mm)" % (fattore, riferimento, altezza))
+        if illeggibile:
+            colore, coda = "#B71C1C", ("<br>Sotto la soglia di stampa di %.2f mm: "
+                                       "le scritture piu' piccole non si vedranno."
+                                       % _planimetria.CAP_HEIGHT_MINIMA_STAMPA)
+        elif nota:
+            colore, coda = "#E65100", "<br>" + nota + ". Sara' scritto nel cartiglio."
+        else:
+            colore, coda = "#2E7D32", "<br>Proporzione esatta della norma."
+        self.lbl_fattore.setText("<span style='color:%s'>%s%s</span>"
+                                 % (colore, testo, coda))
 
     def _aggiorna_pulsante_layout(self):
         """Il layout del piano di base ha senso solo in modalita' PB-MU."""
@@ -759,6 +813,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             ("sql_null", self.chk_sql_null),
             ("sql_text", self.chk_sql_text),
             ("solo_problemi", self.chk_solo_problemi),
+            ("lettera_norma", self.chk_lettera_norma),
         ]
 
     def _ripristina_impostazioni(self):
@@ -2942,6 +2997,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 QgsProject.instance(), self.loaded_layers, centro, scala,
                 formato=formato, rotazione_gon=rotazione, comune=comune,
                 data_validita=data_validita, prodotto=self.product_mode,
+                lettera_norma=self.chk_lettera_norma.isChecked(),
                 log=self.log)
         except ValueError as e:
             QMessageBox.warning(self, "Planimetria", str(e))

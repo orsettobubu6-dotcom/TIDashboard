@@ -54,7 +54,21 @@ quelle già completate.
 - Provato solo su Windows.
 - Il fattore di proporzionalità (cap. 1.5.2) è applicato per intero agli
   ingrandimenti; alle riduzioni si ferma dove la scrittura più piccola
-  scenderebbe sotto 1,2 mm.
+  scenderebbe sotto 1,2 mm. Il limite morde su **4 delle 8 scale ufficiali**
+  del piano per il registro fondiario e su una del piano di base:
+
+  | scala | RF: norma → applicato | PB-MU: norma → applicato |
+  |---|---|---|
+  | 1:2000 | ×0,50 → **×0,80** | ×2,50 → ×2,50 |
+  | 1:2500 | ×0,40 → **×0,80** | ×2,00 → ×2,00 |
+  | 1:5000 | ×0,20 → **×0,80** | ×1,00 → ×1,00 |
+  | 1:10000 | ×0,10 → **×0,80** | ×0,50 → **×0,80** |
+
+  Dove lo scostamento c'è, viene **scritto nel cartiglio** accanto alla scala e
+  segnalato nella scheda Planimetria: non è una deviazione silenziosa. La
+  spunta *Fattore alla lettera della norma* toglie il limite e dà la
+  proporzione esatta, al prezzo che a 1:10000 la scrittura più piccola scende a
+  0,15 mm e non si stampa.
 - Nel piano di base gli Oggetti singoli usano uno spessore uniforme invece dei
   valori per singolo oggetto del Weisung §2.2.5 (differenze di 0,05 mm).
 - Le date di aggiornamento provengono dal timestamp del file ITF, che non è un

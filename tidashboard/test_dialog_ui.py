@@ -382,6 +382,49 @@ class TestRotazione(unittest.TestCase):
             self.assertAlmostEqual(dlg.spin_rotazione.value(), float(b.text()), places=3)
 
 
+class TestNotaFattore(unittest.TestCase):
+    """Il limite di leggibilita' del cap.1.5.2 morde su 4 delle 8 scale RF, ma
+    era scritto solo nel README: chi sceglieva 1:5000 non poteva sapere che i
+    segni uscivano quattro volte piu' grandi della lettera della norma."""
+
+    @staticmethod
+    def _scegli_scala(dlg, scala):
+        for i in range(dlg.combo_scala.count()):
+            if dlg.combo_scala.itemText(i).endswith(":%d" % scala):
+                dlg.combo_scala.setCurrentIndex(i)
+                return True
+        return False
+
+    def test_avvisa_quando_il_fattore_e_limitato(self):
+        dlg = TIDashboardDialog()
+        self.assertTrue(self._scegli_scala(dlg, 5000))
+        testo = dlg.lbl_fattore.text()
+        self.assertIn("0.80", testo)
+        self.assertIn("cartiglio", testo)
+
+    def test_conferma_quando_il_fattore_e_quello_della_norma(self):
+        dlg = TIDashboardDialog()
+        self.assertTrue(self._scegli_scala(dlg, 1000))
+        self.assertIn("esatta", dlg.lbl_fattore.text())
+
+    def test_lettera_norma_avvisa_che_non_si_stampa(self):
+        dlg = TIDashboardDialog()
+        self.assertTrue(self._scegli_scala(dlg, 10000))
+        dlg.chk_lettera_norma.setChecked(True)
+        testo = dlg.lbl_fattore.text()
+        self.assertIn("0.15 mm", testo)
+        self.assertIn("soglia di stampa", testo)
+
+    def test_cambiando_prodotto_cambia_il_riferimento(self):
+        """1:5000 e' limitato sul piano RF (riferimento 1:1000) ma e' la scala
+        di riferimento stessa del piano di base: la nota deve sparire."""
+        dlg = TIDashboardDialog()
+        self.assertTrue(self._scegli_scala(dlg, 5000))
+        self.assertIn("cartiglio", dlg.lbl_fattore.text())
+        dlg.combo_product.setCurrentIndex(1)      # Piano di base
+        self.assertIn("esatta", dlg.lbl_fattore.text())
+
+
 class TestPulsanteLayoutBP(unittest.TestCase):
     """Comparendo e sparendo al cambio di prodotto faceva saltare il resto
     della scheda, e un comando che sparisce non spiega perche' non c'e'."""

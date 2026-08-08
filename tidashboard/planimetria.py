@@ -201,7 +201,7 @@ CAP_HEIGHT_MINIMA_NORMA = 1.5
 CAP_HEIGHT_MINIMA_STAMPA = 1.2
 
 
-def fattore_proporzionale(scala, prodotto="gb"):
+def fattore_proporzionale(scala, prodotto="gb", lettera_norma=False):
     """Fattore da applicare a dimensioni e distanze quando la scala del foglio
     differisce dalla scala di riferimento del prodotto (cap.1.5.2 per il piano
     RF, cap.2.2 del Weisung-BP-AV per il piano di base).
@@ -220,14 +220,54 @@ def fattore_proporzionale(scala, prodotto="gb"):
     perche' quella scrittura non scenda mai sotto CAP_HEIGHT_MINIMA_STAMPA.
     E' uno scostamento dichiarato dalla lettera della norma, non una svista:
     il verbo usato e' "e' invitato" (non "deve") e il cap.5.1 ammette gia' di
-    adattare la grandezza delle scritture allo spazio disponibile."""
+    adattare la grandezza delle scritture allo spazio disponibile.
+
+    Il limite NON e' un caso raro: morde su 4 delle 8 scale ufficiali del piano
+    RF (1:2000, 1:2500, 1:5000, 1:10000, dove il fattore vero sarebbe 0.50,
+    0.40, 0.20 e 0.10 e viene invece portato a 0.80) e su una del piano di base
+    (1:10000, 0.50 -> 0.80). A 1:10000 il piano RF disegna quindi otto volte
+    piu' grande della lettera della norma. Per questo il fattore applicato
+    viene ora scritto nel cartiglio quando differisce.
+
+    'lettera_norma' applica il fattore pieno senza limite inferiore. Serve a
+    chi vuole la proporzione esatta e accetta che a 1:10000 la scrittura piu'
+    piccola scenda a 0.15 mm, cioe' non si stampi: e' una scelta di conformita'
+    formale contro leggibilita', e chi la fa deve saperlo (vedi
+    fattore_illeggibile)."""
     riferimento = SCALA_RIFERIMENTO.get(prodotto, SCALA_RIFERIMENTO["gb"])
     pieno = float(riferimento) / float(scala)
+    if lettera_norma:
+        return pieno
     minimo = CAP_HEIGHT_MINIMA_STAMPA / CAP_HEIGHT_MINIMA_NORMA
     return max(pieno, minimo)
 
 
-def _layers_proporzionati(project, layers, scala, prodotto="gb", log=None):
+def fattore_illeggibile(fattore):
+    """Altezza della scrittura piu' piccola con questo fattore, e se scende
+    sotto la soglia di stampa. Ritorna (altezza_mm, illeggibile)."""
+    altezza = CAP_HEIGHT_MINIMA_NORMA * float(fattore)
+    return altezza, altezza < CAP_HEIGHT_MINIMA_STAMPA
+
+
+def nota_fattore(scala, prodotto="gb", lettera_norma=False):
+    """Testo da affiancare alla scala nel cartiglio, oppure "" se il fattore
+    applicato coincide con quello della norma e non c'e' nulla da dichiarare.
+
+    Senza questa nota lo scostamento resta scritto solo nel README e invisibile
+    a chi riceve il foglio stampato."""
+    riferimento = SCALA_RIFERIMENTO.get(prodotto, SCALA_RIFERIMENTO["gb"])
+    pieno = float(riferimento) / float(scala)
+    applicato = fattore_proporzionale(scala, prodotto, lettera_norma)
+    if abs(applicato - pieno) < 1e-9:
+        return ""
+    # Accenti veri, non l'apostrofo ASCII usato nei commenti: questo testo
+    # finisce STAMPATO nel cartiglio, accanto a "Comune di ...".
+    return ("segni e scritte ×%.2f anziché ×%.2f "
+            "(cap. 1.5.2, limite di leggibilità)" % (applicato, pieno))
+
+
+def _layers_proporzionati(project, layers, scala, prodotto="gb", log=None,
+                          lettera_norma=False):
     """Copie dei layer con il fattore del cap.1.5.2 applicato, per il solo
     foglio.
 
@@ -243,7 +283,7 @@ def _layers_proporzionati(project, layers, scala, prodotto="gb", log=None):
 
     Impostando riferimento = fattore x scala si ottiene esattamente il fattore
     voluto, limite di leggibilita' compreso."""
-    fattore = fattore_proporzionale(scala, prodotto)
+    fattore = fattore_proporzionale(scala, prodotto, lettera_norma)
     if abs(fattore - 1.0) < 1e-9 or project is None:
         return list(layers), []
     riferimento = fattore * float(scala)
@@ -265,6 +305,16 @@ def _layers_proporzionati(project, layers, scala, prodotto="gb", log=None):
             "1:%d, scala di riferimento applicata %.0f su %d layer)"
             % (fattore, prodotto, SCALA_RIFERIMENTO.get(prodotto, 1000),
                riferimento, len(cloni)))
+        nota = nota_fattore(scala, prodotto, lettera_norma)
+        if nota:
+            log("   ⚠️ Scostamento dalla lettera della norma: %s. "
+                "La nota compare nel cartiglio." % nota)
+        altezza, illeggibile = fattore_illeggibile(fattore)
+        if illeggibile:
+            log("   ⚠️ Lettera della norma: la scrittura piu' piccola scende a "
+                "%.2f mm (soglia di stampa %.2f mm). Il foglio e' proporzionato "
+                "alla norma ma NON si stampa leggibile."
+                % (altezza, CAP_HEIGHT_MINIMA_STAMPA))
     return cloni, [c.id() for c in cloni if c not in layers]
 
 
@@ -339,7 +389,7 @@ def impronta_foglio(centro, scala, formato="A4 verticale", rotazione_gon=0.0):
 
 def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
                      rotazione_gon=0.0, comune="", data_validita=None,
-                     nome=None, log=None, prodotto="gb"):
+                     nome=None, log=None, prodotto="gb", lettera_norma=False):
     """Costruisce (e registra nel progetto) il layout di una planimetria.
 
     'centro'  QgsPointXY su cui centrare il foglio.
@@ -349,6 +399,9 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
                   se assente si ripiega sulla data odierna.
     'prodotto' 'gb' (registro fondiario) o 'bp' (piano di base): decide il
                   titolo del foglio.
+    'lettera_norma' applica il fattore del cap.1.5.2 senza il limite di
+                  leggibilita': proporzione esatta, ma alle scale piccole le
+                  scritture non si stampano piu'. Vedi fattore_proporzionale.
     Ritorna il QgsLayout creato.
     """
     def _log(msg):
@@ -414,7 +467,8 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     if layers:
         visibili = _layers_visibili(project, layers, _log)
         per_il_foglio, id_cloni = _layers_proporzionati(project, visibili, scala,
-                                                        prodotto, _log)
+                                                        prodotto, _log,
+                                                        lettera_norma)
         mappa.setLayers(per_il_foglio)
     # setExtent PRIMA di setScale: l'estensione fissa il centro, la scala poi
     # ridimensiona attorno a quel centro senza spostarlo.
@@ -526,9 +580,15 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     layout.addLayoutItem(sottotitolo)
     sottotitolo.attemptSetSceneRect(QRectF(x_testo, y_cart + 10, w_sinistra, 6))
 
+    # La nota sul fattore del cap.1.5.2 sta SULLA RIGA DELLA SCALA, non su una
+    # riga sua: il cartiglio e' alto H_CARTIGLIO (32 mm) e questo blocco arriva
+    # gia' a y+30, quindi una quarta riga uscirebbe dal riquadro. E' anche il
+    # punto giusto dove leggerla, accanto al denominatore a cui si riferisce.
+    nota = nota_fattore(scala, prodotto, lettera_norma)
     dettagli = QgsLayoutItemLabel(layout)
-    dettagli.setText("Scala 1:%d\nStato al: %s\nLegenda: %s"
-                     % (scala, data_validita, LEGENDA_URL))
+    dettagli.setText("Scala 1:%d%s\nStato al: %s\nLegenda: %s"
+                     % (scala, ("  —  " + nota) if nota else "",
+                        data_validita, LEGENDA_URL))
     dettagli.setFont(QFont("Arial", 8))
     layout.addLayoutItem(dettagli)
     dettagli.attemptSetSceneRect(QRectF(x_testo, y_cart + 17, w_sinistra, 13))

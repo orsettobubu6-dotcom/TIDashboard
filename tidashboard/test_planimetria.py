@@ -446,6 +446,82 @@ class TestAnnotazioniGriglia(unittest.TestCase):
             self.assertEqual(griglia.annotationDisplay(lato), G.ShowAll)
 
 
+class TestDichiarazioneFattore(unittest.TestCase):
+    """Il limite di leggibilita' e' uno scostamento voluto dalla lettera del
+    cap.1.5.2, ma finche' restava scritto solo nel README chi riceveva il
+    foglio non poteva saperlo. Ora va dichiarato nel cartiglio."""
+
+    def test_dove_morde_il_limite(self):
+        """Non e' un caso raro: 4 delle 8 scale RF e 1 delle 8 PB."""
+        limitate_gb = [s for s in P.SCALE_UFFICIALI_MU
+                       if P.nota_fattore(s, "gb")]
+        limitate_bp = [s for s in P.SCALE_UFFICIALI_MU
+                       if P.nota_fattore(s, "bp")]
+        self.assertEqual(limitate_gb, [2000, 2500, 5000, 10000])
+        self.assertEqual(limitate_bp, [10000])
+
+    def test_niente_nota_quando_il_fattore_e_quello_della_norma(self):
+        for scala in (200, 250, 500, 1000):
+            self.assertEqual(P.nota_fattore(scala, "gb"), "",
+                             "1:%d non ha scostamenti da dichiarare" % scala)
+
+    def test_la_nota_finisce_nel_cartiglio(self):
+        lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                 QgsPointXY(CX, CY), 5000, comune="Giubiasco",
+                                 nome="Fatt5000")
+        testi = [i.text() for i in lay.items()
+                 if i.__class__.__name__ == "QgsLayoutItemLabel"]
+        riga = [t for t in testi if "Scala 1:5000" in t]
+        self.assertTrue(riga, "manca la riga della scala nel cartiglio")
+        self.assertIn("×0.80", riga[0])
+        self.assertIn("×0.20", riga[0])
+        self.assertIn("anziché", riga[0],
+                      "il cartiglio va stampato con gli accenti veri")
+
+    def test_senza_scostamento_la_riga_resta_pulita(self):
+        lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                 QgsPointXY(CX, CY), 1000, comune="Giubiasco",
+                                 nome="Fatt1000")
+        testi = [i.text() for i in lay.items()
+                 if i.__class__.__name__ == "QgsLayoutItemLabel"]
+        riga = [t for t in testi if "Scala 1:1000" in t][0]
+        self.assertNotIn("cap. 1.5.2", riga)
+
+    def test_la_nota_non_sfonda_il_cartiglio(self):
+        """La nota sta sulla riga della scala proprio per non aggiungere una
+        quarta riga: se qualcuno la spostasse su una riga sua, il blocco
+        uscirebbe dai 32 mm del riquadro."""
+        lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                 QgsPointXY(CX, CY), 10000, comune="Giubiasco",
+                                 nome="FattIngombro")
+        for i in lay.items():
+            if i.__class__.__name__ != "QgsLayoutItemLabel":
+                continue
+            if "Scala 1:10000" not in i.text():
+                continue
+            self.assertEqual(i.text().count("\n"), 2,
+                             "la riga della scala deve restare su 3 righe")
+            fondo = i.pos().y() + i.rect().height()
+            limite = lay.pageCollection().page(0).pageSize().height() - P.MARGINE
+            self.assertLessEqual(fondo, limite + 0.01)
+
+    def test_lettera_norma_toglie_il_limite(self):
+        self.assertAlmostEqual(P.fattore_proporzionale(10000, "gb"), 0.8)
+        self.assertAlmostEqual(
+            P.fattore_proporzionale(10000, "gb", lettera_norma=True), 0.1)
+        self.assertEqual(P.nota_fattore(10000, "gb", lettera_norma=True), "")
+
+    def test_lettera_norma_avvisa_che_non_si_stampa(self):
+        altezza, illeggibile = P.fattore_illeggibile(
+            P.fattore_proporzionale(10000, "gb", lettera_norma=True))
+        self.assertAlmostEqual(altezza, 0.15)
+        self.assertTrue(illeggibile)
+        # col limite attivo invece resta stampabile
+        _, illeggibile = P.fattore_illeggibile(
+            P.fattore_proporzionale(10000, "gb"))
+        self.assertFalse(illeggibile)
+
+
 class TestFrecciaNord(unittest.TestCase):
     """La freccia deve puntare al nord del TERRENO cosi' come appare sul
     foglio, non verso l'alto del foglio: ruotando la mappa il nord si sposta e
