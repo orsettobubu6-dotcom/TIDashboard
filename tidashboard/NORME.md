@@ -71,9 +71,9 @@ Confrontate le due tabelle del cap. 1.5.4, la coda è cambiata così:
 
 ## L'ordine di disegno è stato allineato
 
-`GEOS_ZORDER_SEQUENCE` in `ordinamento.py` **segue ora la tabella in vigore**
+`ORDINE_PRIORITA` in `ordinamento.py` **segue ora la tabella in vigore**
 (stato 1.2.2014). Prima non seguiva nemmeno quella del 2007: era derivata
-dall'export della legenda di **GEOS Pro**, e metteva condotte e copertura del
+dall'export di legenda di un software di terze parti, e metteva condotte e copertura del
 suolo *sopra* gli oggetti singoli, mentre entrambe le versioni della norma li
 vogliono sotto. L'allineamento corregge quindi due cose insieme.
 

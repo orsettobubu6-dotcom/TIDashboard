@@ -1763,7 +1763,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
     def _check_geometry_validity(self, layer, table):
         """Conta le geometrie non valide (auto-intersezioni, anelli
-        degeneri, ecc.) in un layer appena caricato, verificate via GEOS -
+        degeneri, ecc.) in un layer appena caricato, verificate con il motore
+        geometrico di QGIS -
         lo stesso motore geometrico usato "sotto" da GDAL/OGR (il provider
         "ogr" con cui ogni layer di questo plugin viene aperto e' letto
         proprio tramite GDAL). Una geometria non valida non blocca il
@@ -1787,7 +1788,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 if len(examples) < 3:
                     examples.append(f.id())
         if n_invalid:
-            self.log(f"   ⚠️ {n_invalid}/{n_checked} geometrie non valide (GEOS) in {table} "
+            self.log(f"   ⚠️ {n_invalid}/{n_checked} geometrie non valide in {table} "
                       f"- feature id esempio: {examples}", Qgis.Warning)
         return n_invalid
 

@@ -9,10 +9,10 @@
 # Ordine di disegno dei layer e raggruppamento dell'albero, estratti da
 # tidashboard.py.
 #
-# L'ordine z non e' una preferenza estetica: riproduce quello con cui il
-# software ufficiale (GEOS Pro) definisce i simboli, dal primo piano allo
-# sfondo. Senza, QGIS disegna i layer nell'ordine casuale in cui le tabelle
-# compaiono nel GeoPackage.
+# L'ordine z non e' una preferenza estetica: e' la tabella delle PRIORITA' del
+# cap.1.5.4 dell'istruzione federale, dal primo piano allo sfondo. Senza, QGIS
+# disegna i layer nell'ordine casuale in cui le tabelle compaiono nel
+# GeoPackage.
 
 
 # Ordine di disegno (z-order) del piano: tabella delle PRIORITA' del cap.1.5.4
@@ -39,7 +39,7 @@
 # Le voci pure testuali ("_txt", posizioni di iscrizione) sono escluse: le
 # etichette QGIS si disegnano comunque sempre sopra a tutti i layer,
 # indipendentemente dall'ordine z.
-GEOS_ZORDER_SEQUENCE = (
+ORDINE_PRIORITA = (
     # 1. Margine_di_piano: croce della rete. Nel 2007 era l'ULTIMA riga della
     # tabella; ora e' la prima, cioe' le croci vanno sopra ogni altra cosa.
     "margine_del_piano_crocetta_reticolo",
@@ -115,10 +115,10 @@ GEOS_ZORDER_SEQUENCE = (
     "margine_del_piano_superficie_disegno",
 )
 
-# Categorizzazione di riserva (5 livelli) per i temi non coperti dalla legenda GEOS
+# Categorizzazione di riserva (5 livelli) per i temi non coperti dalla tabella
 # sopra (es. Aree_di_numerazione, CAP_localita, Zone_di_movimento, Tronco_di_strada):
 # usata solo come fallback, dopo aver verificato che nessuna voce di
-# GEOS_ZORDER_SEQUENCE corrisponda.
+# ORDINE_PRIORITA corrisponda.
 Z_ORDER_TIERS = (
     ("punto_singolo", "punto_fisso_ausiliario", "punto_quotato", "entrata_edificio"),
     ("elemento_puntiforme", "segnale"),
@@ -163,14 +163,14 @@ def _raw_table_name(layer):
 
 def _zorder_priority(t_low):
     """Indice di priorita' nell'ordine di disegno (0 = primo piano/sopra a tutto).
-    Priorita' assoluta alle tabelle elencate esplicitamente in GEOS_ZORDER_SEQUENCE
+    Priorita' assoluta alle tabelle elencate esplicitamente in ORDINE_PRIORITA
     (ordine autorevole del software ufficiale); le tabelle non presenti ricadono
     sulla categorizzazione di riserva Z_ORDER_TIERS, agganciata subito dopo
     l'ultima voce nota per non alterare l'ordine gia' verificato."""
-    for i, name in enumerate(GEOS_ZORDER_SEQUENCE):
+    for i, name in enumerate(ORDINE_PRIORITA):
         if name in t_low:
             return i
-    fallback_base = len(GEOS_ZORDER_SEQUENCE)
+    fallback_base = len(ORDINE_PRIORITA)
     for i, keywords in enumerate(Z_ORDER_TIERS):
         if any(k in t_low for k in keywords):
             return fallback_base + i
@@ -182,10 +182,10 @@ def _zorder_debug_info(t_low):
     per il log dettagliato di Fase 4, cosi' un caso come "perche' il tema X
     finisce sopra/sotto il tema Y" si legge direttamente dal log invece di
     dover essere investigato ogni volta da zero."""
-    for i, name in enumerate(GEOS_ZORDER_SEQUENCE):
+    for i, name in enumerate(ORDINE_PRIORITA):
         if name in t_low:
-            return i, f'GEOS_ZORDER_SEQUENCE[{i}]="{name}"'
-    fallback_base = len(GEOS_ZORDER_SEQUENCE)
+            return i, f'ORDINE_PRIORITA[{i}]="{name}"'
+    fallback_base = len(ORDINE_PRIORITA)
     for i, keywords in enumerate(Z_ORDER_TIERS):
         matched = [k for k in keywords if k in t_low]
         if matched:
@@ -193,13 +193,13 @@ def _zorder_debug_info(t_low):
     return fallback_base + len(Z_ORDER_TIERS), "nessun match (ultimo livello, fondo assoluto)"
 
 # Raggruppamento del pannello Layers di QGIS negli stessi 12 livelli
-# gerarchici di GEOS_ZORDER_SEQUENCE (circ154 cap. 1.5.4), cosi' l'albero
+# gerarchici di ORDINE_PRIORITA (circ154 cap. 1.5.4), cosi' l'albero
 # rispecchia visivamente l'ordine di disegno invece di restare un elenco
 # piatto di ~50-100 tabelle con nomi tecnici. Riusa le stesse sottostringhe
-# GIA' VERIFICATE di GEOS_ZORDER_SEQUENCE/Z_ORDER_TIERS (non un elenco nuovo
+# GIA' VERIFICATE di ORDINE_PRIORITA/Z_ORDER_TIERS (non un elenco nuovo
 # da riverificare), solo raggruppate sotto titoli leggibili invece che in
 # un'unica sequenza piatta - stessa idea del progetto "Pro" (RF_LAYER_GROUPS),
-# portata qui senza toccare _zorder_priority/GEOS_ZORDER_SEQUENCE (l'ordine
+# portata qui senza toccare _zorder_priority/ORDINE_PRIORITA (l'ordine
 # di disegno resta calcolato esattamente come prima, il raggruppamento e'
 # solo visuale). Le tabelle non coperte da nessun pattern qui finiscono nel
 # gruppo di riserva "90 Altri layer geometrici" (vedi _reorganize_layer_tree),

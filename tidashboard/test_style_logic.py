@@ -90,7 +90,7 @@ class TestZOrderPriority(unittest.TestCase):
         """_zorder_priority sceglie la prima voce CONTENUTA nel nome tabella:
         due voci in cui una e' sottostringa dell'altra si ruberebbero il
         posto a seconda dell'ordine."""
-        seq = cd.GEOS_ZORDER_SEQUENCE
+        seq = cd.ORDINE_PRIORITA
         for i, voce in enumerate(seq):
             for j, altra in enumerate(seq):
                 if i < j and voce in altra:
@@ -106,11 +106,11 @@ class TestZOrderPriority(unittest.TestCase):
         self.assertLess(p_confine, p_bene_immobile)
 
     def test_fallback_su_tabella_sconosciuta(self):
-        base = len(cd.GEOS_ZORDER_SEQUENCE) + len(cd.Z_ORDER_TIERS)
+        base = len(cd.ORDINE_PRIORITA) + len(cd.Z_ORDER_TIERS)
         self.assertEqual(cd._zorder_priority("tabella_totalmente_sconosciuta_xyz"), base)
 
     def test_fallback_tier_punto_singolo(self):
-        base = len(cd.GEOS_ZORDER_SEQUENCE)
+        base = len(cd.ORDINE_PRIORITA)
         self.assertEqual(cd._zorder_priority("qualcosa_punto_singolo_xyz"), base + 0)
 
 
