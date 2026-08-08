@@ -344,26 +344,42 @@ public class DxfWriter {
             d2 = Double.valueOf(string4);
         }
         stringBuffer.append(DxfUtil.toString(50, d2 != null ? d2 : 0.0));
-        // Maschera di sfondo, impostazioni della finestra "Background Mask" di
-        // AutoCAD: 45=1.0 e' il "border offset factor" (il default AutoCAD
-        // sarebbe 1.5), 90=2 significa "usa il colore di sfondo del disegno".
-        // E' il motivo per cui questi testi sono MTEXT e non TEXT: il TEXT non
+        // Maschera di sfondo (finestra "Background Mask" di AutoCAD). E' il
+        // motivo per cui questi testi sono MTEXT e non TEXT: il TEXT non
         // supporta la maschera.
+        //   45 = border offset factor (il default AutoCAD sarebbe 1.5)
+        //   90 = modo
+        //   63 = colore ACI dello sfondo
         //
-        // ORDINE E COMPLETEZZA SONO VINCOLANTI, non stilistici. I tre group
-        // 45, 90 e 63 vanno scritti tutti e tre e IN QUEST'ORDINE: AutoCAD
-        // legge il 45 e pretende il 90 subito dopo. Scrivendo prima 90 e poi
-        // 45 - come faceva la versione precedente - quando AutoCAD incontra il
-        // 45 il 90 e' gia' passato, arriva a fine entita' senza trovarlo e
-        // ABORTISCE L'INTERO DISEGNO:
+        // OGNI DETTAGLIO QUI SOTTO E' STATO STABILITO PROVANDO IN AUTOCAD, non
+        // dedotto: una forma sbagliata non degrada la maschera, fa RIFIUTARE
+        // L'INTERO DISEGNO con
         //   "while reading in MTEXT ... Missing DXF group code: 90
         //    Invalid or incomplete DXF input -- drawing discarded."
-        // Il 63 (colore ACI dello sfondo) e' obbligatorio anche in modalita'
-        // 2, dove poi viene ignorato: si scrive 0, lo stesso valore che usa
-        // ezdxf per questo caso ("required but ignored").
+        // e AutoCAD si ferma alla prima entita', quindi il file diventa
+        // inservibile per intero. Le due condizioni necessarie sono:
+        //
+        // 1) MODO 3, NON 2. Entrambi sono documentati (2 = "drawing window
+        //    color", 3 = "use background color"), ma con 2 AutoCAD rifiuta il
+        //    disegno. E' 3 il valore che scrivono gli strumenti veri per
+        //    "usa il colore di sfondo del disegno" (ezdxf: set_bg_color
+        //    ("canvas") -> MTEXT_BG_CANVAS_COLOR = 3).
+        //
+        // 2) VALORI SENZA RIEMPIMENTO. toString(int,int) allinea a destra su 6
+        //    caratteri ("     3"): e' il formato storico dei codici a 16 bit,
+        //    non di questi. Si passa quindi dall'overload con String, come gia'
+        //    avverte il commento di int6car in DxfUtil.
+        //
+        // Il 63 va scritto anche se in questo modo viene ignorato (ezdxf lo
+        // annota "required but ignored" e usa 0).
+        //
+        // Provato su AutoCAD con file minimi che cambiavano una variabile per
+        // volta: modo 2 rifiutato sia con valori riempiti sia nudi; modo 3 con
+        // valori nudi accettato, sia in AC1018 sia in AC1021. La versione
+        // dichiarata quindi NON c'entra e resta AC1018.
         stringBuffer.append(DxfUtil.toString(45, 1.0));
-        stringBuffer.append(DxfUtil.toString(90, 2));
-        stringBuffer.append(DxfUtil.toString(63, 0));
+        stringBuffer.append(DxfUtil.toString(90, Integer.toString(3)));
+        stringBuffer.append(DxfUtil.toString(63, Integer.toString(0)));
         return stringBuffer.toString();
     }
 
