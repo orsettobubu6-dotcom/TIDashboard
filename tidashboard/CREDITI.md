@@ -1,5 +1,13 @@
 # Componenti di terze parti
 
+> ⚠️ **Prima di pubblicare il repository** (https://github.com/orsettobubu6-dotcom/tidashboard)
+> restano da chiarire due punti segnati qui sotto: le licenze delle 15 librerie
+> Java in dotazione e i diritti di **ridistribuzione** di font e simboli
+> Cadastra, che sono materiale swisstopo / cadastre.ch. «Scaricabile dal sito
+> del catasto» non equivale a «ridistribuibile in un repository pubblico».
+> Il repository e il remoto sono già configurati ma **non è stato fatto alcun
+> push**: nulla di tutto ciò è ancora online.
+
 Il pacchetto distribuisce i componenti elencati qui sotto. Le rispettive licenze
 restano quelle originali e vanno rispettate anche ridistribuendo TIDashboard.
 
