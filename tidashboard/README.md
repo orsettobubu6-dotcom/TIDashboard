@@ -15,7 +15,7 @@ Plugin QGIS per i dati della misurazione ufficiale svizzera, modello ticinese
 2. **Converte** in DXF (via av2geobau, versione adattata al modello ticinese).
 3. **Genera planimetrie** stampabili alle otto scale ufficiali (1:200 … 1:10000),
    con rotazione del foglio in gon, reticolo di coordinate e cartiglio con le
-   sette iscrizioni obbligatorie.
+   **nove** iscrizioni obbligatorie del cap. 1.5.7 nella versione in vigore.
 
 Due prodotti: **piano per il registro fondiario** (bianco e nero) e **piano di
 base della misurazione ufficiale** (a colori).
@@ -102,6 +102,10 @@ quelle già completate.
   valori per singolo oggetto del Weisung §2.2.5 (differenze di 0,05 mm).
 - Le date di aggiornamento provengono dal timestamp del file ITF, che non è un
   dato contenuto nel file.
+- Rispetto all'istruzione federale in vigore restano non implementati: la
+  **bandatura di 10 mm** delle zone di spostamento permanente (cap. 1.5.8) e il
+  **piano per il registro fondiario a colori** (cap. 6, opzionale). Vedi
+  [NORME.md](NORME.md) per la rilettura capitolo per capitolo.
 
 ## Norme di riferimento
 

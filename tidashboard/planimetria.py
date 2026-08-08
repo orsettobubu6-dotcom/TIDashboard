@@ -60,7 +60,14 @@ FORMATI = (
 )
 
 # Altezza del cartiglio in fondo al foglio, in mm.
-H_CARTIGLIO = 32.0
+# Alto abbastanza per NOVE iscrizioni, non sette. La versione dell'istruzione
+# in vigore (stato 1.2.2014) ne elenca due in piu' rispetto a quella del 2007:
+# il cenno sugli oggetti in progetto e quello sugli spostamenti permanenti di
+# terreno. Erano 32 mm quando le righe da scrivere erano tre.
+# Alzarlo e' sicuro: area_mappa() lo sottrae all'altezza del foglio e
+# impronta_foglio() usa area_mappa(), quindi mappa e anteprima restano
+# allineate da sole.
+H_CARTIGLIO = 40.0
 
 # Margine fra la cornice della mappa e il bordo del foglio. Deve ospitare le
 # ANNOTAZIONI DI COORDINATA della griglia, che QGIS scrive fuori dalla cornice:
@@ -84,6 +91,39 @@ LEGENDA_URL = "www.cadastre.ch/legende"
 # l'emissione di estratti ufficiali spetta all'autorita' competente: senza una
 # dicitura esplicita puo' essere scambiato per un estratto ufficiale.
 AVVERTENZA_VALORE_LEGALE = "Riproduzione senza valore legale"
+
+# Le due iscrizioni obbligatorie aggiunte dalla versione in vigore del cap.
+# 1.5.7 (la versione marzo 2007 ne elencava sette, questa ne elenca nove):
+# il cenno sugli oggetti in progetto e quello sugli spostamenti permanenti di
+# terreno. La nota a pie' di figura dell'istruzione dice "Esempio di frase,
+# adeguamenti necessari": la formulazione e' libera, il cenno obbligatorio.
+#
+# Vanno dette VERE, non messe li' per riempire la casella: il plugin non
+# rappresenta mai gli oggetti in progetto (regola del cap.1.5.3 applicata in
+# stili.py, che da' un simbolo invisibile a ogni tabella "*Prog"), mentre le
+# zone di movimento uno stile ce l'hanno - quindi quel cenno si decide
+# guardando i layer del foglio.
+CENNO_PROGETTO = "I beni immobili e gli oggetti in progetto non sono rappresentati."
+CENNO_MOVIMENTO_SI = "Gli spostamenti permanenti di terreno sono rappresentati."
+CENNO_MOVIMENTO_NO = "Gli spostamenti permanenti di terreno non sono rappresentati."
+
+
+def cenno_spostamenti(layers):
+    """Il cenno del cap.1.5.7 sugli spostamenti permanenti di terreno, deciso
+    sui layer che finiscono davvero sul foglio: senza feature da disegnare
+    scrivere "sono rappresentati" sarebbe falso."""
+    for l in layers or []:
+        try:
+            nome = (l.name() or "").lower() + " " + (l.source() or "").lower()
+        except Exception:
+            continue
+        if "movimento" in nome and "pos" not in nome.split("movimento")[0][-4:]:
+            try:
+                if l.featureCount() > 0:
+                    return CENNO_MOVIMENTO_SI
+            except Exception:
+                pass
+    return CENNO_MOVIMENTO_NO
 C_AVVERTENZA = QColor(204, 0, 0)
 
 # Titolo del foglio secondo il prodotto scelto nella dialog. Era fisso su
@@ -585,13 +625,19 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     # gia' a y+30, quindi una quarta riga uscirebbe dal riquadro. E' anche il
     # punto giusto dove leggerla, accanto al denominatore a cui si riferisce.
     nota = nota_fattore(scala, prodotto, lettera_norma)
+    # "Stato al" e non "Allestimento" come nella figura dell'istruzione:
+    # l'iscrizione obbligatoria e' "una data di validita'", e la data che
+    # scriviamo e' quella dei DATI, non quella in cui il foglio e' stato
+    # prodotto. "Allestimento" sarebbe una data diversa e la dichiarerebbe
+    # sbagliata.
     dettagli = QgsLayoutItemLabel(layout)
-    dettagli.setText("Scala 1:%d%s\nStato al: %s\nLegenda: %s"
+    dettagli.setText("Scala 1:%d%s\nStato al: %s\n%s\n%s\nLegenda: %s"
                      % (scala, ("  —  " + nota) if nota else "",
-                        data_validita, LEGENDA_URL))
+                        data_validita, CENNO_PROGETTO,
+                        cenno_spostamenti(layers), LEGENDA_URL))
     dettagli.setFont(QFont("Arial", 8))
     layout.addLayoutItem(dettagli)
-    dettagli.attemptSetSceneRect(QRectF(x_testo, y_cart + 17, w_sinistra, 13))
+    dettagli.attemptSetSceneRect(QRectF(x_testo, y_cart + 17, w_sinistra, 21))
 
     if rotazione_gon:
         rot = QgsLayoutItemLabel(layout)

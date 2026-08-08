@@ -99,8 +99,55 @@ poligonale della copertura del suolo, e **un layer QGIS occupa una sola
 posizione z**: separarli richiederebbe di spezzare il layer in due. Per ora
 tutta la copertura del suolo sta nell'ultima posizione.
 
-Il cap. 1.5.7 (iscrizioni obbligatorie) è invece **invariato** fra le due
-versioni: le sette iscrizioni implementate nel cartiglio restano quelle giuste.
+## Rilettura capitolo per capitolo dell'istruzione in vigore
+
+| Capitolo | Esito |
+|---|---|
+| 1.4 Leggenda | ✔ `www.cadastre.ch/legende`, «presente su ogni estratto» — implementato |
+| 1.5.1 Scale | ✔ le otto scale coincidono |
+| 1.5.2 Fattore di proporzionalità | ✔ testo identico al 2007 |
+| 1.5.3 Contenuto del piano | ⚠ l'elenco dei temi non rappresentati è cambiato: 2007 «Altimetria, Perimetro_numerazione, Ripartizione_piani, RipartizioneGT, Zone_di_movimento»; oggi «Altezza, Aree di numerazione, Ripartizione del piano, TSRipartizione», e le zone di spostamento diventano **rappresentabili** |
+| 1.5.4 Priorità | ✔ **allineato** (vedi sopra) |
+| 1.5.5 Simboli | ✔ i quattro tipi coincidono |
+| 1.5.6 Colore | ⚠ il 2007 diceva «esclusivamente il colore nero»; oggi il colore è ammesso e descritto al cap. 6 |
+| **1.5.7 Iscrizioni** | ✖ **erano sette, ora sono NOVE** — corretto, vedi sotto |
+| 1.5.8 Zone di spostamento | ⚠ bandatura di 10 mm all'interno del perimetro + menzione aggiuntiva: **non implementato** |
+| 5.12 Indirizzo degli edifici | da riverificare: nome_localizzazione 3.0 corsivo, numero_casa 1.8, Nome_edificio 1.8, Nome_località 4.5 grassetto |
+| **6 Piano RF a colori** | ✖ capitolo **interamente nuovo**, non implementato |
+| 7 Allegati | esempi, non prescrittivi |
+
+### 1.5.7: mancavano due iscrizioni obbligatorie
+
+Nel commit precedente avevo scritto che il cap. 1.5.7 era «invariato fra le due
+versioni». **Era sbagliato.** La versione marzo 2007 elenca sette iscrizioni,
+quella in vigore ne elenca **nove**: si aggiungono
+
+- «Il cenno relativo alla rappresentazione di oggetti in progetto»
+- «Il cenno relativo alla rappresentazione di territori di spostamento
+  permanente di terreno»
+
+Entrambe sono ora nel cartiglio, e dicono il vero: gli oggetti in progetto il
+plugin non li rappresenta mai (regola del cap. 1.5.3), mentre il cenno sugli
+spostamenti si decide guardando i layer del foglio. `H_CARTIGLIO` è passato da
+32 a 40 mm per farci stare le due righe in più.
+
+L'esempio dell'istruzione etichetta la data come «Allestimento»; il cartiglio
+continua a scrivere **«Stato al»**, perché l'iscrizione obbligatoria è «una data
+di validità» e la data che scriviamo è quella dei *dati*, non quella in cui il
+foglio è stato prodotto — «Allestimento» sarebbe una data diversa.
+
+### Il capitolo 6 è un terzo prodotto
+
+«Piano per il registro fondiario **a colori**»: si allestisce sul piano RF in
+bianco e nero più le integrazioni a colori del PB-MU, e colora **soltanto** i
+segni di superficie di edificio, rivestimento duro, corsi d'acqua e superfici
+boscate, più gli edifici sotterranei. Tutto il resto resta come nel bianco e
+nero. È **opzionale**.
+
+Il plugin oggi ha due prodotti — RF in bianco e nero e PB-MU a colori — e non
+questo. Non è un difetto: è una funzione in più, con colori propri (edificio
+rosa CMYK 0,25,25,0 = RGB 255,191,191; edificio sotterraneo e cisterna
+0,41,41,0 = 255,150,150) che **non vanno confusi** con quelli del PB-MU.
 
 ---
 

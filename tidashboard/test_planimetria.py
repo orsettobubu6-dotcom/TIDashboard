@@ -446,6 +446,58 @@ class TestAnnotazioniGriglia(unittest.TestCase):
             self.assertEqual(griglia.annotationDisplay(lato), G.ShowAll)
 
 
+class TestNoveIscrizioni(unittest.TestCase):
+    """Il cap.1.5.7 nella versione IN VIGORE (stato 1.2.2014) elenca NOVE
+    iscrizioni obbligatorie; la versione marzo 2007, su cui era stato costruito
+    il cartiglio, ne elencava sette. Mancavano i due cenni."""
+
+    @staticmethod
+    def _testi(lay):
+        return "\n".join(i.text() for i in lay.items()
+                         if i.__class__.__name__ == "QgsLayoutItemLabel")
+
+    def test_ci_sono_tutte_e_nove(self):
+        lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                 QgsPointXY(CX, CY), 1000, comune="Giubiasco",
+                                 data_validita="01.03.2024", nome="Nove")
+        testo = self._testi(lay)
+        for atteso in ("Piano per il registro fondiario",   # 1
+                       "Giubiasco",                          # 2
+                       "Scala 1:1000",                       # 4
+                       "01.03.2024",                         # 6 data di validita'
+                       "in progetto",                        # 7 cenno
+                       "spostamenti permanenti",             # 8 cenno
+                       "cadastre.ch/legende"):               # 9
+            self.assertIn(atteso, testo, atteso)
+        # 3 la direzione del nord e 5 il riferimento alla rete delle coordinate
+        # non sono testi: sono la freccia e il reticolo, verificati altrove.
+        self.assertTrue([i for i in lay.items()
+                         if i.__class__.__name__ == "QgsLayoutItemPicture"])
+        self.assertTrue(_mappa(lay).grid().enabled())
+
+    def test_il_cenno_sugli_spostamenti_dice_il_vero(self):
+        """Senza zone di movimento fra i layer, scrivere "sono rappresentati"
+        sarebbe una dichiarazione falsa sul foglio."""
+        self.assertEqual(P.cenno_spostamenti([]), P.CENNO_MOVIMENTO_NO)
+        self.assertEqual(P.cenno_spostamenti([_layer()]), P.CENNO_MOVIMENTO_NO)
+        zone = _layer()
+        zone.setName("zone_di_movimento_movimento")
+        self.assertEqual(P.cenno_spostamenti([zone]), P.CENNO_MOVIMENTO_SI)
+
+    def test_il_cartiglio_contiene_tutte_le_righe(self):
+        """Le due iscrizioni in piu' non devono uscire dal riquadro: e' il
+        motivo per cui H_CARTIGLIO e' passato da 32 a 40 mm."""
+        lay = P.crea_planimetria(QgsProject.instance(), [_layer()],
+                                 QgsPointXY(CX, CY), 1000, comune="Giubiasco",
+                                 nome="NoveIngombro")
+        limite = lay.pageCollection().page(0).pageSize().height() - P.MARGINE
+        for i in lay.items():
+            if i.__class__.__name__ != "QgsLayoutItemLabel":
+                continue
+            self.assertLessEqual(i.pos().y() + i.rect().height(), limite + 0.01,
+                                 i.text()[:40])
+
+
 class TestDichiarazioneFattore(unittest.TestCase):
     """Il limite di leggibilita' e' uno scostamento voluto dalla lettera del
     cap.1.5.2, ma finche' restava scritto solo nel README chi riceveva il
@@ -499,8 +551,12 @@ class TestDichiarazioneFattore(unittest.TestCase):
                 continue
             if "Scala 1:10000" not in i.text():
                 continue
-            self.assertEqual(i.text().count("\n"), 2,
-                             "la riga della scala deve restare su 3 righe")
+            # L'invariante non e' il numero di righe del blocco - da quando il
+            # cap.1.5.7 in vigore ne impone nove sono cinque - ma che la nota
+            # sul fattore stia SULLA STESSA RIGA della scala, senza aggiungerne
+            # una propria.
+            riga_scala = [r for r in i.text().split("\n") if r.startswith("Scala")][0]
+            self.assertIn("cap. 1.5.2", riga_scala)
             fondo = i.pos().y() + i.rect().height()
             limite = lay.pageCollection().page(0).pageSize().height() - P.MARGINE
             self.assertLessEqual(fondo, limite + 0.01)
