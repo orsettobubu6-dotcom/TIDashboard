@@ -48,6 +48,11 @@ SUFFISSO_FONDO = "_fondo"
 SUFFISSI_PARTI = ("_bene_immobile", "_dpssp", "_miniera")
 SUFFISSO_POSFONDO = "_posfondo"
 SUFFISSO_COMUNE = "_comune"
+# Il nome della sezione. Area_di_numerazione NON ha un campo nome - ha solo
+# Ct, NumeroAN e IncartoTecnico - ma Nome_di_localita porta un IdentAN e un
+# Nome, e in Ticino le sezioni di un comune aggregato sono gli ex comuni.
+# Su Mendrisio: TI63203 -> Arzo, TI63209 -> Ligornetto, e cosi' via.
+SUFFISSO_LOCALITA = "nome_di_localita"
 
 # Gli oggetti "in progetto" non fanno parte del contenuto del piano (cap.
 # 1.5.3) e non sono un fondo esistente: si escludono per difetto.
@@ -61,7 +66,8 @@ class FondoTrovato(object):
     senza geometria ne' PosFondo esiste nei dati ma non si sa dove sia, e
     dirlo e' piu' onesto che centrarsi su coordinate inventate."""
 
-    __slots__ = ("identan", "numero", "sezione", "comune_nr", "comune",
+    __slots__ = ("identan", "numero", "sezione", "sezione_nome",
+                 "comune_nr", "comune",
                  "egrid", "validita", "integralita", "genere", "superficie",
                  "extent", "centro", "origine_geometria", "n_parti")
 
@@ -76,8 +82,12 @@ class FondoTrovato(object):
         identici, e metterla in fondo la renderebbe invisibile."""
         pezzi = ["Fondo %s" % (self.numero or "?")]
         if self.sezione:
-            pezzi.append("sezione %s" % self.sezione)
-        if self.comune:
+            pezzi.append("sezione %s%s" % (self.sezione,
+                         " %s" % self.sezione_nome if self.sezione_nome else ""))
+        # Il comune non si ripete se e' gia' il nome della sezione: la
+        # sezione principale di un comune aggregato porta il nome del comune
+        # stesso, e "sezione 01 Mendrisio · Mendrisio" e' solo rumore.
+        if self.comune and self.comune != self.sezione_nome:
             pezzi.append(self.comune)
         if self.superficie:
             pezzi.append("%s m²" % self.superficie)
@@ -204,7 +214,15 @@ def _trova_tabelle(con, includi_prog=False):
         if t.lower().endswith(SUFFISSO_COMUNE) and "nome" in _colonne(con, t):
             comune = t
             break
-    return {"fondo": fondo, "parti": parti, "posfondo": posfondo, "comune": comune}
+    localita = None
+    for t in tutte:
+        if t.lower().endswith(SUFFISSO_LOCALITA):
+            col = _colonne(con, t)
+            if "identan" in col and "nome" in col:
+                localita = t
+                break
+    return {"fondo": fondo, "parti": parti, "posfondo": posfondo,
+            "comune": comune, "localita": localita}
 
 
 def _envelope(blob):
@@ -284,10 +302,37 @@ def _nomi_comune(con, tabella):
     return fuori
 
 
+def _nomi_sezione(con, tabella):
+    """{IdentAN: nome della sezione} da Nome_di_localita.
+
+    La chiave e' l'IdentAN INTERO, non due cifre ritagliate: cosi' il nome
+    resta corretto qualunque sia la forma di IdentAN, che il modello
+    definisce come Ct + NumeroAN con NumeroAN TEXT*10 - nei dati reali si
+    incontrano anche "CH0100000001" e "TI02000000TI", non solo TICCCSS.
+
+    Il modello ammette PIU' localita' per area (IDENT IdentAN, Numero): in
+    quel caso non si sceglie, si lascia la sezione senza nome. Mostrarne una
+    a caso vorrebbe dire attribuire alla sezione un nome che non e' il suo."""
+    if not tabella:
+        return {}
+    per_identan = {}
+    for identan, nome in con.execute(
+            'SELECT identan, nome FROM "%s"' % tabella):
+        if identan and nome:
+            per_identan.setdefault(str(identan).strip(), set()).add(nome.strip())
+    return {k: list(v)[0] for k, v in per_identan.items() if len(v) == 1}
+
+
 def sezioni_disponibili(percorso_gpkg):
-    """Elenco ordinato delle sezioni presenti (le SS di IdentAN), per
-    riempire la casella a discesa. Lista vuota se il comune non ha sezioni o
-    se il file non si legge."""
+    """Sezioni presenti, come coppie (codice, nome), ordinate per codice.
+
+    Il nome viene da Nome_di_localita e puo' essere None. Sono le sezioni
+    USATE DAI FONDI, non tutte le aree di numerazione del file: una consegna
+    ne contiene anche di cantonali e nazionali (CH0100000001) che non sono
+    sezioni di un comune.
+
+    Non c'e' alcun limite a dieci: il numero di sezioni e' quello che si
+    trova nei dati."""
     con = _apri(percorso_gpkg)
     if con is None:
         return []
@@ -295,12 +340,21 @@ def sezioni_disponibili(percorso_gpkg):
         t = _trova_tabelle(con)
         if not t["fondo"]:
             return []
-        viste = set()
+        nomi = _nomi_sezione(con, t.get("localita"))
+        viste = {}
         for (identan,) in con.execute('SELECT DISTINCT identan FROM "%s"' % t["fondo"]):
-            s = sezione_di(identan)
-            if s:
-                viste.add(s)
-        return sorted(viste)
+            codice = sezione_di(identan)
+            if not codice:
+                continue
+            nome = nomi.get(str(identan).strip())
+            # Se due IdentAN diversi dessero lo stesso codice con nomi
+            # diversi (piu' comuni nella stessa consegna) il nome diventa
+            # ambiguo e si toglie, invece di far vincere l'ultimo letto.
+            if codice in viste and viste[codice] != nome:
+                viste[codice] = None
+            else:
+                viste[codice] = nome
+        return sorted(viste.items())
     except sqlite3.Error:
         return []
     finally:
@@ -410,6 +464,7 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
         return []
 
     nomi = _nomi_comune(con, t["comune"])
+    nomi_sez = _nomi_sezione(con, t.get("localita"))
     ids = [r[0] for r in righe]
     estensioni, quante = _estensioni_parti(con, t["parti"], ids)
     mancanti = [i for i in ids if i not in estensioni]
@@ -428,6 +483,7 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
         cnum = comune_di(identan)
         fuori.append(FondoTrovato(
             identan=identan, numero=num, sezione=sezione_di(identan),
+            sezione_nome=nomi_sez.get(str(identan).strip() if identan else ""),
             comune_nr=cnum, comune=nomi.get(cnum), egrid=egr, validita=val,
             integralita=integ, genere=gen, superficie=sup,
             extent=est, centro=centro, origine_geometria=origine,

@@ -1,12 +1,7 @@
 # Componenti di terze parti
 
 > ⚠️ **Il progetto è pubblicato** su
-> <https://github.com/orsettobubu6-dotcom/TIDashboard>, font e simboli
-> compresi. Resta aperto **un** punto: i diritti di **ridistribuzione** di font
-> e simboli Cadastra, che sono materiale swisstopo / cadastre.ch. Le istruzioni
-> federali li dicono scaricabili dal sito del catasto, ma «scaricabile» non
-> equivale a «ridistribuibile in un repository pubblico».
->
+
 > Le licenze delle librerie Java sono invece **accertate**, tranne tre su
 > quindici: vedi la tabella sotto.
 

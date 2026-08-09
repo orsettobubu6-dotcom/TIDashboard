@@ -3447,13 +3447,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         sezioni = _cerca_fondo.sezioni_disponibili(percorso)
         self.combo_sezione.clear()
         self.combo_sezione.addItem("Tutte", None)
-        for s in sezioni:
-            self.combo_sezione.addItem(s, s)
+        for codice, nome in sezioni:
+            # Il NOME accanto al codice: "03 — Arzo" si sceglie, "03" no.
+            # Viene da Nome_di_localita e in Ticino e' l'ex comune diventato
+            # sezione; puo' mancare, e allora resta il solo codice.
+            self.combo_sezione.addItem(
+                "%s — %s" % (codice, nome) if nome else codice, codice)
         indice = self.combo_sezione.findText(scelta)
         if indice >= 0:
             self.combo_sezione.setCurrentIndex(indice)
         if sezioni:
-            self.log("   🔢 Sezioni nei dati: %s" % ", ".join(sezioni))
+            self.log("   🔢 Sezioni nei dati (%d): %s"
+                     % (len(sezioni), ", ".join(
+                         "%s %s" % (c, n) if n else c for c, n in sezioni)))
 
     def cerca_fondo(self):
         percorso = self._gpkg_corrente()

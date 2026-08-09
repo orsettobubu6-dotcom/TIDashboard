@@ -30,7 +30,7 @@ def _blob(xmin, ymin, xmax, ymax, con_envelope=True, punto=False):
 
 
 def _gpkg(fondi, parti=(), posfondo=(), comuni=(("Mendrisio", 5254, 632),),
-          con_prog=False):
+          con_prog=False, localita=()):
     """GeoPackage minimo con le sole tabelle che servono alla ricerca.
 
     'fondi'    (T_Id, identan, numero, egrid, validita, genere)
@@ -66,6 +66,14 @@ def _gpkg(fondi, parti=(), posfondo=(), comuni=(("Mendrisio", 5254, 632),),
     for i, (nome, noufs, nofisc) in enumerate(comuni):
         con.execute("INSERT INTO confini_comunali_comune VALUES (?,?,?,?)",
                     (i + 1, nome, noufs, nofisc))
+    # Nome_di_localita: da qui viene il NOME della sezione. La chiave del
+    # modello e' (IdentAN, Numero), quindi piu' localita' per area sono
+    # ammesse.
+    con.execute("CREATE TABLE nomenclatura_nome_di_localita "
+                "(T_Id INTEGER, nome TEXT, tipo TEXT, identan TEXT, numero TEXT)")
+    for i, (identan, numero, nome) in enumerate(localita):
+        con.execute("INSERT INTO nomenclatura_nome_di_localita VALUES (?,?,?,?,?)",
+                    (i + 1, nome, None, identan, numero))
     con.commit()
     con.close()
     return percorso
@@ -247,12 +255,92 @@ class TestFiltri(unittest.TestCase):
         self.assertEqual(len(C.cerca(g, numero="5", limite=7)), 7)
 
 
+class TestNomeDellaSezione(unittest.TestCase):
+    """Le sezioni hanno un NOME: in Ticino sono gli ex comuni aggregati.
+    Area_di_numerazione non lo porta - ha solo Ct, NumeroAN e IncartoTecnico
+    - ma Nome_di_localita si', legato dallo stesso IdentAN. Su Mendrisio:
+    TI63203 -> Arzo, TI63209 -> Ligornetto."""
+
+    def _dati(self, localita):
+        return _gpkg(
+            fondi=[(1, "TI63203", "99", None, "in_vigore", "bene_immobile"),
+                   (2, "TI63209", "99", None, "in_vigore", "bene_immobile")],
+            localita=localita)
+
+    def test_il_nome_arriva_nel_risultato_e_nell_etichetta(self):
+        g = self._dati([("TI63203", "201", "Arzo"), ("TI63209", "1", "Ligornetto")])
+        r = {f.sezione: f for f in C.cerca(g, numero="99")}
+        self.assertEqual(r["03"].sezione_nome, "Arzo")
+        self.assertEqual(r["09"].sezione_nome, "Ligornetto")
+        self.assertIn("sezione 03 Arzo", r["03"].etichetta)
+
+    def test_il_comune_non_si_ripete_se_e_gia_il_nome_della_sezione(self):
+        """La sezione principale di un comune aggregato porta il nome del
+        comune: "sezione 01 Mendrisio · Mendrisio" e' solo rumore."""
+        g = _gpkg(fondi=[(1, "TI63201", "9", None, "in_vigore", "bene_immobile"),
+                         (2, "TI63203", "9", None, "in_vigore", "bene_immobile")],
+                  localita=[("TI63201", "101", "Mendrisio"),
+                            ("TI63203", "201", "Arzo")])
+        e = {f.sezione: f.etichetta for f in C.cerca(g, numero="9")}
+        self.assertEqual(e["01"].count("Mendrisio"), 1)
+        self.assertIn("Arzo · Mendrisio", e["03"])
+
+    def test_il_nome_compare_nell_elenco_delle_sezioni(self):
+        g = self._dati([("TI63203", "201", "Arzo"), ("TI63209", "1", "Ligornetto")])
+        self.assertEqual(C.sezioni_disponibili(g),
+                         [("03", "Arzo"), ("09", "Ligornetto")])
+
+    def test_senza_localita_resta_il_solo_codice(self):
+        g = self._dati([])
+        self.assertEqual(C.sezioni_disponibili(g), [("03", None), ("09", None)])
+        self.assertIsNone(C.cerca(g, numero="99")[0].sezione_nome)
+
+    def test_piu_nomi_per_la_stessa_area_non_ne_scelgono_uno(self):
+        """Il modello ammette piu' localita' per area (IDENT IdentAN, Numero):
+        mostrarne una a caso attribuirebbe alla sezione un nome non suo."""
+        g = self._dati([("TI63203", "201", "Arzo"), ("TI63203", "202", "Meride"),
+                        ("TI63209", "1", "Ligornetto")])
+        sezioni = dict(C.sezioni_disponibili(g))
+        self.assertIsNone(sezioni["03"])
+        self.assertEqual(sezioni["09"], "Ligornetto")
+
+    def test_il_nome_e_chiavato_sull_identan_intero(self):
+        """Non su due cifre ritagliate: IdentAN e' Ct + NumeroAN con NumeroAN
+        TEXT*10, e nei dati reali esistono anche "CH0100000001"."""
+        g = _gpkg(fondi=[(1, "TI63203", "5", None, "in_vigore", "bene_immobile")],
+                  localita=[("TI63203", "201", "Arzo"),
+                            ("CH0100000003", "1", "Svizzera")])
+        f = C.cerca(g, numero="5")[0]
+        self.assertEqual(f.sezione_nome, "Arzo")
+
+
+class TestPiuDiDieciSezioni(unittest.TestCase):
+    """Le sezioni non sono al massimo dieci: SS ha due cifre, quindi fino a
+    99, e il codice non deve avere alcun limite cablato."""
+
+    def test_venti_sezioni(self):
+        fondi = [(i, "TI632%02d" % i, "7", None, "in_vigore", "bene_immobile")
+                 for i in range(1, 21)]
+        g = _gpkg(fondi=fondi)
+        self.assertEqual(len(C.sezioni_disponibili(g)), 20)
+        self.assertEqual(len(C.cerca(g, numero="7")), 20)
+
+    def test_sezione_oltre_la_decima_si_cerca(self):
+        fondi = [(i, "TI632%02d" % i, "7", None, "in_vigore", "bene_immobile")
+                 for i in range(1, 21)]
+        g = _gpkg(fondi=fondi)
+        self.assertEqual([f.identan for f in C.cerca(g, numero="7", sezione="17")],
+                         ["TI63217"])
+        self.assertEqual([f.identan for f in C.cerca(g, numero="7-17")],
+                         ["TI63217"])
+
+
 class TestSezioniDisponibili(unittest.TestCase):
     def test_elenco_ordinato_e_senza_ripetizioni(self):
         g = _gpkg(fondi=[(1, "TI63203", "1", None, "in_vigore", "bene_immobile"),
                          (2, "TI63201", "2", None, "in_vigore", "bene_immobile"),
                          (3, "TI63203", "3", None, "in_vigore", "bene_immobile")])
-        self.assertEqual(C.sezioni_disponibili(g), ["01", "03"])
+        self.assertEqual(C.sezioni_disponibili(g), [("01", None), ("03", None)])
 
 
 class TestFileAssenteOMalformato(unittest.TestCase):

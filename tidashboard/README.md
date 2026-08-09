@@ -79,9 +79,13 @@ quelle già completate.
    **Cerca fondo** trova un fondo per numero, sezione o EGRID e lo usa come
    centro del foglio. Si può scrivere numero e sezione insieme (`452-01`,
    `452 / 01`). Quando lo stesso numero esiste in più sezioni — è la norma nei
-   comuni ticinesi, a Mendrisio il numero 99 sta in tutte e dieci — il plugin
+   comuni aggregati, a Mendrisio il numero 99 sta in tutte e dieci — il plugin
    **non sceglie**: elenca i risultati e lascia decidere, perché scegliere il
    primo vorrebbe dire mostrare il fondo sbagliato senza dirlo.
+
+   Le sezioni si scelgono **per nome**, non per numero: `03 — Arzo`,
+   `09 — Ligornetto`. Il nome viene dai dati (`Nome_di_localita`) e in Ticino
+   è l'ex comune diventato sezione.
    La spunta «Mostra sulla mappa l'ingombro del foglio» disegna sul canvas il
    rettangolo che finirà sul foglio.
 
