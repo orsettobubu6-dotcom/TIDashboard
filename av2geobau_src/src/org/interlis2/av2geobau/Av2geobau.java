@@ -961,6 +961,22 @@ public class Av2geobau {
         stringBuilder.append(DxfUtil.toString(40, Double.toString(d3)));
         stringBuilder.append(DxfUtil.toString(1, string));
         stringBuilder.append(DxfUtil.toString(7, string2));
+        // IL TEXT VUOLE IL MARCATORE DI SOTTOCLASSE DUE VOLTE. E' una
+        // stranezza del formato: AcDbText compare una prima volta prima della
+        // geometria e una SECONDA prima del gruppo 73 (allineamento
+        // verticale). Senza la seconda, AutoCAD non degrada il testo -
+        // ABORTISCE L'INTERO DISEGNO:
+        //   "while reading in TEXT ... Class separator for class AcDbText
+        //    expected. Invalid or incomplete DXF input -- drawing discarded."
+        // Il testo delle entita' vere lo scrive gia' (DxfWriter.text2Dxf);
+        // questo scrittore separato della legenda no, e i suoi 638 testi
+        // rendevano illeggibile un file da 209 MB.
+        //
+        // 73 = 0 (linea di base) e non 2 come in text2Dxf: e' il valore che
+        // AutoCAD assume quando il gruppo manca, quindi scriverlo esplicito
+        // NON sposta la legenda gia' impaginata.
+        stringBuilder.append(DxfUtil.toString(100, "AcDbText"));
+        stringBuilder.append(DxfUtil.toString(73, "0"));
         return stringBuilder.toString();
     }
 
