@@ -1,6 +1,6 @@
 # Componenti di terze parti
 
-> ⚠️ **Prima di pubblicare il repository** (https://github.com/orsettobubu6-dotcom/tidashboard)
+> ⚠️ **Prima di pubblicare il repository** (https://github.com/orsettobubu6-dotcom/TIDashboard)
 > restano da chiarire due punti segnati qui sotto: le licenze delle 15 librerie
 > Java in dotazione e i diritti di **ridistribuzione** di font e simboli
 > Cadastra, che sono materiale swisstopo / cadastre.ch. «Scaricabile dal sito
