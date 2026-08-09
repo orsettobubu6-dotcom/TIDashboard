@@ -241,6 +241,27 @@ CAP_HEIGHT_MINIMA_NORMA = 1.5
 CAP_HEIGHT_MINIMA_STAMPA = 1.2
 
 
+def scala_che_contiene(dx, dy, formato="A4 verticale"):
+    """La piu' GRANDE scala ufficiale (denominatore piu' piccolo, quindi piu'
+    dettaglio) in cui un oggetto largo dx per dy metri sta dentro il foglio.
+    None se non ci sta nemmeno a 1:10000.
+
+    Serve perche' centrare il foglio su un fondo non basta: la scala resta
+    quella scelta prima, e un fondo piu' grande del foglio viene tagliato
+    senza che nessuno lo dica. Sui dati di Mendrisio, su A4 verticale, non ci
+    sta il 25% dei fondi a 1:500 e il 7.7% a 1:1000.
+
+    La rotazione non entra nel conto: si confronta il rettangolo circoscritto
+    con il foglio non ruotato, che e' la condizione piu' severa. Un foglio
+    ruotato puo' quindi contenere qualcosa che qui risulta fuori - meglio un
+    avviso di troppo che un taglio silenzioso."""
+    larghezza_mm, altezza_mm = area_mappa(formato)
+    for scala in sorted(SCALE_UFFICIALI_MU):
+        if (dx or 0) <= larghezza_mm / 1000.0 * scala and            (dy or 0) <= altezza_mm / 1000.0 * scala:
+            return scala
+    return None
+
+
 def fattore_proporzionale(scala, prodotto="gb", lettera_norma=False):
     """Fattore da applicare a dimensioni e distanze quando la scala del foglio
     differisce dalla scala di riferimento del prodotto (cap.1.5.2 per il piano

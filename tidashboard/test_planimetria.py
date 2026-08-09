@@ -446,6 +446,45 @@ class TestAnnotazioniGriglia(unittest.TestCase):
             self.assertEqual(griglia.annotationDisplay(lato), G.ShowAll)
 
 
+class TestScalaCheContiene(unittest.TestCase):
+    """Centrare il foglio su un fondo non basta: la scala resta quella scelta
+    prima, e un fondo piu' grande del foglio viene tagliato. Misurato sui dati
+    di Mendrisio: su A4 verticale non ci sta il 25% dei fondi a 1:500 e il
+    7.7% a 1:1000."""
+
+    def test_sceglie_la_scala_piu_dettagliata_che_basta(self):
+        larghezza, altezza = P.area_mappa("A4 verticale")
+        # un oggetto che riempie esattamente il foglio a 1:500
+        dx, dy = larghezza / 1000.0 * 500, altezza / 1000.0 * 500
+        self.assertEqual(P.scala_che_contiene(dx, dy, "A4 verticale"), 500)
+
+    def test_un_metro_in_piu_fa_salire_di_scala(self):
+        larghezza, altezza = P.area_mappa("A4 verticale")
+        dx, dy = larghezza / 1000.0 * 500 + 1, altezza / 1000.0 * 500
+        self.assertEqual(P.scala_che_contiene(dx, dy, "A4 verticale"), 1000)
+
+    def test_il_formato_conta(self):
+        """Lo stesso oggetto, largo e basso, ci sta in orizzontale e non in
+        verticale."""
+        larghezza, _ = P.area_mappa("A4 orizzontale")
+        dx, dy = larghezza / 1000.0 * 500, 10.0
+        self.assertEqual(P.scala_che_contiene(dx, dy, "A4 orizzontale"), 500)
+        self.assertGreater(P.scala_che_contiene(dx, dy, "A4 verticale"), 500)
+
+    def test_oltre_ogni_scala_ufficiale(self):
+        """Non si inventa una scala fuori elenco: si dice che non ci sta."""
+        self.assertIsNone(P.scala_che_contiene(50000, 50000, "A4 verticale"))
+
+    def test_il_fondo_piu_grande_di_mendrisio(self):
+        """2174 x 1316 m, misurato sui dati reali. Su A4 VERTICALE non ci sta
+        in nessuna scala ufficiale - a 1:10000 il foglio copre 1820 m di
+        larghezza e ne servono 2174 - mentre in ORIZZONTALE ci sta, perche'
+        li' la larghezza vale 2690 m. E' il caso che mostra perche' il
+        formato va nel conto e non basta guardare la scala."""
+        self.assertIsNone(P.scala_che_contiene(2174, 1316, "A4 verticale"))
+        self.assertEqual(P.scala_che_contiene(2174, 1316, "A4 orizzontale"), 10000)
+
+
 class TestNoveIscrizioni(unittest.TestCase):
     """Il cap.1.5.7 nella versione IN VIGORE (stato 1.2.2014) elenca NOVE
     iscrizioni obbligatorie; la versione marzo 2007, su cui era stato costruito

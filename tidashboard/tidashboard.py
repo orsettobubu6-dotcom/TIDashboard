@@ -389,7 +389,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.group_adv = group_adv
         layout_import.addWidget(group_adv)
 
-        self.btn_import = QPushButton("▶ ESEGUI IMPORTAZIONE UFFICIALE (2 Fasi)")
+        self.btn_import = QPushButton("▶ ELABORA IMPORTAZIONE INTERLIS")
         # Le regole vanno scritte con il selettore QPushButton e non come
         # dichiarazioni nude: senza il ramo :disabled il pulsante restava
         # verde acceso anche da spento, quindi sembrava premibile.
@@ -451,7 +451,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.txt_geobau_dxf = QLineEdit()
         self.txt_geobau_dxf.setPlaceholderText("Salva il DXF come...")
         layout_geobau.addLayout(self.create_file_row("Output DXF:", self.txt_geobau_dxf, "DXF (*.dxf)", True, "dxf"))
-        self.btn_geobau = QPushButton("▶ ESEGUI TRADUZIONE av2geobau")
+        self.btn_geobau = QPushButton("▶ ESPORTAZIONE DXF")
         self.btn_geobau.setStyleSheet(_STILE_PULSANTE % "#1565C0")
         self.btn_geobau.clicked.connect(self.run_geobau)
         layout_geobau.addWidget(self.btn_geobau)
@@ -632,6 +632,24 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_centra_fondo.clicked.connect(self.centra_planimetria_sul_fondo)
         riga_azioni.addWidget(self.btn_centra_fondo)
         layout_cerca.addLayout(riga_azioni)
+
+        # Avviso permanente + sblocco. Il centro agganciato a un fondo resta
+        # tale finché non lo si toglie: senza qualcosa che lo dica in modo
+        # stabile, si sposta la mappa, si preme CREA PLANIMETRIA e si ottiene
+        # un foglio da tutt'altra parte.
+        riga_centro = QHBoxLayout()
+        self.lbl_centro_fissato = QLabel()
+        self.lbl_centro_fissato.setWordWrap(True)
+        self.lbl_centro_fissato.setVisible(False)
+        riga_centro.addWidget(self.lbl_centro_fissato, 1)
+        self.btn_sgancia_centro = QPushButton("Sgancia")
+        self.btn_sgancia_centro.setToolTip(
+            "Il foglio torna a centrarsi sulla vista corrente della mappa")
+        self.btn_sgancia_centro.setMaximumWidth(90)
+        self.btn_sgancia_centro.clicked.connect(self.sgancia_centro)
+        self.btn_sgancia_centro.setVisible(False)
+        riga_centro.addWidget(self.btn_sgancia_centro)
+        layout_cerca.addLayout(riga_centro)
 
         gruppo_cerca.setLayout(layout_cerca)
         layout_plan.addWidget(gruppo_cerca)
@@ -3478,10 +3496,25 @@ class TIDashboardDialog(StiliMixin, QDialog):
                               errore=True)
             return
 
+        # Il comune del CARTIGLIO filtra la ricerca solo se corrisponde a un
+        # comune presente nei dati. Quella casella e' modificabile e serve
+        # all'iscrizione del foglio: un nome scritto a mano che i dati non
+        # conoscono azzerava la ricerca in silenzio, e il messaggio "nessun
+        # fondo trovato" mandava a controllare numero e sezione, che erano
+        # giusti.
+        comune = self.combo_comune.currentText().strip() or None
+        if comune:
+            noti = [n.lower() for n in
+                    _dati_comune.leggi_comuni(percorso) or []]
+            if noti and comune.lower() not in noti:
+                self.log("   ℹ️ «%s» non è fra i comuni dei dati (%s): la "
+                         "ricerca non lo usa come filtro."
+                         % (comune, ", ".join(noti)))
+                comune = None
+
         risultati = _cerca_fondo.cerca(
             percorso, numero=numero or None, egrid=egrid or None,
-            sezione=self.combo_sezione.currentData(),
-            comune=self.combo_comune.currentText().strip() or None,
+            sezione=self.combo_sezione.currentData(), comune=comune,
             solo_in_vigore=self.chk_solo_in_vigore.isChecked())
         self._risultati_fondo = risultati
 
@@ -3576,10 +3609,58 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._centro_da_fondo = QgsPointXY(f.centro[0], f.centro[1])
         etichetta = "fondo %s%s" % (f.numero,
                                     " sez. %s" % f.sezione if f.sezione else "")
-        self._esito_fondo("Centro della planimetria fissato sul %s. "
-                          "Vale finché non cerchi un altro fondo." % etichetta)
+        self._esito_fondo("Centro della planimetria fissato sul %s." % etichetta)
         self.log("   🎯 Centro planimetria: %s a E%.1f N%.1f (%s)"
                  % (etichetta, f.centro[0], f.centro[1], f.origine_geometria))
+        self._avvisa_capienza(f)
+        self._aggiorna_centro_fissato(etichetta)
+        self._aggiorna_ingombro()
+
+    def _avvisa_capienza(self, f):
+        """Centrare non basta: la scala resta quella scelta prima, e un fondo
+        piu' grande del foglio viene tagliato. Sui dati di Mendrisio, su A4
+        verticale, non ci sta il 25% dei fondi a 1:500."""
+        if f.extent is None:
+            return
+        dx, dy = f.extent[2] - f.extent[0], f.extent[3] - f.extent[1]
+        formato, scala, _rot, _c, _d = self._parametri_planimetria()
+        larghezza, altezza = _planimetria.area_mappa(formato)
+        if dx <= larghezza / 1000.0 * scala and dy <= altezza / 1000.0 * scala:
+            return
+        serve = _planimetria.scala_che_contiene(dx, dy, formato)
+        self.log("   ⚠️ Il fondo misura %.0f × %.0f m e a 1:%d su %s non ci "
+                 "sta: verrà tagliato. %s"
+                 % (dx, dy, scala, formato,
+                    "Serve almeno 1:%d." % serve if serve
+                    else "Non ci sta in nessuna scala ufficiale."),
+                 Qgis.Warning)
+
+    def _aggiorna_centro_fissato(self, etichetta=None):
+        """Avviso PERMANENTE finché il centro è agganciato a un fondo.
+
+        Prima era un messaggio che spariva alla ricerca successiva: si poteva
+        spostare la mappa, premere CREA PLANIMETRIA e ottenere un foglio
+        altrove, senza nulla che lo spiegasse."""
+        if not hasattr(self, "lbl_centro_fissato"):
+            return
+        fissato = getattr(self, "_centro_da_fondo", None) is not None
+        if fissato and etichetta:
+            self._etichetta_centro = etichetta
+        testo = ("<span style='color:#E65100'>Centro del foglio agganciato al "
+                 "%s: la vista della mappa non lo sposta.</span>"
+                 % getattr(self, "_etichetta_centro", "fondo scelto")) if fissato else ""
+        self.lbl_centro_fissato.setText(testo)
+        self.lbl_centro_fissato.setVisible(bool(testo))
+        if hasattr(self, "btn_sgancia_centro"):
+            self.btn_sgancia_centro.setVisible(fissato)
+
+    def sgancia_centro(self):
+        """Torna a centrare sulla vista corrente."""
+        self._centro_da_fondo = None
+        self._aggiorna_centro_fissato()
+        self._esito_fondo("Centro sganciato: il foglio segue di nuovo la vista "
+                          "della mappa.")
+        self.log("   🎯 Centro planimetria: torna a seguire la vista")
         self._aggiorna_ingombro()
 
     def _centro_planimetria(self):

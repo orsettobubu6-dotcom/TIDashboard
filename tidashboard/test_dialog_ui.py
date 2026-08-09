@@ -685,6 +685,51 @@ class TestOrigineData(unittest.TestCase):
         self.assertIn("mutazione pi", dlg.lbl_origine_data.text())
 
 
+class TestCentroDaFondo(unittest.TestCase):
+    """Il centro agganciato a un fondo restava per sempre, e l'unico segno era
+    un messaggio che spariva alla ricerca successiva: si spostava la mappa, si
+    premeva CREA PLANIMETRIA e usciva un foglio da tutt'altra parte."""
+
+    @staticmethod
+    def _fondo(x=2716000.0, y=1081000.0, dx=50.0, dy=50.0):
+        from tidashboard.cerca_fondo import FondoTrovato
+        return FondoTrovato(numero="99", sezione="03",
+                            extent=(x, y, x + dx, y + dy),
+                            centro=(x + dx / 2, y + dy / 2),
+                            origine_geometria="geometria")
+
+    def _con_fondo(self, dlg, f):
+        dlg._risultati_fondo = [f]
+        dlg.lista_fondi.addItem(f.etichetta)
+        dlg.lista_fondi.setCurrentRow(0)
+
+    def test_l_avviso_e_permanente_e_il_pulsante_compare(self):
+        dlg = TIDashboardDialog()
+        self.assertFalse(dlg.lbl_centro_fissato.isVisible())
+        self.assertFalse(dlg.btn_sgancia_centro.isVisible())
+        self._con_fondo(dlg, self._fondo())
+        dlg.centra_planimetria_sul_fondo()
+        self.assertIn("agganciato", dlg.lbl_centro_fissato.text())
+        self.assertIn("99", dlg.lbl_centro_fissato.text())
+        self.assertIsNotNone(dlg._centro_da_fondo)
+
+    def test_sganciare_riporta_il_foglio_sulla_vista(self):
+        dlg = TIDashboardDialog()
+        self._con_fondo(dlg, self._fondo())
+        dlg.centra_planimetria_sul_fondo()
+        dlg.sgancia_centro()
+        self.assertIsNone(dlg._centro_da_fondo)
+        self.assertEqual(dlg.lbl_centro_fissato.text(), "")
+
+    def test_il_centro_del_foglio_e_quello_del_fondo(self):
+        dlg = TIDashboardDialog()
+        self._con_fondo(dlg, self._fondo(2716000.0, 1081000.0, 100.0, 200.0))
+        dlg.centra_planimetria_sul_fondo()
+        c = dlg._centro_planimetria()
+        self.assertAlmostEqual(c.x(), 2716050.0)
+        self.assertAlmostEqual(c.y(), 1081100.0)
+
+
 class TestNotaFattore(unittest.TestCase):
     """Il limite di leggibilita' del cap.1.5.2 morde su 4 delle 8 scale RF, ma
     era scritto solo nel README: chi sceglieva 1:5000 non poteva sapere che i
