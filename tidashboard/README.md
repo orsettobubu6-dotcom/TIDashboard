@@ -75,6 +75,13 @@ quelle già completate.
    restano modificabili: un valore scelto a mano non viene più sovrascritto.
 2. **Conversione DXF** — usa lo stesso ITF dell'importazione.
 3. **Planimetria** — formato, scala, rotazione. Comune e data sono letti dai dati.
+
+   **Cerca fondo** trova un fondo per numero, sezione o EGRID e lo usa come
+   centro del foglio. Si può scrivere numero e sezione insieme (`452-01`,
+   `452 / 01`). Quando lo stesso numero esiste in più sezioni — è la norma nei
+   comuni ticinesi, a Mendrisio il numero 99 sta in tutte e dieci — il plugin
+   **non sceglie**: elenca i risultati e lascia decidere, perché scegliere il
+   primo vorrebbe dire mostrare il fondo sbagliato senza dirlo.
    La spunta «Mostra sulla mappa l'ingombro del foglio» disegna sul canvas il
    rettangolo che finirà sul foglio.
 

@@ -54,7 +54,7 @@ with zipfile.ZipFile(ZIP) as z:
     esito = esito and corrotto is None and radici == {NOME}
 
     attesi = ["metadata.txt", "__init__.py", "tidashboard.py", "planimetria.py",
-              "dati_comune.py", "legend_manifest.py",
+              "dati_comune.py", "cerca_fondo.py", "legend_manifest.py",
               # moduli nati dallo spacchettamento di tidashboard.py: se uno
               # sparisse dallo zip il plugin non si caricherebbe affatto
               "colori.py", "etichette.py", "ordinamento.py", "simbologia.py",

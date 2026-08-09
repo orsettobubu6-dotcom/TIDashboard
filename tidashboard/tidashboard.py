@@ -18,7 +18,8 @@ from qgis.PyQt.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QFileDialog,
     QTextEdit, QLabel, QGroupBox, QMessageBox, QAction, QCheckBox, QGridLayout,
     QComboBox, QDoubleSpinBox, QDateEdit, QTabWidget, QProgressBar, QWidget,
-    QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView
+    QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, QListWidget,
+    QListWidgetItem
 )
 from qgis.PyQt.QtCore import (QThread, pyqtSignal, QPointF, QRectF, QDate,
                               QTimer, Qt)
@@ -33,7 +34,7 @@ from qgis.core import (
     QgsPrintLayout, QgsLayoutItemLabel, QgsLayoutItemScaleBar, QgsLayoutItemMap,
     QgsLayoutExporter, QgsLayerTreeGroup, QgsRectangle,
     QgsPalLayerSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling, QgsProperty,
-    QgsUnitTypes, QgsGeometry, QgsWkbTypes, QgsSettings,
+    QgsUnitTypes, QgsGeometry, QgsWkbTypes, QgsSettings, QgsPointXY,
     QgsMapLayerLegendUtils
 )
 # NB: niente import di iface da qgis.utils a livello di modulo: renderebbe il
@@ -43,6 +44,7 @@ from qgis.core import (
 
 try:
     from . import planimetria as _planimetria
+    from . import cerca_fondo as _cerca_fondo
     from . import dati_comune as _dati_comune
     from . import simbologia as _simbologia
     from .stili import StiliMixin
@@ -64,6 +66,7 @@ except ImportError:
     # test_style_logic.py importa questo modulo come top-level (non come
     # pacchetto), quindi l'import relativo fallisce li' - fallback assoluto.
     import planimetria as _planimetria
+    import cerca_fondo as _cerca_fondo
     import dati_comune as _dati_comune
     import simbologia as _simbologia
     from stili import StiliMixin
@@ -562,6 +565,80 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.data_validita.dateChanged.connect(self._aggiorna_origine_data)
         self._aggiorna_origine_data()
 
+        # --- Cerca fondo ---------------------------------------------------
+        # Trovare un fondo scorrendo la mappa e' impraticabile: un comune ne
+        # ha migliaia. La ricerca sta qui, nella scheda della planimetria,
+        # perche' e' li' che serve - si cerca un fondo per centrarci il foglio.
+        gruppo_cerca = QGroupBox("Cerca fondo")
+        layout_cerca = QVBoxLayout()
+
+        riga_cerca = QHBoxLayout()
+        riga_cerca.addWidget(QLabel("Numero:"))
+        self.txt_fondo = QLineEdit()
+        self.txt_fondo.setPlaceholderText("es. 452  oppure  452-01")
+        self.txt_fondo.setToolTip(
+            "Numero del fondo. Si può scrivere anche numero e sezione insieme "
+            "(452-01, 452 / 01): la sezione viene riconosciuta da sola.")
+        self.txt_fondo.returnPressed.connect(self.cerca_fondo)
+        riga_cerca.addWidget(self.txt_fondo, 1)
+
+        riga_cerca.addWidget(QLabel("Sezione:"))
+        self.combo_sezione = QComboBox()
+        self.combo_sezione.setToolTip(
+            "Le sezioni presenti nei dati. «Tutte» lascia decidere dopo, "
+            "guardando i risultati.")
+        self.combo_sezione.setMinimumWidth(80)
+        riga_cerca.addWidget(self.combo_sezione)
+
+        riga_cerca.addWidget(QLabel("EGRID:"))
+        self.txt_egrid = QLineEdit()
+        self.txt_egrid.setPlaceholderText("facoltativo")
+        self.txt_egrid.setMaximumWidth(140)
+        self.txt_egrid.returnPressed.connect(self.cerca_fondo)
+        riga_cerca.addWidget(self.txt_egrid)
+        layout_cerca.addLayout(riga_cerca)
+
+        riga_cerca2 = QHBoxLayout()
+        self.chk_solo_in_vigore = QCheckBox("Solo fondi in vigore")
+        self.chk_solo_in_vigore.setChecked(True)
+        self.chk_solo_in_vigore.setToolTip(
+            "Togliendo la spunta si includono anche i fondi contestati. "
+            "Gli oggetti in progetto restano sempre esclusi: non sono fondi "
+            "esistenti e il piano non li rappresenta (cap. 1.5.3).")
+        riga_cerca2.addWidget(self.chk_solo_in_vigore)
+        self.btn_cerca_fondo = QPushButton("🔎 CERCA")
+        self.btn_cerca_fondo.clicked.connect(self.cerca_fondo)
+        riga_cerca2.addWidget(self.btn_cerca_fondo)
+        layout_cerca.addLayout(riga_cerca2)
+
+        self.lbl_esito_fondo = QLabel()
+        self.lbl_esito_fondo.setWordWrap(True)
+        layout_cerca.addWidget(self.lbl_esito_fondo)
+
+        # Elenco e non selezione automatica: con piu' sezioni lo stesso numero
+        # esiste piu' volte, e portare l'utente sul primo risultato vorrebbe
+        # dire mostrargli il fondo sbagliato senza dirglielo.
+        self.lista_fondi = QListWidget()
+        self.lista_fondi.setMaximumHeight(110)
+        self.lista_fondi.itemDoubleClicked.connect(lambda _i: self.zoom_sul_fondo())
+        self.lista_fondi.currentRowChanged.connect(self._aggiorna_comandi_fondo)
+        layout_cerca.addWidget(self.lista_fondi)
+
+        riga_azioni = QHBoxLayout()
+        self.btn_zoom_fondo = QPushButton("🔍 Zoom sulla mappa")
+        self.btn_zoom_fondo.clicked.connect(self.zoom_sul_fondo)
+        riga_azioni.addWidget(self.btn_zoom_fondo)
+        self.btn_centra_fondo = QPushButton("🎯 Usa come centro della planimetria")
+        self.btn_centra_fondo.clicked.connect(self.centra_planimetria_sul_fondo)
+        riga_azioni.addWidget(self.btn_centra_fondo)
+        layout_cerca.addLayout(riga_azioni)
+
+        gruppo_cerca.setLayout(layout_cerca)
+        layout_plan.addWidget(gruppo_cerca)
+        self._risultati_fondo = []
+        self._centro_da_fondo = None
+        self._aggiorna_comandi_fondo()
+
         # Anteprima dell'ingombro: senza, formato, scala e rotazione si
         # scelgono alla cieca e il risultato si vede solo a layout creato.
         self.chk_ingombro = QCheckBox("Mostra sulla mappa l'ingombro del foglio")
@@ -658,6 +735,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.txt_gpkg.textChanged.connect(self._sync_geobau_dxf)
         # Cambiando il GeoPackage cambia anche il comune da proporre.
         self.txt_gpkg.textChanged.connect(self.aggiorna_comuni_da_dati)
+        self.txt_gpkg.textChanged.connect(self.aggiorna_sezioni_da_dati)
 
         # Avanzamento: durante ili2gpkg su un comune intero non si muoveva
         # nulla per minuti, solo qualche riga di console. La barra e'
@@ -1446,7 +1524,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
             banda.setWidth(2)
             self._banda_ingombro = banda
         formato, scala, rotazione, _comune, _data = self._parametri_planimetria()
-        centro = canvas.extent().center()
+        # Il centro fissato su un fondo ha la precedenza sulla vista: altrimenti
+        # l'anteprima mostrerebbe un ingombro diverso da quello che verrebbe
+        # stampato, che e' esattamente cio' che l'anteprima deve escludere.
+        centro = getattr(self, "_centro_da_fondo", None) or canvas.extent().center()
         punti = _planimetria.impronta_foglio(centro, scala, formato, rotazione)
         banda.setToGeometry(QgsGeometry.fromPolygonXY([punti]), None)
 
@@ -3341,6 +3422,160 @@ class TIDashboardDialog(StiliMixin, QDialog):
     # stesso del piano, ed e' li' che si centra un estratto.
     LAYER_DI_CENTRAMENTO = ("bene_immobile", "punto_di_confine")
 
+    # --- CERCA FONDO --------------------------------------------------------
+    def _gpkg_corrente(self):
+        """Il GeoPackage su cui cercare: prima quello dei layer caricati (sono
+        loro a dire da quale file vengono davvero), poi il campo di testo."""
+        percorso = _dati_comune.gpkg_dei_layer(getattr(self, "loaded_layers", None))
+        return percorso or self.txt_gpkg.text().strip()
+
+    def aggiorna_sezioni_da_dati(self):
+        """Riempie la casella delle sezioni leggendo i valori distinti di
+        IdentAN. Un comune senza sezioni lascia la sola voce «Tutte»."""
+        if not hasattr(self, "combo_sezione"):
+            return
+        # La rilettura e' agganciata al campo del GeoPackage, che cambia a ogni
+        # BATTUTA DI TASTO: senza questa guardia ogni carattere digitato
+        # lanciava un DISTINCT su tutta la tabella dei fondi (11 000 righe sui
+        # dati di Mendrisio), e il log si riempiva di righe uguali.
+        percorso = self._gpkg_corrente()
+        if percorso == getattr(self, "_gpkg_sezioni", "__mai__"):
+            return
+        self._gpkg_sezioni = percorso
+
+        scelta = self.combo_sezione.currentText()
+        sezioni = _cerca_fondo.sezioni_disponibili(percorso)
+        self.combo_sezione.clear()
+        self.combo_sezione.addItem("Tutte", None)
+        for s in sezioni:
+            self.combo_sezione.addItem(s, s)
+        indice = self.combo_sezione.findText(scelta)
+        if indice >= 0:
+            self.combo_sezione.setCurrentIndex(indice)
+        if sezioni:
+            self.log("   🔢 Sezioni nei dati: %s" % ", ".join(sezioni))
+
+    def cerca_fondo(self):
+        percorso = self._gpkg_corrente()
+        self.lista_fondi.clear()
+        self._risultati_fondo = []
+        self._aggiorna_comandi_fondo()
+        if not percorso:
+            self._esito_fondo("Nessun GeoPackage: importa i dati o indica il "
+                              "file nella scheda 1.", errore=True)
+            return
+
+        numero = self.txt_fondo.text().strip()
+        egrid = self.txt_egrid.text().strip()
+        if not numero and not egrid:
+            self._esito_fondo("Indica il numero del fondo (o un EGRID).",
+                              errore=True)
+            return
+
+        risultati = _cerca_fondo.cerca(
+            percorso, numero=numero or None, egrid=egrid or None,
+            sezione=self.combo_sezione.currentData(),
+            comune=self.combo_comune.currentText().strip() or None,
+            solo_in_vigore=self.chk_solo_in_vigore.isChecked())
+        self._risultati_fondo = risultati
+
+        if not risultati:
+            self._esito_fondo("Nessun fondo trovato. Controlla numero, sezione "
+                              "e comune; se il fondo è contestato, togli la "
+                              "spunta «Solo fondi in vigore».", errore=True)
+            return
+
+        for f in risultati:
+            voce = QListWidgetItem(f.etichetta)
+            if f.extent is None:
+                voce.setToolTip("Fondo senza geometria: non si può centrare "
+                                "il foglio su di esso.")
+            self.lista_fondi.addItem(voce)
+
+        if len(risultati) == 1:
+            # Un solo risultato: si può selezionare, non c'è ambiguità.
+            self.lista_fondi.setCurrentRow(0)
+            self._esito_fondo("1 fondo trovato.")
+        else:
+            # PIU' RISULTATI: nessuna selezione automatica. Lo stesso numero
+            # esiste in ogni sezione, quindi scegliere per conto dell'utente
+            # vuol dire portarlo sul fondo sbagliato senza dirglielo.
+            sezioni = sorted({f.sezione for f in risultati if f.sezione})
+            self._esito_fondo(
+                "%d fondi con questo numero%s: scegli quale, la sezione "
+                "distingue." % (len(risultati),
+                                " (sezioni %s)" % ", ".join(sezioni) if sezioni else ""),
+                avviso=True)
+        if len(risultati) >= _cerca_fondo.LIMITE_RISULTATI:
+            self.log("   ℹ️ Elenco troncato a %d risultati: restringi con "
+                     "sezione o comune." % _cerca_fondo.LIMITE_RISULTATI)
+        self._aggiorna_comandi_fondo()
+
+    def _esito_fondo(self, testo, errore=False, avviso=False):
+        colore = (self._rosso_avviso() if errore
+                  else "#E65100" if avviso else self._verde_ok())
+        self.lbl_esito_fondo.setText("<span style='color:%s'>%s</span>"
+                                     % (colore, testo))
+
+    def _fondo_scelto(self):
+        riga = self.lista_fondi.currentRow()
+        if 0 <= riga < len(self._risultati_fondo):
+            return self._risultati_fondo[riga]
+        return None
+
+    def _aggiorna_comandi_fondo(self, _riga=None):
+        """I due comandi restano spenti finché non c'è una scelta con una
+        posizione: premerli senza selezione non saprebbe dove andare."""
+        f = self._fondo_scelto()
+        attivo = f is not None and f.extent is not None
+        for pulsante in (getattr(self, "btn_zoom_fondo", None),
+                         getattr(self, "btn_centra_fondo", None)):
+            if pulsante is not None:
+                pulsante.setEnabled(attivo)
+                pulsante.setToolTip("" if attivo else
+                                    "Scegli un fondo dall'elenco (con geometria)")
+
+    def _rettangolo_fondo(self, f, margine=0.10):
+        """Estensione del fondo con un margine attorno, così non tocca i bordi
+        della vista. Un fondo ridotto a un punto (ripiego su PosFondo) non ha
+        larghezza: gli si dà un intorno fisso, altrimenti lo zoom sarebbe
+        indefinito."""
+        xmin, ymin, xmax, ymax = f.extent
+        dx, dy = (xmax - xmin), (ymax - ymin)
+        if dx <= 0 and dy <= 0:
+            dx = dy = 50.0
+        m = max(dx, dy) * margine
+        return QgsRectangle(xmin - m, ymin - m, xmax + m, ymax + m)
+
+    def zoom_sul_fondo(self):
+        f = self._fondo_scelto()
+        if f is None or f.extent is None:
+            return
+        _iface = getattr(self, "_iface", None)
+        if not (_iface and _iface.mapCanvas()):
+            self._esito_fondo("Mappa di QGIS non disponibile.", errore=True)
+            return
+        _iface.mapCanvas().setExtent(self._rettangolo_fondo(f))
+        _iface.mapCanvas().refresh()
+        self.log("   🔍 Zoom sul fondo %s, sezione %s (%s)"
+                 % (f.numero, f.sezione or "—", f.origine_geometria))
+
+    def centra_planimetria_sul_fondo(self):
+        """Fissa il centro del foglio sul fondo scelto. Il centro resta quello
+        finché non si cerca un altro fondo: senza, bastava muovere la mappa
+        per perdere l'inquadratura appena trovata."""
+        f = self._fondo_scelto()
+        if f is None or f.centro is None:
+            return
+        self._centro_da_fondo = QgsPointXY(f.centro[0], f.centro[1])
+        etichetta = "fondo %s%s" % (f.numero,
+                                    " sez. %s" % f.sezione if f.sezione else "")
+        self._esito_fondo("Centro della planimetria fissato sul %s. "
+                          "Vale finché non cerchi un altro fondo." % etichetta)
+        self.log("   🎯 Centro planimetria: %s a E%.1f N%.1f (%s)"
+                 % (etichetta, f.centro[0], f.centro[1], f.origine_geometria))
+        self._aggiorna_ingombro()
+
     def _centro_planimetria(self):
         """Centro del foglio: il centro della vista corrente se la mappa di
         QGIS e' disponibile (cosi' l'utente inquadra e stampa quel che vede),
@@ -3351,7 +3586,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         dati reali di Chiasso - Geometria_AN (aree di numerazione, 29 oggetti)
         ha geometrie che si estendono da E2485409 a E2833842, cioe' mezza
         Svizzera, e da sola spostava il centro di 100 km. Centrare sui fondi e'
-        anche piu' corretto nel merito: sono l'oggetto del piano."""
+        anche piu' corretto nel merito: sono l'oggetto del piano.
+
+        Un fondo scelto con "Cerca fondo" ha pero' la precedenza su tutto: e'
+        una decisione esplicita dell'utente, mentre la vista corrente e' solo
+        dove si e' fermata la mappa."""
+        scelto = getattr(self, "_centro_da_fondo", None)
+        if scelto is not None:
+            return scelto
+
         _iface = getattr(self, "_iface", None)
         if _iface and _iface.mapCanvas():
             return _iface.mapCanvas().extent().center()
