@@ -54,6 +54,7 @@ try:
     from .ordinamento import *     # noqa: F401,F403 - ordine z e gruppi
     from .simbologia import *      # noqa: F401,F403 - costruttori di simboli
     from .etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
+                            _LABEL_PRIORITY, _LABEL_PRIORITY_DEFAULT,
                             _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
     from .ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
                               _raw_table_name, _rf_group_debug_info,
@@ -76,6 +77,7 @@ except ImportError:
     from ordinamento import *      # noqa: F401,F403
     from simbologia import *       # noqa: F401,F403
     from etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
+                           _LABEL_PRIORITY, _LABEL_PRIORITY_DEFAULT,
                            _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
     from ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
                              _raw_table_name, _rf_group_debug_info,
@@ -3024,6 +3026,21 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 f"CASE WHEN \"stile\" = 'spaziato' THEN {base_size * 0.3} ELSE 0 END"
             ))
             applied.append("Stile")
+
+        # Priorita' e comportamento in caso di sovrapposizione. Il motore di
+        # etichettatura di QGIS sa gia' nascondere una scritta che non ci sta;
+        # quello che non sa, senza che glielo si dica, e' QUALE delle due deve
+        # cedere: senza priorita' tratta tutti i layer alla pari e decide
+        # l'ordine di disegno. La scala sta in _LABEL_PRIORITY, ed e' la stessa
+        # usata dall'esportazione DXF (AntiCollisioneEtichette.java), cosi'
+        # anteprima e disegno consegnato non si contraddicono.
+        settings.priority = _LABEL_PRIORITY.get(keyword, _LABEL_PRIORITY_DEFAULT)
+        # La scritta e' anche ostacolo per le altre, con peso pari alla sua
+        # priorita': un numero di fondo non va coperto da un numero di punto.
+        ostacoli = settings.obstacleSettings()
+        ostacoli.setIsObstacle(True)
+        ostacoli.setFactor(0.5 + 0.1 * settings.priority)
+        settings.setObstacleSettings(ostacoli)
 
         if applied:
             settings.placement = Qgis.LabelPlacement.OverPoint

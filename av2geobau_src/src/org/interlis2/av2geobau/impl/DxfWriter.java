@@ -87,6 +87,13 @@ public class DxfWriter {
     public static final String LT_LIMITE_COPERTURA_SUOLO = "0200000000";
     private static int precision = 3;
 
+    /** I decimali con cui vengono scritte le coordinate. Serve a chi riscrive
+     * una coordinata a posteriori (AntiCollisioneEtichette) per formattarla
+     * esattamente come se l'avesse scritta questo writer al primo giro. */
+    public static int getPrecision() {
+        return precision;
+    }
+
     private static void writeHandle(StringBuffer stringBuffer) {
         stringBuffer.append(DxfUtil.toString(5, DxfUtil.nextHandle()));
         stringBuffer.append(DxfUtil.toString(330, modelSpaceHandle));

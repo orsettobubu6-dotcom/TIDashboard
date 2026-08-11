@@ -70,6 +70,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.interlis2.av2geobau.Main;
+import org.interlis2.av2geobau.impl.AntiCollisioneEtichette;
 import org.interlis2.av2geobau.impl.DxfUtil;
 import org.interlis2.av2geobau.impl.DxfWriter;
 import org.interlis2.av2geobau.impl.Mapper;
@@ -91,7 +92,7 @@ public class Av2geobau {
      * dichiarata - causa probabile dei simboli "mancanti" (punti fissi, punti
      * singoli, ecc.) nei lettori DXF che non creano da soli i layer non
      * dichiarati. */
-    private static final String[] ALL_LAYERS = new String[]{"01111", "01112", "01119", "01121", "01122", "01129", "01131", "01132", "01133", "01134", "01139", "01141", "01149", "01151", "01159", "01161", "01169", "01211", "01219", "01221", "01222", "01223", "01224", "01225", "01229", "01231", "01232", "01233", "01234", "01235", "01236", "01241", "01242", "01249", "01251", "01252", "01261", "01263", "01264", "01265", "01311", "01312", "01313", "01314", "01315", "01316", "01321", "01322", "01331", "01332", "01334", "01335", "01336", "01339", "01341", "01342", "01343", "01351", "01352", "01353", "01361", "01363", "01364", "01370", "01519", "01529", "01539", "01611", "01619", "01621", "01629", "01631", "01639", "01641", "01649", "01651", "01652", "01653", "01654", "01655", "01656", "01657", "01712", "01811", "01812", "01821", "01831", "01841", "01911", "01919", "TI_GRADO_TOLLERANZA", "TI_LIMITE_BOSCO_LEGALE", "TI_MARGINE_FOGLIO", "TI_NOME_EDIFICIO", "TI_NOME_LOCALITA_CAP", "TI_NUMERO_NE", "TI_NUMERO_OGGETTO", "TI_NUMERO_OS", "TI_PF_AUSILIARIO", "TI_PF_AUSILIARIO_TXT", "TI_PUNTO_QUOTATO", "TI_PUNTO_SINGOLO_CS", "TI_PUNTO_SINGOLO_OS", "TI_ZONA_MOVIMENTO", "TI_NUMERO_PUNTO_DI_CONFINE", "TI_NUMERO_PUNTO_SINGOLO_CS", "TI_NUMERO_PUNTO_SINGOLO_OS", "TI_NUMERO_PCGIURISDIZIONALE", "TI_LEGENDA"};
+    private static final String[] ALL_LAYERS = new String[]{"01111", "01112", "01119", "01121", "01122", "01129", "01131", "01132", "01133", "01134", "01139", "01141", "01149", "01151", "01159", "01161", "01169", "01211", "01219", "01221", "01222", "01223", "01224", "01225", "01229", "01231", "01232", "01233", "01234", "01235", "01236", "01241", "01242", "01249", "01251", "01252", "01261", "01263", "01264", "01265", "01311", "01312", "01313", "01314", "01315", "01316", "01321", "01322", "01331", "01332", "01334", "01335", "01336", "01339", "01341", "01342", "01343", "01351", "01352", "01353", "01361", "01363", "01364", "01370", "01519", "01529", "01539", "01611", "01619", "01621", "01629", "01631", "01639", "01641", "01649", "01651", "01652", "01653", "01654", "01655", "01656", "01657", "01712", "01811", "01812", "01821", "01831", "01841", "01911", "01919", "TI_GRADO_TOLLERANZA", "TI_LIMITE_BOSCO_LEGALE", "TI_MARGINE_FOGLIO", "TI_NOME_EDIFICIO", "TI_NOME_LOCALITA_CAP", "TI_NUMERO_NE", "TI_NUMERO_OGGETTO", "TI_NUMERO_OS", "TI_PF_AUSILIARIO", "TI_PF_AUSILIARIO_TXT", "TI_PUNTO_QUOTATO", "TI_PUNTO_SINGOLO_CS", "TI_PUNTO_SINGOLO_OS", "TI_ZONA_MOVIMENTO", "TI_NUMERO_PUNTO_DI_CONFINE", "TI_NUMERO_PUNTO_SINGOLO_CS", "TI_NUMERO_PUNTO_SINGOLO_OS", "TI_NUMERO_PCGIURISDIZIONALE", "TI_LEGENDA", AntiCollisioneEtichette.LAYER_NASCOSTE};
     private static final Map<String, Integer> LAYER_COLOR_OVERRIDES = new HashMap<String, Integer>();
     /** Il contorno del glifo della vigna, tre anelli chiusi ricalcati dal
      * carattere: vedi writeCorpoVigna. */
@@ -322,6 +323,17 @@ public class Av2geobau {
                     }
                     try {
                         this.reorderEntitiesForDrawOrder(file2);
+                    }
+                    catch (IOException iOException) {
+                        EhiLogger.logError((Throwable)iOException);
+                    }
+                    // Dopo il riordino e prima della legenda: il riordino
+                    // normalizza le terminazioni di riga (che questo passaggio
+                    // deve poi conservare) e la legenda ha un impaginato suo,
+                    // che non va toccato.
+                    try {
+                        AntiCollisioneEtichette.Esito esito = AntiCollisioneEtichette.risolvi(file2, DxfWriter.getPrecision());
+                        EhiLogger.logState((String)("...etichette: " + esito.totali + " esaminate, " + esito.spostate + " spostate, " + esito.nascoste + " messe da parte su " + AntiCollisioneEtichette.LAYER_NASCOSTE));
                     }
                     catch (IOException iOException) {
                         EhiLogger.logError((Throwable)iOException);
@@ -1634,6 +1646,11 @@ public class Av2geobau {
         LAYER_COLOR_OVERRIDES.put("RIPARTIZIONE_PIANI", -5);
         LAYER_COLOR_OVERRIDES.put("01811", 3);
         LAYER_COLOR_OVERRIDES.put("TI_NUMERO_OS", -7);
+        // Colore negativo = layer spento. Le etichette per cui l'anti-collisione
+        // non ha trovato posto finiscono qui invece di sparire: un numero
+        // catastale e' un dato ufficiale, si mette da parte e chi apre il
+        // disegno puo' riaccenderlo.
+        LAYER_COLOR_OVERRIDES.put(AntiCollisioneEtichette.LAYER_NASCOSTE, -7);
         LAYER_COLOR_OVERRIDES.put("TI_NUMERO_PUNTO_DI_CONFINE", -7);
         LAYER_COLOR_OVERRIDES.put("TI_NUMERO_PUNTO_SINGOLO_CS", -7);
         LAYER_COLOR_OVERRIDES.put("TI_NUMERO_PUNTO_SINGOLO_OS", -7);

@@ -103,3 +103,49 @@ _LABEL_DISABLED_BY_DEFAULT = ("pospfp", "pospfa")
 # normale/spaziato/altro) - "altro" e' un placeholder di estensione senza
 # oggetti/semantica definita, trattato come "normale".
 _POS_STILE_KEYWORDS = ("nome_locale", "nome_di_localita", "nome_del_luogo")
+
+# ==================================================================================================================
+# 1ter. PRIORITA' DELLE ETICHETTE IN CASO DI SOVRAPPOSIZIONE
+# ==================================================================================================================
+# Quando due scritte non ci stanno, qualcuna deve cedere. QGIS ha gia' un
+# motore che decide (PAL): gli manca solo di sapere chi conta di piu', perche'
+# senza indicazioni tratta tutti i layer alla pari (priorita' 5) e la scelta
+# finisce per dipendere dall'ordine di disegno.
+#
+# La stessa scala e' applicata all'esportazione DXF da
+# av2geobau_ti/AntiCollisioneEtichette.java, cosi' l'anteprima nel progetto e
+# il disegno consegnato nascondono le stesse etichette invece di litigare.
+#
+# Perche' quest'ordine. In cima quello che identifica un confine
+# giurisdizionale, che nel piano non puo' mancare. Poi i nomi e i numeri di
+# fondo, che sono l'orientamento di chi legge. I numeri dei punti fissi e di
+# confine stanno sotto perche' il piano RF non li rappresenta affatto (cap.5.4
+# e 5.10): se cadono, cade un'informazione che nel piano ufficiale non ci
+# sarebbe comunque. Ultimo il punto quotato, estensione cantonale.
+#
+# Scala QGIS: 0 = cede sempre, 10 = non cede mai.
+_LABEL_PRIORITY = {
+    "pospcgiurisdizionale": 10,
+    "posnome_localita": 9,
+    "nome_di_localita": 9,
+    "nome_del_luogo": 9,
+    "nome_locale": 8,
+    "posfondo": 9,
+    "posnumero_casa": 8,
+    "posnome_edificio": 7,
+    "posnome_oggetto": 7,
+    "oggetti_singoli_posnome_oggetto": 7,
+    "posnome_localizzazione": 7,
+    "posnumero_di_edificio": 6,
+    "posnumero_ne": 6,
+    "posnumero_oggetto": 6,
+    "posnumero_os": 6,
+    "posoggetto_condotta": 6,
+    "posmovimento": 6,
+    "possegnale": 5,
+    "pospfa": 4,
+    "pospfp": 4,
+    "pospunto_di_confine": 3,
+    "punto_quotato": 2,
+}
+_LABEL_PRIORITY_DEFAULT = 5

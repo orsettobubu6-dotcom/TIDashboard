@@ -29,6 +29,7 @@ _qgs = QgsApplication([], False)
 _qgs.initQgis()
 
 import tidashboard as cd
+from etichette import _LABEL_PRIORITY
 
 
 class TestGenereIn(unittest.TestCase):
@@ -450,6 +451,43 @@ class TestApplyLabelsToLayer(unittest.TestCase):
         d = make_dialog_stub()
         d._apply_labels_to_layer(layer, "tabella_sconosciuta_xyz", "Sconosciuta", is_gb=True)
         self.assertIsNone(layer.labeling())
+
+    def _priorita_di(self, tabella, campo="numero:string"):
+        layer = QgsVectorLayer("Point?field=%s" % campo, "t", "memory")
+        make_dialog_stub()._apply_labels_to_layer(layer, tabella, "X", is_gb=True)
+        return layer.labeling().settings()
+
+    def test_priorita_numero_di_fondo_maggiore_del_numero_di_punto(self):
+        # In caso di sovrapposizione deve cedere il numero del punto di
+        # confine, che il piano RF non rappresenta nemmeno (cap.5.10), non il
+        # numero di fondo, che e' l'orientamento di chi legge.
+        fondo = self._priorita_di("beni_immobili_posfondo")
+        punto = self._priorita_di("beni_immobili_pospunto_di_confine",
+                                  campo="identificatore:string")
+        self.assertGreater(fondo.priority, punto.priority)
+
+    def test_priorita_giurisdizionale_e_la_massima(self):
+        giur = self._priorita_di("confini_comunali_pospcgiurisdizionale",
+                                 campo="identificatore:string")
+        self.assertEqual(giur.priority, 10)
+
+    def test_ogni_etichetta_e_anche_ostacolo(self):
+        # Se una scritta non fa da ostacolo, le altre le si posano sopra e la
+        # priorita' non serve a niente.
+        settings = self._priorita_di("beni_immobili_posfondo")
+        self.assertTrue(settings.obstacleSettings().isObstacle())
+
+    def test_priorita_dichiarate_nel_range_di_qgis(self):
+        # QGIS accetta 0..10; un valore fuori scala verrebbe troncato in
+        # silenzio e l'ordine dichiarato non sarebbe quello applicato.
+        for chiave, valore in _LABEL_PRIORITY.items():
+            self.assertTrue(0 <= valore <= 10, "%s = %s" % (chiave, valore))
+
+    def test_ogni_regola_di_etichetta_ha_una_priorita(self):
+        # Una regola senza priorita' ricadrebbe sul default 5, cioe' si
+        # troverebbe in mezzo alla scala senza che nessuno l'abbia deciso.
+        for chiave, _, _, _, _ in cd.TEXT_LABEL_RULES:
+            self.assertIn(chiave, _LABEL_PRIORITY, "manca la priorita' di '%s'" % chiave)
 
 
 class TestExtractLv95Coords(unittest.TestCase):
