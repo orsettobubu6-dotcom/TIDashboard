@@ -61,6 +61,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -1125,6 +1127,162 @@ public class Av2geobau {
     /*
      * WARNING - void declaration
      */
+    /** MODELLO - com'e' fatto un simbolo puntuale. Volutamente non sa niente di
+     * DXF: nessun codice di gruppo, nessun Writer. A tradurlo in DXF e' il suo
+     * renderer, writeBloccoSimbolo.
+     *
+     * Le misure sono String e non double di proposito. I blocchi, prima di
+     * questa deduplicazione, erano scritti a mano con letterali che cambiavano
+     * numero di decimali da entita' a entita' ("0.5" per il raggio di un
+     * cerchio, "0.000" per la z di un segmento), e DxfUtil.toString(int, double)
+     * li riformatterebbe. Tenendole come stringhe escono gli stessi identici
+     * byte di prima, che e' la condizione con cui questo refactoring e' stato
+     * verificato: il DXF prodotto dal file reale e' confrontato byte a byte con
+     * quello di prima. In un formato che AutoCAD rifiuta per un gruppo fuori
+     * posto, "stessi byte" e' l'unica prova che convince. */
+    private static final class SimboloPuntualeConfig {
+        private static final String[][] NESSUN_SEGMENTO = new String[0][];
+
+        private final String nome;
+        private final String raggioMaschera;
+        private final String raggioCerchio;
+        private final String raggioPuntoPieno;
+        private final String[][] segmenti;
+
+        SimboloPuntualeConfig(String nome, String raggioMaschera, String raggioCerchio, String raggioPuntoPieno, String[][] segmenti) {
+            this.nome = nome;
+            this.raggioMaschera = raggioMaschera;
+            this.raggioCerchio = raggioCerchio;
+            this.raggioPuntoPieno = raggioPuntoPieno;
+            this.segmenti = segmenti == null ? NESSUN_SEGMENTO : segmenti;
+        }
+
+        /** Il caso comune: un anello, cioe' una maschera e un cerchio dello
+         * stesso raggio. */
+        static SimboloPuntualeConfig anello(String nome, String raggio) {
+            return new SimboloPuntualeConfig(nome, raggio, raggio, null, null);
+        }
+    }
+
+    /** I simboli dei punti di confine (GP*) e del punto giurisdizionale (HGP),
+     * nello stesso ordine in cui compaiono in BLOCK_NAMES. */
+    private static final List<SimboloPuntualeConfig> SIMBOLI_PUNTUALI = Collections.unmodifiableList(Arrays.asList(
+            SimboloPuntualeConfig.anello("GPBOL", "0.5"),
+            SimboloPuntualeConfig.anello("GPROH", "0.5"),
+            SimboloPuntualeConfig.anello("GPPFA", "0.5"),
+            // Non materializzato: il simbolo e' un punto PIENO di raggio 0.1,
+            // piu' sottile della fascia del confine (01611, 0.30 m in unita' di
+            // disegno cioe' metri). Per questo la maschera qui e' 0.35 e non
+            // 0.1: una maschera della misura del punto lo lascerebbe sepolto.
+            new SimboloPuntualeConfig("GPUV", "0.35", "0.1", "0.1", null),
+            SimboloPuntualeConfig.anello("GPSTE", "0.7"),
+            SimboloPuntualeConfig.anello("GPKST", "0.7"),
+            // Croce: cerchio piu' quattro trattini diagonali che escono dal
+            // cerchio. Le coordinate sono quelle tracciate a mano a suo tempo,
+            // non simmetriche al millesimo (-0.283 da una parte, -0.284
+            // dall'altra): ricopiate come stanno, non "corrette".
+            new SimboloPuntualeConfig("GPKRZ", "0.5", "0.5", null, new String[][]{
+                    {"-0.849", "-0.849", "-0.283", "-0.283"},
+                    {"-0.284", "0.284", "-0.849", "0.849"},
+                    {"0.283", "0.283", "0.849", "0.849"},
+                    {"0.849", "-0.849", "0.283", "-0.283"}}),
+            SimboloPuntualeConfig.anello("HGP", "1.5")));
+
+    private static final List<String> NOMI_SIMBOLI_PUNTUALI = Av2geobau.nomiDi(SIMBOLI_PUNTUALI);
+
+    private static List<String> nomiDi(List<SimboloPuntualeConfig> list) {
+        ArrayList<String> arrayList = new ArrayList<String>();
+        for (SimboloPuntualeConfig simboloPuntualeConfig : list) {
+            arrayList.add(simboloPuntualeConfig.nome);
+        }
+        return Collections.unmodifiableList(arrayList);
+    }
+
+    /** RENDERER - scrive i BLOCK dei simboli richiesti, nell'ordine canonico di
+     * SIMBOLI_PUNTUALI e non nell'ordine della collezione ricevuta: l'ordine
+     * delle definizioni non deve dipendere da come il chiamante le elenca.
+     *
+     * "Solo quelli necessari" ha un vincolo che vale la pena scrivere: la
+     * sezione BLOCKS deve contenere un BLOCK per OGNI BLOCK_RECORD dichiarato
+     * nella tabella omonima. Un record senza definizione e' un disegno
+     * incompleto. Finche' BLOCK_NAMES li elenca tutti, l'unica chiamata
+     * legittima e' quella con tutti; il controllo qui sotto lo verifica invece
+     * di affidarlo alla memoria di chi tocchera' il codice fra sei mesi. */
+    private void writeBlocchiSimboliPuntuali(Writer writer, Collection<String> collection) throws IOException {
+        HashSet<String> hashSet = new HashSet<String>(collection);
+        for (SimboloPuntualeConfig simboloPuntualeConfig : SIMBOLI_PUNTUALI) {
+            if (!hashSet.remove(simboloPuntualeConfig.nome)) continue;
+            if (this.blockRecordHandles.get(simboloPuntualeConfig.nome) == null) {
+                throw new IllegalStateException("writeBlocchiSimboliPuntuali: " + simboloPuntualeConfig.nome + " non ha un BLOCK_RECORD");
+            }
+            this.writeBloccoSimbolo(writer, simboloPuntualeConfig);
+        }
+        if (!hashSet.isEmpty()) {
+            throw new IllegalStateException("writeBlocchiSimboliPuntuali: simboli sconosciuti " + hashSet);
+        }
+    }
+
+    /** Scrive un blocco intero: BLOCK, quello che c'e' dentro, ENDBLK. */
+    private void writeBloccoSimbolo(Writer writer, SimboloPuntualeConfig simboloPuntualeConfig) throws IOException {
+        String string = simboloPuntualeConfig.nome;
+        writer.write(DxfUtil.toString(0, "BLOCK"));
+        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
+        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get(string)));
+        writer.write(DxfUtil.toString(100, "AcDbEntity"));
+        writer.write(DxfUtil.toString(8, "0"));
+        writer.write(DxfUtil.toString(62, "0"));
+        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
+        writer.write(DxfUtil.toString(70, "0"));
+        writer.write(DxfUtil.toString(10, "0.0"));
+        writer.write(DxfUtil.toString(20, "0.0"));
+        writer.write(DxfUtil.toString(30, "0.0"));
+        writer.write(DxfUtil.toString(2, string));
+        // L'ordine di queste quattro parti E' l'ordine di disegno: la maschera
+        // per prima, quindi sotto a tutto il resto.
+        if (simboloPuntualeConfig.raggioMaschera != null) {
+            this.writeMascheraDisco(writer, string, simboloPuntualeConfig.raggioMaschera);
+        }
+        if (simboloPuntualeConfig.raggioCerchio != null) {
+            this.writeIntestazioneEntita(writer, "CIRCLE", "AcDbCircle", string, "0");
+            writer.write(DxfUtil.toString(10, "0.0"));
+            writer.write(DxfUtil.toString(20, "0.0"));
+            writer.write(DxfUtil.toString(30, "0.0"));
+            writer.write(DxfUtil.toString(40, simboloPuntualeConfig.raggioCerchio));
+        }
+        if (simboloPuntualeConfig.raggioPuntoPieno != null) {
+            this.writeDiscoPieno(writer, string, simboloPuntualeConfig.raggioPuntoPieno, "0");
+        }
+        for (String[] stringArray : simboloPuntualeConfig.segmenti) {
+            this.writeIntestazioneEntita(writer, "LINE", "AcDbLine", string, "0");
+            writer.write(DxfUtil.toString(10, stringArray[0]));
+            writer.write(DxfUtil.toString(20, stringArray[1]));
+            writer.write(DxfUtil.toString(30, "0.000"));
+            writer.write(DxfUtil.toString(11, stringArray[2]));
+            writer.write(DxfUtil.toString(21, stringArray[3]));
+            writer.write(DxfUtil.toString(31, "0.000"));
+        }
+        writer.write(DxfUtil.toString(0, "ENDBLK"));
+        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
+        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get(string)));
+        writer.write(DxfUtil.toString(100, "AcDbEntity"));
+        writer.write(DxfUtil.toString(8, "0"));
+        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
+        // Il 62 DOPO il marcatore di sottoclasse e' fuori posto, ma e' com'era
+        // scritto prima: qui si deduplica, non si cambia quello che esce.
+        writer.write(DxfUtil.toString(62, "0"));
+    }
+
+    /** L'intestazione comune a ogni entita' dentro un blocco. */
+    private void writeIntestazioneEntita(Writer writer, String tipo, String sottoclasse, String blocco, String colore) throws IOException {
+        writer.write(DxfUtil.toString(0, tipo));
+        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
+        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get(blocco)));
+        writer.write(DxfUtil.toString(100, "AcDbEntity"));
+        writer.write(DxfUtil.toString(8, "0"));
+        writer.write(DxfUtil.toString(62, colore));
+        writer.write(DxfUtil.toString(100, sottoclasse));
+    }
+
     /** Disco bianco pieno da mettere DENTRO un blocco di simbolo puntuale,
      * prima del disegno del simbolo, come maschera.
      *
@@ -1140,17 +1298,16 @@ public class Av2geobau {
      * hanno la maschera bianca) e nel piano ufficiale su carta.
      *
      * Colore 255 = bianco pieno, non BYBLOCK: la maschera non deve prendere il
-     * colore della provenienza del punto, e su carta bianca sparisce da sola.
-     * L'HATCH ha un solo bordo circolare (72=2, angoli 0-360), la stessa forma
-     * gia' usata dal punto pieno di GPUV. */
-    private void writeMascheraDisco(Writer writer, String string, String string2) throws IOException {
-        writer.write(DxfUtil.toString(0, "HATCH"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get(string)));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "255"));
-        writer.write(DxfUtil.toString(100, "AcDbHatch"));
+     * colore della provenienza del punto, e su carta bianca sparisce da sola. */
+    private void writeMascheraDisco(Writer writer, String blocco, String raggio) throws IOException {
+        this.writeDiscoPieno(writer, blocco, raggio, "255");
+    }
+
+    /** Cerchio pieno come HATCH SOLID con un solo bordo circolare (72=2, angoli
+     * 0-360). E' la stessa forma sia per la maschera bianca sia per il punto
+     * pieno di GPUV: cambia solo il colore. */
+    private void writeDiscoPieno(Writer writer, String blocco, String raggio, String colore) throws IOException {
+        this.writeIntestazioneEntita(writer, "HATCH", "AcDbHatch", blocco, colore);
         writer.write(DxfUtil.toString(10, "0.0"));
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
@@ -1166,7 +1323,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(72, "2"));
         writer.write(DxfUtil.toString(10, "0.0"));
         writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(40, string2));
+        writer.write(DxfUtil.toString(40, raggio));
         writer.write(DxfUtil.toString(50, "0.0"));
         writer.write(DxfUtil.toString(51, "360.0"));
         writer.write(DxfUtil.toString(73, "1"));
@@ -1202,336 +1359,7 @@ public class Av2geobau {
             writer.write(DxfUtil.toString(8, "0"));
             writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
         }
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPBOL")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPBOL"));
-        this.writeMascheraDisco(writer, "GPBOL", "0.5");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPBOL")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.5"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPBOL")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPROH")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPROH"));
-        this.writeMascheraDisco(writer, "GPROH", "0.5");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPROH")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.5"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPROH")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPPFA")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPPFA"));
-        this.writeMascheraDisco(writer, "GPPFA", "0.5");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPPFA")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.5"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPPFA")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPUV")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPUV"));
-        this.writeMascheraDisco(writer, "GPUV", "0.35");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPUV")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.1"));
-        writer.write(DxfUtil.toString(0, "HATCH"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPUV")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbHatch"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(210, "0.0"));
-        writer.write(DxfUtil.toString(220, "0.0"));
-        writer.write(DxfUtil.toString(230, "1.0"));
-        writer.write(DxfUtil.toString(2, "SOLID"));
-        writer.write(DxfUtil.toString(70, "1"));
-        writer.write(DxfUtil.toString(71, "0"));
-        writer.write(DxfUtil.toString(91, "1"));
-        writer.write(DxfUtil.toString(92, "1"));
-        writer.write(DxfUtil.toString(93, "1"));
-        writer.write(DxfUtil.toString(72, "2"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.1"));
-        writer.write(DxfUtil.toString(50, "0.0"));
-        writer.write(DxfUtil.toString(51, "360.0"));
-        writer.write(DxfUtil.toString(73, "1"));
-        writer.write(DxfUtil.toString(97, "0"));
-        writer.write(DxfUtil.toString(75, "1"));
-        writer.write(DxfUtil.toString(76, "1"));
-        writer.write(DxfUtil.toString(98, "0"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPUV")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPSTE")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPSTE"));
-        this.writeMascheraDisco(writer, "GPSTE", "0.7");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPSTE")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.7"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPSTE")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKST")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPKST"));
-        this.writeMascheraDisco(writer, "GPKST", "0.7");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKST")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.7"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKST")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "GPKRZ"));
-        this.writeMascheraDisco(writer, "GPKRZ", "0.5");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "0.5"));
-        writer.write(DxfUtil.toString(0, "LINE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbLine"));
-        writer.write(DxfUtil.toString(10, "-0.849"));
-        writer.write(DxfUtil.toString(20, "-0.849"));
-        writer.write(DxfUtil.toString(30, "0.000"));
-        writer.write(DxfUtil.toString(11, "-0.283"));
-        writer.write(DxfUtil.toString(21, "-0.283"));
-        writer.write(DxfUtil.toString(31, "0.000"));
-        writer.write(DxfUtil.toString(0, "LINE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbLine"));
-        writer.write(DxfUtil.toString(10, "-0.284"));
-        writer.write(DxfUtil.toString(20, "0.284"));
-        writer.write(DxfUtil.toString(30, "0.000"));
-        writer.write(DxfUtil.toString(11, "-0.849"));
-        writer.write(DxfUtil.toString(21, "0.849"));
-        writer.write(DxfUtil.toString(31, "0.000"));
-        writer.write(DxfUtil.toString(0, "LINE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbLine"));
-        writer.write(DxfUtil.toString(10, "0.283"));
-        writer.write(DxfUtil.toString(20, "0.283"));
-        writer.write(DxfUtil.toString(30, "0.000"));
-        writer.write(DxfUtil.toString(11, "0.849"));
-        writer.write(DxfUtil.toString(21, "0.849"));
-        writer.write(DxfUtil.toString(31, "0.000"));
-        writer.write(DxfUtil.toString(0, "LINE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbLine"));
-        writer.write(DxfUtil.toString(10, "0.849"));
-        writer.write(DxfUtil.toString(20, "-0.849"));
-        writer.write(DxfUtil.toString(30, "0.000"));
-        writer.write(DxfUtil.toString(11, "0.283"));
-        writer.write(DxfUtil.toString(21, "-0.283"));
-        writer.write(DxfUtil.toString(31, "0.000"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(0, "BLOCK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("HGP")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockBegin"));
-        writer.write(DxfUtil.toString(70, "0"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(2, "HGP"));
-        this.writeMascheraDisco(writer, "HGP", "1.5");
-        writer.write(DxfUtil.toString(0, "CIRCLE"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("HGP")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(62, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbCircle"));
-        writer.write(DxfUtil.toString(10, "0.0"));
-        writer.write(DxfUtil.toString(20, "0.0"));
-        writer.write(DxfUtil.toString(30, "0.0"));
-        writer.write(DxfUtil.toString(40, "1.5"));
-        writer.write(DxfUtil.toString(0, "ENDBLK"));
-        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
-        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("HGP")));
-        writer.write(DxfUtil.toString(100, "AcDbEntity"));
-        writer.write(DxfUtil.toString(8, "0"));
-        writer.write(DxfUtil.toString(100, "AcDbBlockEnd"));
-        writer.write(DxfUtil.toString(62, "0"));
+        this.writeBlocchiSimboliPuntuali(writer, NOMI_SIMBOLI_PUNTUALI);
         writer.write(DxfUtil.toString(0, "BLOCK"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("LFP1")));
@@ -2212,6 +2040,15 @@ public class Av2geobau {
         LAYER_COLOR_OVERRIDES.put("TI_PF_AUSILIARIO", -7);
         LAYER_COLOR_OVERRIDES.put("TI_PF_AUSILIARIO_TXT", -7);
         BLOCK_NAMES = new String[]{"GPBOL", "GPROH", "GPPFA", "GPUV", "GPSTE", "GPKST", "GPKRZ", "HGP", "LFP1", "LFP2", "HFP1", "HFP2", "HFP3", "LFP3ST", "LFP3BO", "LFP3UV", "LFP3KR", "EOPNT", "TRAMA", "PSING", "VIGNA", "PQUOT", "BACIDR", "DIRCOR"};
+        // BLOCK_NAMES scrive la tabella BLOCK_RECORD, SIMBOLI_PUNTUALI scrive
+        // le definizioni: se i due elenchi divergono esce un DXF con un record
+        // senza blocco o un blocco senza record. Meglio non partire affatto che
+        // scoprirlo da AutoCAD che rifiuta il disegno.
+        List<String> list = Arrays.asList(BLOCK_NAMES);
+        for (String string : NOMI_SIMBOLI_PUNTUALI) {
+            if (list.contains(string)) continue;
+            throw new ExceptionInInitializerError("simbolo puntuale senza BLOCK_RECORD: " + string);
+        }
         BACIDR_SPLINE_UPPER_KNOTS = new double[]{0.0, 0.0, 0.0, 0.0, 0.1666759023, 0.2481242278, 0.3333425689, 0.4185609101, 0.5, 0.5814390899, 0.6666574311, 0.7518757722, 0.8333240977, 1.0, 1.0, 1.0, 1.0};
         BACIDR_SPLINE_UPPER_CTRL = new double[][]{{-2.0, 0.364}, {-1.8179238942, 0.4979851193}, {-1.4600011954, 0.7460759894}, {-0.9680146596, 0.5813072069}, {-0.6669504485, 0.363603671}, {-0.3648445172, 0.1472826262}, {0.0, 0.0233029771}, {0.3648445172, 0.1472826262}, {0.6669504485, 0.363603671}, {0.9680146596, 0.5813072069}, {1.4600011954, 0.7460759894}, {1.8179238942, 0.4979851193}, {2.0, 0.364}};
         BACIDR_SPLINE_UPPER_FIT = new double[][]{{-2.0, 0.364}, {-1.667, 0.576}, {-1.333, 0.664}, {-1.0, 0.576}, {-0.667, 0.364}, {-0.333, 0.152}, {0.0, 0.064}, {0.333, 0.152}, {0.667, 0.364}, {1.0, 0.576}, {1.333, 0.664}, {1.667, 0.576}, {2.0, 0.364}};
