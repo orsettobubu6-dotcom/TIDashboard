@@ -685,6 +685,87 @@ class TestNomiUnivoci(unittest.TestCase):
         self.assertEqual(nomi.count(nome), 1)
 
 
+class TestMigliorFoglio(unittest.TestCase):
+    """La scelta del foglio non e' piu' binaria: se alla scala voluta l'oggetto
+    ci sta su un altro formato, cambiare formato costa meno che dimezzare il
+    dettaglio."""
+
+    def test_se_va_gia_bene_non_cambia_niente(self):
+        formato, scala, motivo = P.miglior_foglio(20.0, 30.0, 500, "A4 verticale")
+        self.assertEqual((formato, scala, motivo), ("A4 verticale", 500, ""))
+
+    def test_preferisce_girare_il_foglio_invece_di_perdere_scala(self):
+        # Largo quanto l'A4 orizzontale e basso: verticale non lo contiene.
+        larghezza, _ = P.area_utile("A4 orizzontale", P.MARGINE_CORTESIA)
+        dx = larghezza / 1000.0 * 500 - 1.0
+        formato, scala, motivo = P.miglior_foglio(dx, 10.0, 500, "A4 verticale")
+        self.assertEqual(scala, 500, "la scala non doveva cambiare")
+        self.assertEqual(motivo, "formato")
+        self.assertEqual(formato, "A4 orizzontale")
+
+    def test_quando_serve_davvero_rimpicciolisce(self):
+        formato, scala, motivo = P.miglior_foglio(1500.0, 1500.0, 500, "A4 verticale")
+        self.assertEqual(motivo, "scala")
+        self.assertGreater(scala, 500)
+        self.assertIsNotNone(formato)
+
+    def test_oltre_ogni_formato_e_ogni_scala(self):
+        formato, scala, motivo = P.miglior_foglio(90000.0, 90000.0, 500, "A4 verticale")
+        self.assertIsNone(formato)
+        self.assertIsNone(scala)
+        self.assertEqual(motivo, "impossibile")
+
+    def test_il_margine_di_cortesia_esclude_chi_tocca_la_cornice(self):
+        # Esattamente della misura dell'area di mappa: ci "sta", ma incollato.
+        larghezza, altezza = P.area_mappa("A4 verticale")
+        dx, dy = larghezza / 1000.0 * 500, altezza / 1000.0 * 500
+        self.assertEqual(P.scala_che_contiene(dx, dy, "A4 verticale"), 500)
+        formato, _, motivo = P.miglior_foglio(dx, dy, 500, "A4 verticale")
+        self.assertNotEqual(motivo, "", "a filo di cornice non e' 'va bene'")
+
+
+class TestEstensioneRuotata(unittest.TestCase):
+    def test_senza_rotazione_non_tocca_niente(self):
+        self.assertEqual(P.estensione_ruotata(30.0, 10.0, 0.0), (30.0, 10.0))
+
+    def test_a_cento_gon_i_due_lati_si_scambiano(self):
+        dx, dy = P.estensione_ruotata(30.0, 10.0, 100.0)
+        self.assertAlmostEqual(dx, 10.0, places=6)
+        self.assertAlmostEqual(dy, 30.0, places=6)
+
+    def test_in_diagonale_i_due_lati_si_pareggiano(self):
+        # A 50 gon (45 gradi) un rettangolo 3:1 non diventa piu' largo - anzi,
+        # 30x10 vale 28.28 - ma diventa QUADRATO: il lato corto passa da 10 a
+        # 28.28, ed e' quello che fa uscire il fondo dalla cornice.
+        dx, dy = P.estensione_ruotata(30.0, 10.0, 50.0)
+        self.assertAlmostEqual(dx, dy, places=6)
+        self.assertGreater(dy, 10.0)
+
+
+class TestRettangoloMinimo(unittest.TestCase):
+    def test_rettangolo_allineato_resta_com_e(self):
+        dx, dy, _rot = P.rettangolo_minimo([(0, 0), (40, 0), (40, 10), (0, 10)])
+        self.assertAlmostEqual(max(dx, dy), 40.0, places=6)
+        self.assertAlmostEqual(min(dx, dy), 10.0, places=6)
+
+    def test_in_diagonale_trova_il_lato_corto(self):
+        # Lo stesso rettangolo 40x10 girato di 45 gradi: l'extent allineato
+        # agli assi misura 35x35, il rettangolo minimo deve tornare 40x10.
+        import math as _m
+        a = _m.radians(45.0)
+        punti = [(x * _m.cos(a) - y * _m.sin(a), x * _m.sin(a) + y * _m.cos(a))
+                 for x, y in ((0, 0), (40, 0), (40, 10), (0, 10))]
+        dx, dy, rot = P.rettangolo_minimo(punti)
+        self.assertAlmostEqual(max(dx, dy), 40.0, places=5)
+        self.assertAlmostEqual(min(dx, dy), 10.0, places=5)
+        self.assertTrue(0.0 <= rot < 400.0)
+        xs = [p[0] for p in punti]
+        self.assertGreater(max(xs) - min(xs), 34.0, "l'extent allineato e' molto piu' largo")
+
+    def test_punti_degeneri_non_esplodono(self):
+        self.assertEqual(P.rettangolo_minimo([(5, 5), (5, 5)])[:2], (0.0, 0.0))
+
+
 if __name__ == "__main__":
     result = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()

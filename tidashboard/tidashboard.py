@@ -3636,20 +3636,45 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def _avvisa_capienza(self, f):
         """Centrare non basta: la scala resta quella scelta prima, e un fondo
         piu' grande del foglio viene tagliato. Sui dati di Mendrisio, su A4
-        verticale, non ci sta il 25% dei fondi a 1:500."""
+        verticale, non ci sta il 25% dei fondi a 1:500.
+
+        L'avviso dice cosa FARE, non solo che c'è un problema. Prima proponeva
+        solo di rimpicciolire la scala sullo stesso formato: per il 14.5% dei
+        fondi è una perdita di dettaglio evitabile, perché alla scala voluta ci
+        starebbero su un altro foglio. Passare da 1:500 a 1:1000 dimezza il
+        dettaglio di un piano che non aveva bisogno di perderlo."""
         if f.extent is None:
             return
         dx, dy = f.extent[2] - f.extent[0], f.extent[3] - f.extent[1]
-        formato, scala, _rot, _c, _d = self._parametri_planimetria()
+        formato, scala, rotazione, _c, _d = self._parametri_planimetria()
+
+        # Due controlli distinti: se ci sta ma a filo di cornice è un'altra
+        # cosa dal non starci, e va detta in un altro modo.
+        edx, edy = _planimetria.estensione_ruotata(dx, dy, rotazione)
         larghezza, altezza = _planimetria.area_mappa(formato)
-        if dx <= larghezza / 1000.0 * scala and dy <= altezza / 1000.0 * scala:
+        if edx <= larghezza / 1000.0 * scala and edy <= altezza / 1000.0 * scala:
+            stretto, _, _ = _planimetria.miglior_foglio(
+                dx, dy, scala, formato, rotazione_gon=rotazione)
+            if stretto != formato:
+                self.log("   ℹ️ Il fondo (%.0f × %.0f m) ci sta a 1:%d su %s ma "
+                         "arriva a meno di %.0f mm dalla cornice: sul foglio "
+                         "stampato sembrerà tagliato."
+                         % (dx, dy, scala, formato, _planimetria.MARGINE_CORTESIA))
             return
-        serve = _planimetria.scala_che_contiene(dx, dy, formato)
+
+        proposta, nuova_scala, motivo = _planimetria.miglior_foglio(
+            dx, dy, scala, formato, rotazione_gon=rotazione)
+        if motivo == "formato":
+            rimedio = ("Alla stessa scala ci sta su %s: basta cambiare formato."
+                       % proposta)
+        elif motivo == "scala":
+            rimedio = ("Serve 1:%d%s."
+                       % (nuova_scala,
+                          " su %s" % proposta if proposta != formato else ""))
+        else:
+            rimedio = "Non ci sta in nessun formato e in nessuna scala ufficiale."
         self.log("   ⚠️ Il fondo misura %.0f × %.0f m e a 1:%d su %s non ci "
-                 "sta: verrà tagliato. %s"
-                 % (dx, dy, scala, formato,
-                    "Serve almeno 1:%d." % serve if serve
-                    else "Non ci sta in nessuna scala ufficiale."),
+                 "sta: verrà tagliato. %s" % (dx, dy, scala, formato, rimedio),
                  Qgis.Warning)
 
     def _aggiorna_centro_fissato(self, etichetta=None):

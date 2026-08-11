@@ -262,6 +262,147 @@ def scala_che_contiene(dx, dy, formato="A4 verticale"):
     return None
 
 
+# Quanto respiro lasciare fra l'oggetto e la cornice perche' il foglio si possa
+# guardare. Non e' una prescrizione: e' che un fondo che tocca la cornice, o che
+# ci finisce sotto per mezzo millimetro, sul foglio stampato sembra tagliato
+# anche quando non lo e'. Sui dati di Mendrisio riguarda 197 fondi (1.8%) che
+# oggi passano il controllo senza una parola.
+MARGINE_CORTESIA = 5.0
+
+
+def area_utile(formato, margine_mm=0.0):
+    """L'area di mappa meno il respiro di cortesia."""
+    larghezza, altezza = area_mappa(formato)
+    return larghezza - 2 * margine_mm, altezza - 2 * margine_mm
+
+
+def _ci_sta(dx, dy, formato, scala, margine_mm=0.0):
+    larghezza, altezza = area_utile(formato, margine_mm)
+    return ((dx or 0) <= larghezza / 1000.0 * scala and
+            (dy or 0) <= altezza / 1000.0 * scala)
+
+
+def estensione_ruotata(dx, dy, rotazione_gon):
+    """L'ingombro di un rettangolo dx per dy visto da un foglio ruotato.
+
+    Serve perche' il controllo di capienza confrontava l'oggetto con il foglio
+    NON ruotato anche quando l'utente aveva impostato una rotazione: con il
+    foglio girato di 50 gon un fondo che esce davvero dalla cornice non veniva
+    segnalato. Ruotando il rettangolo circoscritto si resta dalla parte
+    prudente - il rettangolo e' gia' piu' grande del fondo, e ruotandolo cresce
+    ancora - quindi al massimo si avvisa di troppo, mai di meno."""
+    if not rotazione_gon:
+        return dx, dy
+    angolo = math.radians(gon_a_gradi(rotazione_gon))
+    co, si = abs(math.cos(angolo)), abs(math.sin(angolo))
+    return dx * co + dy * si, dx * si + dy * co
+
+
+def rettangolo_minimo(punti):
+    """(dx, dy, rotazione_gon) del rettangolo circoscritto piu' PICCOLO.
+
+    Il rettangolo allineato agli assi e' quello che si ottiene gratis da un
+    extent, ma per un fondo lungo e stretto in diagonale e' molto piu' grande
+    del necessario: girando il foglio ci starebbe. Sui dati di Mendrisio sono
+    199 fondi (1.8%) che a 1:500 non ci stanno in nessun formato e ci
+    starebbero solo ruotando.
+
+    Il rettangolo minimo ha sempre un lato appoggiato a un lato dello scafo
+    convesso, quindi bastano tanti tentativi quanti sono i lati dello scafo."""
+    scafo = _scafo_convesso(punti)
+    if len(scafo) < 3:
+        xs = [p[0] for p in punti] or [0.0]
+        ys = [p[1] for p in punti] or [0.0]
+        return max(xs) - min(xs), max(ys) - min(ys), 0.0
+    migliore = None
+    for i in range(len(scafo)):
+        x1, y1 = scafo[i]
+        x2, y2 = scafo[(i + 1) % len(scafo)]
+        angolo = math.atan2(y2 - y1, x2 - x1)
+        dx, dy = _estensione(scafo, angolo)
+        if migliore is None or dx * dy < migliore[0] * migliore[1]:
+            migliore = (dx, dy, angolo)
+    dx, dy, angolo = migliore
+    # Da radianti antiorari a gon orari, come li vuole il resto del modulo.
+    return dx, dy, (-math.degrees(angolo) / 0.9) % 400.0
+
+
+def _estensione(punti, angolo):
+    co, si = math.cos(-angolo), math.sin(-angolo)
+    xs = [x * co - y * si for x, y in punti]
+    ys = [x * si + y * co for x, y in punti]
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
+def _scafo_convesso(punti):
+    """Scansione di Andrew: ordina e costruisce le due catene."""
+    p = sorted(set((float(x), float(y)) for x, y in punti))
+    if len(p) < 3:
+        return p
+
+    def catena(seq):
+        out = []
+        for q in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (q[1] - out[-2][1]) -
+                                     (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(q)
+        return out
+    return catena(p)[:-1] + catena(list(reversed(p)))[:-1]
+
+
+def miglior_foglio(dx, dy, scala_voluta, formato_voluto="A4 verticale",
+                   margine_mm=MARGINE_CORTESIA, rotazione_gon=0.0):
+    """Come stampare un oggetto dx per dy metri, cercando di NON perdere scala.
+
+    Ritorna (formato, scala, motivo) dove motivo dice cosa si e' dovuto
+    cambiare: "" se andava gia' bene, "formato" se basta un altro foglio,
+    "scala" se si e' dovuto rimpicciolire, None come formato se non ci sta
+    nemmeno a 1:10000.
+
+    Prima questa decisione era binaria: ci sta o non ci sta, e in caso negativo
+    si proponeva solo una scala piu' piccola sullo stesso formato. Sui dati di
+    Mendrisio a 1:500 e' una perdita evitabile per il 14.5% dei fondi (1 627 su
+    11 205), che alla scala voluta ci starebbero benissimo su un altro formato:
+    passare da 1:500 a 1:1000 dimezza il dettaglio di un piano che non aveva
+    bisogno di perderlo.
+
+    L'ordine di preferenza fra i formati: prima quello scelto dall'utente, poi
+    l'altro orientamento della stessa carta (cambiare verso costa poco), poi il
+    formato piu' grande. Fra due possibilita' vince sempre la scala piu'
+    dettagliata."""
+    candidati = [formato_voluto]
+    girato = _altro_orientamento(formato_voluto)
+    if girato:
+        candidati.append(girato)
+    for nome, _, _ in FORMATI:
+        if nome not in candidati:
+            candidati.append(nome)
+
+    edx, edy = estensione_ruotata(dx, dy, rotazione_gon)
+    for scala in sorted(SCALE_UFFICIALI_MU):
+        if scala < scala_voluta:
+            continue
+        for formato in candidati:
+            if not _ci_sta(edx, edy, formato, scala, margine_mm):
+                continue
+            if scala == scala_voluta and formato == formato_voluto:
+                return formato, scala, ""
+            if scala == scala_voluta:
+                return formato, scala, "formato"
+            return formato, scala, "scala"
+    return None, None, "impossibile"
+
+
+def _altro_orientamento(formato):
+    """"A4 verticale" -> "A4 orizzontale" e viceversa."""
+    for verso, opposto in (("verticale", "orizzontale"), ("orizzontale", "verticale")):
+        if formato.endswith(verso):
+            candidato = formato[: -len(verso)] + opposto
+            return candidato if any(n == candidato for n, _, _ in FORMATI) else None
+    return None
+
+
 def fattore_proporzionale(scala, prodotto="gb", lettera_norma=False):
     """Fattore da applicare a dimensioni e distanze quando la scala del foglio
     differisce dalla scala di riferimento del prodotto (cap.1.5.2 per il piano
