@@ -473,7 +473,7 @@ public class DxfWriter {
                 String string2 = DxfUtil.toString(42, d, precision);
                 stringBuffer.append(string2);
             }
-            stringBuffer.append(DxfUtil.toString(70, 1));
+            stringBuffer.append(DxfUtil.toString(70, bl ? 32 : 0));
         }
         stringBuffer.append(DxfUtil.toString(0, "VERTEX"));
         DxfWriter.writeHandle(stringBuffer);
@@ -489,7 +489,13 @@ public class DxfWriter {
         } else {
             stringBuffer.append(DxfUtil.toString(30, 0.0, precision));
         }
-        stringBuffer.append(DxfUtil.toString(70, 1));
+        // Gruppo 70 del VERTEX: 0 per un vertice normale di polilinea 2d, 32
+        // per un vertice di polilinea 3d. Qui c'era 1, che nello spec DXF
+        // significa "vertice extra generato dal curve-fitting", cioe' un punto
+        // ausiliario: un lettore che rispetta il flag ha il diritto di buttarlo
+        // via, e infatti ezdxf scarta l'intera polilinea. AutoCAD e' piu'
+        // tollerante e le disegnava lo stesso, per questo non era mai emerso.
+        stringBuffer.append(DxfUtil.toString(70, bl ? 32 : 0));
         stringBuffer.append(DxfUtil.toString(0, "SEQEND"));
         DxfWriter.writeHandle(stringBuffer);
         stringBuffer.append(DxfUtil.toString(100, "AcDbEntity"));

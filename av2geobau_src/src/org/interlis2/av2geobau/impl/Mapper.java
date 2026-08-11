@@ -2713,15 +2713,19 @@ public class Mapper {
         }
         object = new Iom_jObject("Dxf.Topic.Polygon2d", null);
         ((IomObject)object).setattrvalue("layername", string);
-        // Bene_immobile (01611), larghezza 0.40: valore normativo di
-        // circ154_allegato2 cap.3.6 ("I tratti sono rappresentati per una scala
-        // di riferimento 1:1000, con uno spessore di 0.40 mm"), lo stesso gia'
-        // usato dallo stile QGIS. Insieme a 01811 (Confine comunale) e' uno dei
-        // soli due layer con larghezza non nulla: tutto il resto - compreso
-        // 01221 (strada_sentiero), in passato un'eccezione a 0.20 - sta a 0.00,
-        // perche' la resa degli altri generi e' affidata al riempimento HATCH
-        // (emitTramaSuperficieCS), non allo spessore del contorno.
-        ((IomObject)object).setattrvalue("width", "0.40");
+        // Bene_immobile (01611), larghezza 0.30 su richiesta esplicita.
+        // circ154_allegato2 cap.3.6 dava 0.40 ("I tratti sono rappresentati per
+        // una scala di riferimento 1:1000, con uno spessore di 0.40 mm"), ed e'
+        // il valore usato fino ad ora anche dallo stile QGIS. La larghezza qui
+        // e' in unita' di disegno, cioe' METRI: 0.40 significa una fascia nera
+        // di 40 cm sul terreno, che al vero ingoia il simbolo del punto di
+        // confine (il cerchio GPBOL ha raggio 0.5 m). Insieme a 01811 (Confine
+        // comunale) e' uno dei soli due layer con larghezza non nulla: tutto il
+        // resto - compreso 01221 (strada_sentiero), in passato un'eccezione a
+        // 0.20 - sta a 0.00, perche' la resa degli altri generi e' affidata al
+        // riempimento HATCH (emitTramaSuperficieCS), non allo spessore del
+        // contorno.
+        ((IomObject)object).setattrvalue("width", "0.30");
         ((IomObject)object).addattrobj("geom", iomObject2);
         this.out.add((IomObject)object);
         this.emitGenereDiLineaOverlay(iomObject2, string, null);
@@ -4574,7 +4578,10 @@ public class Mapper {
         // Layer per i quali l'utente ha chiesto esplicitamente larghezza
         // globale 0 (linea sempre sottile), indipendentemente dal genere o
         // dalla tabella di provenienza - vedi zeroWidthIfNeeded.
-        ZERO_WIDTH_LAYERS = new HashSet<String>(Arrays.asList("01311", "01312", "01313", "01321", "01322", "01334", "01316", "01370", "01341", "01342", "01331"));
+        // 01315 (ciminiera, palo/antenna, pilastro) e 01351 (fontana, sorgente)
+        // aggiunti per ultimi: stavano a 0.20 mentre tutti gli altri oggetti
+        // singoli sono a spessore normale, e spiccavano senza motivo.
+        ZERO_WIDTH_LAYERS = new HashSet<String>(Arrays.asList("01311", "01312", "01313", "01321", "01322", "01334", "01316", "01370", "01341", "01342", "01331", "01315", "01351"));
     }
 }
 

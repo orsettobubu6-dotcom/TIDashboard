@@ -1125,6 +1125,57 @@ public class Av2geobau {
     /*
      * WARNING - void declaration
      */
+    /** Disco bianco pieno da mettere DENTRO un blocco di simbolo puntuale,
+     * prima del disegno del simbolo, come maschera.
+     *
+     * Serve perche' "portare davanti" da solo non basta. I simboli dei punti di
+     * confine sono anelli vuoti (GPBOL raggio 0.5 m) e il confine di proprieta'
+     * 01611 e' una polilinea LARGA: la larghezza sta in unita' di disegno,
+     * cioe' metri, quindi e' una fascia nera di 30 cm sul terreno che passa da
+     * parte a parte dentro l'anello. Anche disegnando il punto per ultimo -
+     * come gia' avviene, reorderEntitiesForDrawOrder li mette in coda alla
+     * sezione ENTITIES - dell'anello resta visibile solo la mezzaluna sopra e
+     * quella sotto la fascia. Con il disco la fascia si interrompe e il punto
+     * si legge intero, che e' anche come appare nel piano QGIS (dove i simboli
+     * hanno la maschera bianca) e nel piano ufficiale su carta.
+     *
+     * Colore 255 = bianco pieno, non BYBLOCK: la maschera non deve prendere il
+     * colore della provenienza del punto, e su carta bianca sparisce da sola.
+     * L'HATCH ha un solo bordo circolare (72=2, angoli 0-360), la stessa forma
+     * gia' usata dal punto pieno di GPUV. */
+    private void writeMascheraDisco(Writer writer, String string, String string2) throws IOException {
+        writer.write(DxfUtil.toString(0, "HATCH"));
+        writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
+        writer.write(DxfUtil.toString(330, this.blockRecordHandles.get(string)));
+        writer.write(DxfUtil.toString(100, "AcDbEntity"));
+        writer.write(DxfUtil.toString(8, "0"));
+        writer.write(DxfUtil.toString(62, "255"));
+        writer.write(DxfUtil.toString(100, "AcDbHatch"));
+        writer.write(DxfUtil.toString(10, "0.0"));
+        writer.write(DxfUtil.toString(20, "0.0"));
+        writer.write(DxfUtil.toString(30, "0.0"));
+        writer.write(DxfUtil.toString(210, "0.0"));
+        writer.write(DxfUtil.toString(220, "0.0"));
+        writer.write(DxfUtil.toString(230, "1.0"));
+        writer.write(DxfUtil.toString(2, "SOLID"));
+        writer.write(DxfUtil.toString(70, "1"));
+        writer.write(DxfUtil.toString(71, "0"));
+        writer.write(DxfUtil.toString(91, "1"));
+        writer.write(DxfUtil.toString(92, "1"));
+        writer.write(DxfUtil.toString(93, "1"));
+        writer.write(DxfUtil.toString(72, "2"));
+        writer.write(DxfUtil.toString(10, "0.0"));
+        writer.write(DxfUtil.toString(20, "0.0"));
+        writer.write(DxfUtil.toString(40, string2));
+        writer.write(DxfUtil.toString(50, "0.0"));
+        writer.write(DxfUtil.toString(51, "360.0"));
+        writer.write(DxfUtil.toString(73, "1"));
+        writer.write(DxfUtil.toString(97, "0"));
+        writer.write(DxfUtil.toString(75, "1"));
+        writer.write(DxfUtil.toString(76, "1"));
+        writer.write(DxfUtil.toString(98, "0"));
+    }
+
     private void writeBlocks(Writer writer) throws IOException {
         int var5_12;
         int n;
@@ -1163,6 +1214,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPBOL"));
+        this.writeMascheraDisco(writer, "GPBOL", "0.5");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPBOL")));
@@ -1193,6 +1245,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPROH"));
+        this.writeMascheraDisco(writer, "GPROH", "0.5");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPROH")));
@@ -1223,6 +1276,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPPFA"));
+        this.writeMascheraDisco(writer, "GPPFA", "0.5");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPPFA")));
@@ -1253,6 +1307,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPUV"));
+        this.writeMascheraDisco(writer, "GPUV", "0.35");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPUV")));
@@ -1313,6 +1368,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPSTE"));
+        this.writeMascheraDisco(writer, "GPSTE", "0.7");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPSTE")));
@@ -1343,6 +1399,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPKST"));
+        this.writeMascheraDisco(writer, "GPKST", "0.7");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKST")));
@@ -1373,6 +1430,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "GPKRZ"));
+        this.writeMascheraDisco(writer, "GPKRZ", "0.5");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("GPKRZ")));
@@ -1455,6 +1513,7 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(20, "0.0"));
         writer.write(DxfUtil.toString(30, "0.0"));
         writer.write(DxfUtil.toString(2, "HGP"));
+        this.writeMascheraDisco(writer, "HGP", "1.5");
         writer.write(DxfUtil.toString(0, "CIRCLE"));
         writer.write(DxfUtil.toString(5, DxfUtil.nextHandle()));
         writer.write(DxfUtil.toString(330, this.blockRecordHandles.get("HGP")));
