@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qgis.core import (QgsApplication, QgsProject, QgsVectorLayer, QgsFeature,
                        QgsGeometry, QgsPointXY, QgsRectangle, Qgis)
-from qgis.PyQt.QtCore import QDate
+from qgis.PyQt.QtCore import QDate, Qt
 from qgis.PyQt.QtWidgets import QMessageBox, QPushButton
 
 # True: servono i widget veri, non la modalita' senza interfaccia.
@@ -871,6 +871,82 @@ class TestIngombro(unittest.TestCase):
         dlg.chk_ingombro.setChecked(True)
         dlg.chk_ingombro.setChecked(False)
         self.assertTrue(dlg._banda_ingombro.asGeometry().isEmpty())
+
+
+class _EventoFinto:
+    """Il minimo che StrumentoSpostaFoglio chiede a un evento del canvas:
+    quale tasto e in che punto del terreno. Basta per provare la logica del
+    trascinamento senza sintetizzare eventi Qt veri."""
+
+    def __init__(self, x, y, tasto=Qt.MouseButton.LeftButton):
+        self._p = QgsPointXY(x, y)
+        self._t = tasto
+
+    def mapPoint(self):
+        return self._p
+
+    def button(self):
+        return self._t
+
+
+class TestTrascinamentoDelFoglio(unittest.TestCase):
+    """Il foglio si afferra dall'interno e si porta dove serve. Prima si
+    spostava la MAPPA finché il centro della vista non capitava al punto
+    giusto: un movimento al contrario."""
+
+    def _strumento(self):
+        from qgis.gui import QgsMapCanvas
+        from tidashboard.tidashboard import StrumentoSpostaFoglio
+        dlg = TIDashboardDialog()
+        canvas = QgsMapCanvas()
+        canvas.setExtent(QgsRectangle(CX - 500, CY - 500, CX + 500, CY + 500))
+        # Il canvas va tenuto in vita: e' il padre C++ dello strumento, e se lo
+        # si lascia morire alla fine di questo metodo il wrapper Python dello
+        # strumento resta appeso a un oggetto distrutto.
+        dlg._canvas_di_prova = canvas
+        dlg._centro_da_fondo = QgsPointXY(CX, CY)
+        return dlg, StrumentoSpostaFoglio(canvas, dlg)
+
+    def test_afferrando_da_dentro_il_foglio_segue_il_puntatore(self):
+        dlg, tool = self._strumento()
+        # click 10 m a destra del centro, poi trascino di 30 m verso est
+        tool.canvasPressEvent(_EventoFinto(CX + 10, CY))
+        tool.canvasMoveEvent(_EventoFinto(CX + 40, CY))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX + 30, places=6)
+        self.assertAlmostEqual(dlg._centro_da_fondo.y(), CY, places=6)
+
+    def test_il_foglio_non_salta_sotto_il_puntatore(self):
+        # Afferrando da un angolo, il centro NON deve schizzare sul punto
+        # cliccato: si tiene lo scarto fra click e centro.
+        dlg, tool = self._strumento()
+        tool.canvasPressEvent(_EventoFinto(CX + 30, CY + 20))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6)
+        tool.canvasMoveEvent(_EventoFinto(CX + 30, CY + 20))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6)
+        self.assertAlmostEqual(dlg._centro_da_fondo.y(), CY, places=6)
+
+    def test_fuori_dal_rettangolo_non_si_afferra_niente(self):
+        # Il tasto sinistro fuori dal foglio resta libero per la navigazione.
+        dlg, tool = self._strumento()
+        tool.canvasPressEvent(_EventoFinto(CX + 100000, CY))
+        tool.canvasMoveEvent(_EventoFinto(CX + 100030, CY))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6)
+
+    def test_il_tasto_destro_non_trascina(self):
+        dlg, tool = self._strumento()
+        tool.canvasPressEvent(_EventoFinto(CX, CY, Qt.MouseButton.RightButton))
+        tool.canvasMoveEvent(_EventoFinto(CX + 50, CY))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6)
+
+    def test_al_rilascio_la_posizione_resta(self):
+        dlg, tool = self._strumento()
+        tool.canvasPressEvent(_EventoFinto(CX, CY))
+        tool.canvasReleaseEvent(_EventoFinto(CX + 25, CY - 15))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX + 25, places=6)
+        self.assertAlmostEqual(dlg._centro_da_fondo.y(), CY - 15, places=6)
+        # e un movimento successivo senza premere non sposta piu' niente
+        tool.canvasMoveEvent(_EventoFinto(CX + 900, CY))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX + 25, places=6)
 
 
 if __name__ == "__main__":

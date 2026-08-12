@@ -24,7 +24,8 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtCore import (QThread, pyqtSignal, QPointF, QRectF, QDate,
                               QTimer, Qt)
 from qgis.PyQt.QtGui import (QIcon, QColor, QFont, QTextCursor, QPalette,
-                             QTextCharFormat)
+                             QTextCharFormat, QCursor)
+from qgis.gui import QgsMapTool
 # NB: le classi di simbologia (QgsSimpleFillSymbolLayer, QgsFontMarkerSymbolLayer,
 # QgsFillSymbol, ...) non compaiono piu' qui: sono passate a simbologia.py e a
 # stili.py insieme al codice che le usa.
@@ -220,6 +221,69 @@ _STILE_PULSANTE = (
     "padding: 10px; border-radius: 4px; }"
     "QPushButton:disabled { background-color: #757575; color: #E0E0E0; }"
 )
+
+
+class StrumentoSpostaFoglio(QgsMapTool):
+    """Prende il rettangolo del foglio e lo porta dove serve.
+
+    Prima il foglio si inquadrava indirettamente: si spostava la MAPPA finche'
+    il centro della vista non capitava dove serviva, e il rettangolo seguiva.
+    Funziona, ma e' un movimento al contrario - si muove tutto per posizionare
+    una cosa - e alle scale piccole basta un pixel di troppo per perdere
+    l'inquadratura. Qui si afferra direttamente il rettangolo.
+
+    Si trascina SOLO afferrandolo da dentro: fuori dal rettangolo il tasto
+    sinistro resta libero per la navigazione normale, cosi' lo strumento acceso
+    non sequestra il canvas.
+    """
+
+    def __init__(self, canvas, dialogo):
+        super().__init__(canvas)
+        self._dialogo = dialogo
+        self._scarto = None                  # click meno centro, per non far saltare il foglio
+        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+
+    def _centro_corrente(self):
+        canvas = self.canvas()
+        return (getattr(self._dialogo, "_centro_da_fondo", None)
+                or canvas.extent().center())
+
+    def _impronta(self, centro):
+        formato, scala, rotazione, _c, _d = self._dialogo._parametri_planimetria()
+        return QgsGeometry.fromPolygonXY(
+            [_planimetria.impronta_foglio(centro, scala, formato, rotazione)])
+
+    def canvasPressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        punto = e.mapPoint()
+        centro = self._centro_corrente()
+        if not self._impronta(centro).contains(QgsGeometry.fromPointXY(punto)):
+            return                            # fuori dal foglio: non e' roba nostra
+        # Si tiene lo scarto fra dove hai cliccato e il centro: senza, al primo
+        # movimento il foglio salterebbe centrandosi sotto il puntatore.
+        self._scarto = (punto.x() - centro.x(), punto.y() - centro.y())
+        self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+
+    def canvasMoveEvent(self, e):
+        if self._scarto is None:
+            return
+        punto = e.mapPoint()
+        self._dialogo.sposta_foglio_a(
+            QgsPointXY(punto.x() - self._scarto[0], punto.y() - self._scarto[1]))
+
+    def canvasReleaseEvent(self, e):
+        if self._scarto is None:
+            return
+        punto = e.mapPoint()
+        nuovo = QgsPointXY(punto.x() - self._scarto[0], punto.y() - self._scarto[1])
+        self._scarto = None
+        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        self._dialogo.sposta_foglio_a(nuovo, definitivo=True)
+
+    def deactivate(self):
+        self._scarto = None
+        super().deactivate()
 
 
 class TIDashboardDialog(StiliMixin, QDialog):
@@ -657,6 +721,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         layout_plan.addWidget(gruppo_cerca)
         self._risultati_fondo = []
         self._centro_da_fondo = None
+        self._fondo_ancorato = None
         self._aggiorna_comandi_fondo()
 
         # Anteprima dell'ingombro: senza, formato, scala e rotazione si
@@ -667,6 +732,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
             "seguendo formato, scala, rotazione e centro della vista")
         self.chk_ingombro.toggled.connect(self._aggiorna_ingombro)
         layout_plan.addWidget(self.chk_ingombro)
+
+        # Trascinare il foglio invece di spostare la mappa. Il verso naturale
+        # e' questo: si muove la cosa da posizionare, non tutto il resto.
+        self.chk_trascina = QCheckBox("Sposta il foglio trascinandolo sulla mappa")
+        self.chk_trascina.setToolTip(
+            "Afferra il rettangolo dall'interno e portalo dove serve. Il colore "
+            "dice se il fondo agganciato ci sta ancora: verde dentro, arancione "
+            "a filo di cornice, rosso fuori.")
+        self.chk_trascina.toggled.connect(self._attiva_trascinamento)
+        layout_plan.addWidget(self.chk_trascina)
         for controllo in (self.combo_formato, self.combo_scala):
             controllo.currentIndexChanged.connect(self._aggiorna_ingombro)
         self.spin_rotazione.valueChanged.connect(self._aggiorna_ingombro)
@@ -1521,6 +1596,73 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.combo_comune.setCurrentText(scelto if scelto in nomi else nomi[0])
         return nomi
 
+    # --- TRASCINAMENTO DEL FOGLIO -------------------------------------------
+    def _colore_ingombro(self, stato):
+        """Il colore del rettangolo dice se il fondo agganciato ci sta ancora.
+
+        Il riscontro va dato SUL CANVAS, dove sta l'occhio di chi trascina: una
+        scritta nella finestra di dialogo, che spesso copre solo mezza mappa,
+        si legge dopo. Verde dentro, arancione a filo di cornice, rosso fuori;
+        il verde acqua di sempre quando non c'e' nessun fondo agganciato e la
+        domanda non ha senso."""
+        return {"dentro": QColor(46, 125, 50),
+                "stretto": QColor(230, 145, 0),
+                "fuori": QColor(198, 40, 40)}.get(stato, QColor(0, 105, 92))
+
+    def _stato_fondo_nel_foglio(self, centro):
+        """"dentro"/"stretto"/"fuori" per il fondo agganciato, o None."""
+        fondo = getattr(self, "_fondo_ancorato", None)
+        punti = getattr(fondo, "contorno", None) if fondo else None
+        if not punti:
+            return None
+        formato, scala, rotazione, _c, _d = self._parametri_planimetria()
+        return _planimetria.stato_capienza(punti, centro, scala, formato, rotazione)
+
+    def sposta_foglio_a(self, centro, definitivo=False):
+        """Mette il centro del foglio dove lo si e' trascinato.
+
+        Usa lo stesso aggancio del centro fissato su un fondo: da li' in poi la
+        vista puo' muoversi quanto vuole, il foglio resta dove l'hai messo."""
+        self._centro_da_fondo = QgsPointXY(centro)
+        self._aggiorna_ingombro()
+        if not definitivo:
+            return
+        self._fondo_ancorato = getattr(self, "_fondo_ancorato", None)
+        stato = self._stato_fondo_nel_foglio(centro)
+        etichetta = getattr(self, "_etichetta_centro", None)
+        if stato is None:
+            self._aggiorna_centro_fissato("posizione scelta a mano")
+        else:
+            self._aggiorna_centro_fissato(etichetta)
+        nota = {"dentro": "", "stretto": " — il fondo arriva a filo di cornice",
+                "fuori": " — ATTENZIONE: il fondo esce dal foglio"}.get(stato, "")
+        self.log("   🖐️ Foglio spostato a E%.1f N%.1f%s"
+                 % (centro.x(), centro.y(), nota),
+                 Qgis.Warning if stato == "fuori" else Qgis.Info)
+
+    def _attiva_trascinamento(self, attivo):
+        """Accende o spegne lo strumento di trascinamento sul canvas."""
+        iface = getattr(self, "_iface", None)
+        canvas = iface.mapCanvas() if iface else None
+        if canvas is None:
+            return
+        if attivo:
+            if not self.chk_ingombro.isChecked():
+                self.chk_ingombro.setChecked(True)   # senza rettangolo non c'e' cosa afferrare
+            self._strumento_precedente = canvas.mapTool()
+            self._strumento_foglio = StrumentoSpostaFoglio(canvas, self)
+            canvas.setMapTool(self._strumento_foglio)
+            self.log("   🖐️ Trascina il rettangolo per inquadrare il foglio "
+                     "(il colore dice se il fondo ci sta)")
+            return
+        strumento = getattr(self, "_strumento_foglio", None)
+        if strumento is not None and canvas.mapTool() is strumento:
+            canvas.unsetMapTool(strumento)
+            precedente = getattr(self, "_strumento_precedente", None)
+            if precedente is not None:
+                canvas.setMapTool(precedente)
+        self._strumento_foglio = None
+
     # --- ANTEPRIMA DELL'INGOMBRO DEL FOGLIO ---------------------------------
     def _aggiorna_ingombro(self, *_args):
         """Disegna (o cancella) sul canvas il rettangolo di terreno che finira'
@@ -1539,8 +1681,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if banda is None:
             from qgis.gui import QgsRubberBand
             banda = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
-            banda.setColor(QColor(0, 105, 92, 60))
-            banda.setStrokeColor(QColor(0, 105, 92))
             banda.setWidth(2)
             self._banda_ingombro = banda
         formato, scala, rotazione, _comune, _data = self._parametri_planimetria()
@@ -1550,6 +1690,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
         centro = getattr(self, "_centro_da_fondo", None) or canvas.extent().center()
         punti = _planimetria.impronta_foglio(centro, scala, formato, rotazione)
         banda.setToGeometry(QgsGeometry.fromPolygonXY([punti]), None)
+        colore = self._colore_ingombro(self._stato_fondo_nel_foglio(centro))
+        banda.setStrokeColor(colore)
+        banda.setColor(QColor(colore.red(), colore.green(), colore.blue(), 60))
 
     def browse_open_file(self, line_edit, filter_str):
         path, _ = QFileDialog.getOpenFileName(self, "Seleziona File", "", filter_str)
@@ -3624,6 +3767,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if f is None or f.centro is None:
             return
         self._centro_da_fondo = QgsPointXY(f.centro[0], f.centro[1])
+        # Il fondo resta agganciato anche dopo: serve al trascinamento, che
+        # deve poter dire se spostando il foglio il fondo ne esce.
+        self._fondo_ancorato = f
         etichetta = "fondo %s%s" % (f.numero,
                                     " sez. %s" % f.sezione if f.sezione else "")
         self._esito_fondo("Centro della planimetria fissato sul %s." % etichetta)
@@ -3742,6 +3888,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def sgancia_centro(self):
         """Torna a centrare sulla vista corrente."""
         self._centro_da_fondo = None
+        self._fondo_ancorato = None
         self._aggiorna_centro_fissato()
         self._esito_fondo("Centro sganciato: il foglio segue di nuovo la vista "
                           "della mappa.")

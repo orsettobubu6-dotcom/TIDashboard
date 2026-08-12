@@ -374,6 +374,29 @@ def _foglio_ristretto(centro, scala, formato, rotazione_gon, margine_mm):
     return poligono
 
 
+def stato_capienza(punti, centro, scala, formato="A4 verticale", rotazione_gon=0.0,
+                   margine_mm=MARGINE_CORTESIA):
+    """Dove sta un oggetto rispetto al foglio messo in quella posizione:
+    "dentro", "stretto" (ci sta ma a filo di cornice) o "fuori". None se non
+    c'e' abbastanza informazione per dirlo.
+
+    Serve al trascinamento del foglio: mentre lo si sposta la domanda non e'
+    "quale scala serve" - quella e' gia' decisa - ma "il fondo che sto
+    inquadrando e' ancora tutto dentro?". Risponde sull'impronta VERA, quella
+    che finira' sul foglio, rotazione compresa."""
+    if not punti or centro is None:
+        return None
+    geometria = QgsGeometry.fromMultiPointXY([QgsPointXY(x, y) for x, y in punti])
+    intero = QgsGeometry.fromPolygonXY(
+        [impronta_foglio(centro, scala, formato, rotazione_gon)])
+    if not intero.contains(geometria):
+        return "fuori"
+    ristretto = _foglio_ristretto(centro, scala, formato, rotazione_gon, margine_mm)
+    if ristretto.isEmpty() or not ristretto.contains(geometria):
+        return "stretto"
+    return "dentro"
+
+
 def miglior_foglio(dx, dy, scala_voluta, formato_voluto="A4 verticale",
                    margine_mm=MARGINE_CORTESIA, rotazione_gon=0.0):
     """Come stampare un oggetto dx per dy metri, cercando di NON perdere scala.

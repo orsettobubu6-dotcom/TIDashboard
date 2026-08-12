@@ -767,6 +767,53 @@ class TestRettangoloMinimo(unittest.TestCase):
         self.assertEqual(P.rettangolo_minimo([(5, 5), (5, 5)])[:2], (0.0, 0.0))
 
 
+class TestStatoCapienza(unittest.TestCase):
+    """Mentre si trascina il foglio la domanda non è quale scala serve, ma se
+    il fondo agganciato è ancora tutto dentro."""
+
+    def _quadrato(self, cx, cy, lato):
+        m = lato / 2.0
+        return [(cx - m, cy - m), (cx + m, cy - m), (cx + m, cy + m), (cx - m, cy + m)]
+
+    def test_al_centro_e_dentro(self):
+        punti = self._quadrato(CX, CY, 20.0)
+        self.assertEqual(
+            P.stato_capienza(punti, QgsPointXY(CX, CY), 500, "A4 verticale"), "dentro")
+
+    def test_spostando_il_foglio_il_fondo_ne_esce(self):
+        punti = self._quadrato(CX, CY, 20.0)
+        # il foglio a 1:500 su A4 verticale copre ~91 x 114 m: 200 m di
+        # spostamento lo porta sicuramente via
+        lontano = QgsPointXY(CX + 200.0, CY)
+        self.assertEqual(P.stato_capienza(punti, lontano, 500, "A4 verticale"), "fuori")
+
+    def test_a_filo_di_cornice_e_stretto_non_dentro(self):
+        larghezza, _ = P.area_mappa("A4 verticale")
+        # largo quanto l'area di mappa: ci sta, ma tocca la cornice
+        punti = self._quadrato(CX, CY, larghezza / 1000.0 * 500 - 0.5)
+        self.assertEqual(
+            P.stato_capienza(punti, QgsPointXY(CX, CY), 500, "A4 verticale"), "stretto")
+
+    def test_la_rotazione_del_foglio_conta(self):
+        # Striscia lunga e stretta orizzontale: su A4 verticale a 1:500 il
+        # foglio è largo ~91 m e alto ~114, quindi dritta non ci sta e girata
+        # sì. 100 m e non 110: a 110 il gioco che resta è 2.25 m per lato, meno
+        # dei 2.5 del margine di cortesia, e la risposta giusta sarebbe
+        # "stretto" - il che proverebbe un'altra cosa.
+        lunghezza = 100.0
+        punti = [(CX - lunghezza / 2, CY - 3), (CX + lunghezza / 2, CY - 3),
+                 (CX + lunghezza / 2, CY + 3), (CX - lunghezza / 2, CY + 3)]
+        centro = QgsPointXY(CX, CY)
+        self.assertEqual(P.stato_capienza(punti, centro, 500, "A4 verticale"), "fuori")
+        self.assertEqual(
+            P.stato_capienza(punti, centro, 500, "A4 verticale", rotazione_gon=100.0),
+            "dentro")
+
+    def test_senza_geometria_non_si_pronuncia(self):
+        self.assertIsNone(P.stato_capienza([], QgsPointXY(CX, CY), 500))
+        self.assertIsNone(P.stato_capienza([(0, 0)], None, 500))
+
+
 class TestRotazioneCheContiene(unittest.TestCase):
     """La rotazione proposta deve funzionare davvero: si verifica sull'impronta
     vera del foglio, non sull'angolo del rettangolo minimo. Il segno della
