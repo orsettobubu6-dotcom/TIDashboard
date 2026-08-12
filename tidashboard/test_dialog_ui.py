@@ -873,6 +873,85 @@ class TestIngombro(unittest.TestCase):
         self.assertTrue(dlg._banda_ingombro.asGeometry().isEmpty())
 
 
+class TestErroriValidazioneSullaMappa(unittest.TestCase):
+    """La scheda «Errori nei dati» dice COSA non va, il layer dice DOVE.
+
+    Le righe usate qui sono quelle vere, prodotte da ili2gpkg importando
+    5254010100.itf: due violazioni di unicità su Punto_di_confine e otto
+    avvertenze «arc is straight», che la coordinata ce l'hanno già dentro."""
+
+    RIGA_UNICITA = ("Error: line 1183065: MD01MUTI7MN95.Beni_immobili.Punto_di_confine: "
+                    "tid 46560: Unique constraint "
+                    "MD01MUTI7MN95.Beni_immobili.Punto_di_confine.Constraint2 is "
+                    "violated! Values TI63201, 140602 already exist in Object: 40497")
+    RIGA_ARCO = "Warning: arc is straight at (2719339.225, 1081435.757, NaN)"
+
+    def _dialogo(self):
+        dlg = TIDashboardDialog()
+        dlg._import_unique_errors = []
+        dlg._punti_validazione = []
+        return dlg
+
+    def test_l_avvertenza_con_coordinata_finisce_sulla_mappa(self):
+        dlg = self._dialogo()
+        dlg._on_import_log_line(self.RIGA_ARCO)
+        self.assertEqual(len(dlg._punti_validazione), 1)
+        p = dlg._punti_validazione[0]
+        self.assertEqual(p["livello"], "avviso")
+        self.assertAlmostEqual(p["x"], 2719339.225, places=3)
+        self.assertAlmostEqual(p["y"], 1081435.757, places=3)
+
+    def test_la_violazione_di_unicita_non_si_conta_due_volte(self):
+        # Ha la sua strada (le coordinate si leggono nell'ITF): non deve
+        # entrare anche dalla porta dei messaggi con coordinata.
+        dlg = self._dialogo()
+        dlg._on_import_log_line(self.RIGA_UNICITA)
+        self.assertEqual(len(dlg._import_unique_errors), 1)
+        self.assertEqual(dlg._punti_validazione, [])
+
+    def test_le_righe_informative_non_sporcano_la_mappa(self):
+        dlg = self._dialogo()
+        dlg._on_import_log_line("Info: compiling MD01MUTI7MN95.ili")
+        dlg._on_import_log_line("Info: 2719339.225 1081435.757 letta")
+        self.assertEqual(dlg._punti_validazione, [])
+
+    def test_il_layer_nasce_solo_se_c_e_qualcosa_da_mostrare(self):
+        dlg = self._dialogo()
+        self.assertIsNone(dlg.crea_layer_errori_validazione())
+
+    def test_la_stessa_segnalazione_ripetuta_fa_un_punto_solo(self):
+        # Sul comune di prova le otto avvertenze «arc is straight» stanno su
+        # due posizioni sole, ripetute quattro volte ciascuna: impilare punti
+        # identici rende ambiguo il clic sulla mappa e non aggiunge nulla.
+        dlg = self._dialogo()
+        for _ in range(4):
+            dlg._on_import_log_line(self.RIGA_ARCO)
+        self.assertEqual(len(dlg._punti_validazione), 4)
+        layer = dlg.crea_layer_errori_validazione()
+        self.assertEqual(layer.featureCount(), 1)
+        QgsProject.instance().removeMapLayer(layer.id())
+
+    def test_il_layer_ha_un_punto_per_problema_e_gli_attributi_giusti(self):
+        dlg = self._dialogo()
+        dlg._on_import_log_line(self.RIGA_ARCO)
+        dlg._punti_validazione.append({
+            "livello": "errore", "tipo": "vincolo di unicità",
+            "messaggio": "Constraint2: valori duplicati TI63201, 140602",
+            "x": 2720017.525, "y": 1080964.798, "tid": "46560", "riga": 1183065})
+        layer = dlg.crea_layer_errori_validazione()
+        self.assertIsNotNone(layer)
+        self.assertTrue(layer.isValid())
+        self.assertEqual(layer.featureCount(), 2)
+        self.assertEqual(layer.crs().authid(), "EPSG:2056")
+        livelli = sorted(f["livello"] for f in layer.getFeatures())
+        self.assertEqual(livelli, ["avviso", "errore"])
+        errore = [f for f in layer.getFeatures() if f["livello"] == "errore"][0]
+        self.assertEqual(errore["tid"], "46560")
+        self.assertEqual(errore["riga"], 1183065)
+        self.assertAlmostEqual(errore.geometry().asPoint().x(), 2720017.525, places=3)
+        QgsProject.instance().removeMapLayer(layer.id())
+
+
 class _EventoFinto:
     """Il minimo che StrumentoSpostaFoglio chiede a un evento del canvas:
     quale tasto e in che punto del terreno. Basta per provare la logica del

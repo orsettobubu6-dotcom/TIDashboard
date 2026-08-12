@@ -30,7 +30,7 @@ from qgis.gui import QgsMapTool
 # QgsFillSymbol, ...) non compaiono piu' qui: sono passate a simbologia.py e a
 # stili.py insieme al codice che le usa.
 from qgis.core import (
-    QgsProject, QgsVectorLayer, QgsMessageLog, Qgis, QgsDataSourceUri,
+    QgsProject, QgsVectorLayer, QgsMessageLog, Qgis, QgsDataSourceUri, QgsFeature,
     QgsCoordinateReferenceSystem, QgsRelation, QgsVectorLayerJoinInfo,
     QgsPrintLayout, QgsLayoutItemLabel, QgsLayoutItemScaleBar, QgsLayoutItemMap,
     QgsLayoutExporter, QgsLayerTreeGroup, QgsRectangle,
@@ -2108,12 +2108,31 @@ class TIDashboardDialog(StiliMixin, QDialog):
         r"Values (.+) already exist in Object: (\d+)$"
     )
 
+    # I messaggi che la validazione emette con le coordinate gia' dentro, e che
+    # finora restavano semplici righe di log: "Warning: arc is straight at
+    # (2719339.225, 1081435.757, NaN)". Sono geolocalizzati all'origine, e non
+    # c'e' bisogno di andarli a cercare nell'ITF come per i vincoli di unicita'.
+    _ILI2GPKG_LIVELLO_RE = re.compile(r"^(Error|Warning): (.+)$")
+
     def _on_import_log_line(self, line):
         """Wrapper del log_signal del JavaWorker durante l'import: logga
         come sempre, ma intercetta e memorizza anche gli errori di vincolo
         di unicita' riconosciuti, per l'analisi automatica in caso di
-        fallimento (vedi _analyze_import_errors)."""
+        fallimento (vedi _analyze_import_errors), e ogni altro messaggio di
+        validazione che porti con se' una coordinata."""
         self.log(line)
+        livello = self._ILI2GPKG_LIVELLO_RE.match(line.strip())
+        if livello and not self._ILI2GPKG_UNIQUE_RE.match(line.strip()):
+            coord = self._extract_lv95_coords(line)
+            if coord:
+                if not hasattr(self, "_punti_validazione"):
+                    self._punti_validazione = []
+                self._punti_validazione.append({
+                    "livello": "errore" if livello.group(1) == "Error" else "avviso",
+                    "tipo": "validazione",
+                    "messaggio": livello.group(2).strip(),
+                    "x": coord[0], "y": coord[1], "tid": "", "riga": 0,
+                })
         m = self._ILI2GPKG_UNIQUE_RE.match(line.strip())
         if m:
             self._import_unique_errors.append({
@@ -2192,6 +2211,76 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 return e, n
         return None
 
+    def crea_layer_errori_validazione(self):
+        """Mette sulla mappa i problemi trovati dalla validazione.
+
+        La scheda "Errori nei dati" dice COSA non va; questo layer dice DOVE, e
+        sono due domande diverse. Con due punti di confine che hanno lo stesso
+        identificativo, sapere che distano 8 metri o 8 chilometri cambia cosa
+        si va a controllare sul terreno - e per arrivarci finora bisognava
+        copiare le coordinate dal log e incollarle a mano.
+
+        I punti arrivano da due strade: le violazioni di unicita', per cui le
+        coordinate si vanno a leggere nell'ITF (vedi _analyze_import_errors), e
+        i messaggi che la coordinata ce l'hanno gia' dentro, come "arc is
+        straight at (...)". Ritorna il layer, o None se non c'e' niente da
+        mostrare."""
+        punti = getattr(self, "_punti_validazione", None)
+        if not punti:
+            return None
+        layer = QgsVectorLayer(
+            "Point?crs=EPSG:2056&field=livello:string(10)&field=tipo:string(40)"
+            "&field=messaggio:string(400)&field=tid:string(20)&field=riga:integer",
+            "Errori di validazione", "memory")
+        # Lo stesso difetto viene segnalato piu' volte: sul comune di prova le
+        # otto avvertenze "arc is straight" stanno su DUE posizioni sole,
+        # ripetute quattro volte ciascuna (una per anello che passa di li').
+        # Impilare quattro punti identici non aggiunge niente e rende il clic
+        # sulla mappa ambiguo, quindi restano quelli distinti.
+        visti = set()
+        distinti = []
+        for p in punti:
+            chiave = (p["livello"], p["tipo"], p["messaggio"],
+                      round(p["x"], 3), round(p["y"], 3))
+            if chiave in visti:
+                continue
+            visti.add(chiave)
+            distinti.append(p)
+        if len(distinti) < len(punti):
+            self.log("   ℹ️ %d segnalazioni ripetute sulla stessa posizione accorpate"
+                     % (len(punti) - len(distinti)))
+        punti = distinti
+        feature_list = []
+        for p in punti:
+            f = QgsFeature(layer.fields())
+            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(p["x"], p["y"])))
+            f.setAttributes([p["livello"], p["tipo"], p["messaggio"],
+                             str(p.get("tid") or ""), int(p.get("riga") or 0)])
+            feature_list.append(f)
+        layer.dataProvider().addFeatures(feature_list)
+        layer.updateExtents()
+        self._stile_errori_validazione(layer)
+        QgsProject.instance().addMapLayer(layer)
+        n_err = sum(1 for p in punti if p["livello"] == "errore")
+        self.log("   🗺️ Layer «Errori di validazione»: %d punti (%d errori, %d avvisi). "
+                 "Clic destro sul layer → Zoom sul layer per vederli."
+                 % (len(punti), n_err, len(punti) - n_err))
+        return layer
+
+    def _stile_errori_validazione(self, layer):
+        """Rosso gli errori, arancione gli avvisi, e l'etichetta col messaggio:
+        un puntino senza scritta costringe comunque ad aprire la tabella."""
+        from qgis.core import QgsMarkerSymbol, QgsRuleBasedRenderer
+        radice = QgsRuleBasedRenderer.Rule(None)
+        for livello, colore in (("errore", "198,40,40"), ("avviso", "230,145,0")):
+            simbolo = QgsMarkerSymbol.createSimple({
+                "name": "circle", "color": colore + ",180",
+                "outline_color": "255,255,255", "outline_width": "0.4", "size": "4"})
+            regola = QgsRuleBasedRenderer.Rule(simbolo, filterExp='"livello" = \'%s\'' % livello,
+                                               label=livello)
+            radice.appendChild(regola)
+        layer.setRenderer(QgsRuleBasedRenderer(radice))
+
     def _analyze_import_errors(self, itf_path):
         """Analizza gli errori di vincolo di unicita' catturati durante
         l'import (vedi _on_import_log_line) e propone un riepilogo leggibile
@@ -2238,6 +2327,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 coord_b = self._extract_lv95_coords(objs[err["existing_tid"]]) if err["existing_tid"] in objs else None
                 if coord_a and coord_b:
                     dist = ((coord_a[0] - coord_b[0]) ** 2 + (coord_a[1] - coord_b[1]) ** 2) ** 0.5
+                    # Gli stessi due punti finiscono anche sulla mappa: la
+                    # tabella dice COSA non va, il layer dice DOVE.
+                    for tid, (x, y) in ((err["tid"], coord_a), (err["existing_tid"], coord_b)):
+                        self._punti_validazione.append({
+                            "livello": "errore", "tipo": "vincolo di unicità",
+                            "messaggio": "%s: valori duplicati %s"
+                                         % (err["constraint"].split(".")[-1], err["values"]),
+                            "x": x, "y": y, "tid": tid, "riga": err["line"],
+                        })
                     self.log(f"      Coordinate: A=({coord_a[0]:.1f}, {coord_a[1]:.1f})  "
                               f"B=({coord_b[0]:.1f}, {coord_b[1]:.1f})  →  distanza {dist:.0f} m")
                     if dist < 1.0:
@@ -2256,6 +2354,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 self.log(f"      ⚠️ Lettura ITF fallita durante l'analisi: {e}", Qgis.Warning)
 
         self._riempi_tabella_errori(righe_tabella)
+        self.crea_layer_errori_validazione()
         self.log("\n   💡 Non è un problema risolvibile qui: i dati sorgente vanno corretti da chi "
                   "gestisce l'ITF (assegna un identificativo diverso a uno dei due punti). "
                   "Per procedere comunque con l'import (i duplicati restano nel GeoPackage così come sono), "
@@ -2287,6 +2386,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return
         self._last_itf_path = itf_path
         self._import_unique_errors = []
+        # Azzerato a ogni importazione, se no i punti della volta prima
+        # resterebbero sulla mappa a indicare errori gia' corretti.
+        self._punti_validazione = []
 
         self.log("=" * 60)
         self.log("🚀 AVVIO IMPORTAZIONE")
