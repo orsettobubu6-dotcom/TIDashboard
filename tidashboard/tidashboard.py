@@ -3633,6 +3633,37 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._aggiorna_centro_fissato(etichetta)
         self._aggiorna_ingombro()
 
+    def _rotazione_che_salva_la_scala(self, f, scala, formato):
+        """Se girando il foglio il fondo ci sta alla scala voluta: su quale
+        formato e di quanto. (None, None) se non basta.
+
+        Si provano TUTTI i formati, nello stesso ordine di preferenza di
+        miglior_foglio. Fermarsi all'A4 sembrava prudente ed era invece
+        inutile: sui dati di Mendrisio, dei 1 248 fondi che a 1:500 non ci
+        stanno dritti in nessun formato, quelli recuperabili girando il foglio
+        sono 214, e NESSUNO di questi ci sta su un A4 - il rettangolo minimo è
+        più piccolo dell'ingombro dritto, ma non tanto da rientrare nel foglio
+        piccolo. Con la sola coppia A4 la funzione non scattava mai.
+
+        Senza la geometria vera (WKB troncato, o ripiego su PosFondo) non si
+        può calcolare il rettangolo minimo e si risponde di no."""
+        punti = getattr(f, "contorno", None)
+        if not punti or f.centro is None:
+            return None, None
+        centro = QgsPointXY(f.centro[0], f.centro[1])
+        candidati = [formato]
+        altro = _planimetria._altro_orientamento(formato)
+        if altro:
+            candidati.append(altro)
+        for nome, _w, _h in _planimetria.FORMATI:
+            if nome not in candidati:
+                candidati.append(nome)
+        for nome in candidati:
+            giro = _planimetria.rotazione_che_contiene(punti, centro, scala, nome)
+            if giro is not None:
+                return nome, giro
+        return None, None
+
     def _avvisa_capienza(self, f):
         """Centrare non basta: la scala resta quella scelta prima, e un fondo
         piu' grande del foglio viene tagliato. Sui dati di Mendrisio, su A4
@@ -3667,12 +3698,24 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if motivo == "formato":
             rimedio = ("Alla stessa scala ci sta su %s: basta cambiare formato."
                        % proposta)
-        elif motivo == "scala":
-            rimedio = ("Serve 1:%d%s."
-                       % (nuova_scala,
-                          " su %s" % proposta if proposta != formato else ""))
         else:
-            rimedio = "Non ci sta in nessun formato e in nessuna scala ufficiale."
+            # Prima di rinunciare alla scala si prova a GIRARE il foglio: un
+            # fondo lungo e stretto in diagonale ha un rettangolo circoscritto
+            # molto più grande di sé, e alla scala voluta ci starebbe storto.
+            # Serve la geometria vera, non l'extent: se la ricerca non l'ha
+            # (WKB troncato, o ripiego su PosFondo) si resta al consiglio di
+            # prima, che è comunque corretto.
+            foglio_giro, giro = self._rotazione_che_salva_la_scala(f, scala, formato)
+            if giro is not None:
+                rimedio = ("Alla stessa scala ci sta ruotando il foglio di "
+                           "%.0f gon%s." % (giro, "" if foglio_giro == formato
+                                            else " su %s" % foglio_giro))
+            elif motivo == "scala":
+                rimedio = ("Serve 1:%d%s."
+                           % (nuova_scala,
+                              " su %s" % proposta if proposta != formato else ""))
+            else:
+                rimedio = "Non ci sta in nessun formato e in nessuna scala ufficiale."
         self.log("   ⚠️ Il fondo misura %.0f × %.0f m e a 1:%d su %s non ci "
                  "sta: verrà tagliato. %s" % (dx, dy, scala, formato, rimedio),
                  Qgis.Warning)

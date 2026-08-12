@@ -37,7 +37,7 @@ from qgis.core import (
     QgsLayoutItemPicture, QgsLayoutItemMapGrid, QgsLayoutItemShape,
     QgsLayoutSize, QgsUnitTypes, QgsLayoutExporter,
     QgsRectangle, QgsLayoutMeasurement, QgsCoordinateReferenceSystem,
-    QgsPointXY,
+    QgsPointXY, QgsGeometry,
 )
 from qgis.PyQt.QtCore import QRectF
 from qgis.PyQt.QtGui import QColor, QFont
@@ -307,48 +307,71 @@ def rettangolo_minimo(punti):
     199 fondi (1.8%) che a 1:500 non ci stanno in nessun formato e ci
     starebbero solo ruotando.
 
-    Il rettangolo minimo ha sempre un lato appoggiato a un lato dello scafo
-    convesso, quindi bastano tanti tentativi quanti sono i lati dello scafo."""
-    scafo = _scafo_convesso(punti)
-    if len(scafo) < 3:
-        xs = [p[0] for p in punti] or [0.0]
-        ys = [p[1] for p in punti] or [0.0]
+    Il calcolo lo fa QGIS: QgsGeometry.orientedMinimumBoundingBox() esiste gia'
+    e torna (geometria, area, angolo in gradi, larghezza, altezza). Qui si
+    costruisce la geometria dai punti e si converte l'angolo in gon, che e'
+    l'unita' usata dal resto del modulo e dalla misurazione ufficiale. La prima
+    stesura di questa funzione riscriveva a mano rotating calipers e scafo
+    convesso: codice in piu' da mantenere e da sbagliare, per fare quello che
+    la libreria fa gia'.
+
+    'punti' e' una sequenza di (x, y). Meno di tre punti distinti non
+    definiscono un rettangolo: si ritorna l'ingombro allineato agli assi, che
+    per un segmento o un punto e' anche la risposta giusta."""
+    distinti = {(float(x), float(y)) for x, y in punti}
+    if len(distinti) < 3:
+        xs = [p[0] for p in distinti] or [0.0]
+        ys = [p[1] for p in distinti] or [0.0]
         return max(xs) - min(xs), max(ys) - min(ys), 0.0
-    migliore = None
-    for i in range(len(scafo)):
-        x1, y1 = scafo[i]
-        x2, y2 = scafo[(i + 1) % len(scafo)]
-        angolo = math.atan2(y2 - y1, x2 - x1)
-        dx, dy = _estensione(scafo, angolo)
-        if migliore is None or dx * dy < migliore[0] * migliore[1]:
-            migliore = (dx, dy, angolo)
-    dx, dy, angolo = migliore
-    # Da radianti antiorari a gon orari, come li vuole il resto del modulo.
-    return dx, dy, (-math.degrees(angolo) / 0.9) % 400.0
+    geometria = QgsGeometry.fromMultiPointXY([QgsPointXY(x, y) for x, y in distinti])
+    _rettangolo, _area, gradi, larghezza, altezza = geometria.orientedMinimumBoundingBox()
+    if not larghezza or not altezza:
+        xs = [p[0] for p in distinti]
+        ys = [p[1] for p in distinti]
+        return max(xs) - min(xs), max(ys) - min(ys), 0.0
+    return larghezza, altezza, (gradi / 0.9) % 400.0
 
 
-def _estensione(punti, angolo):
-    co, si = math.cos(-angolo), math.sin(-angolo)
-    xs = [x * co - y * si for x, y in punti]
-    ys = [x * si + y * co for x, y in punti]
-    return max(xs) - min(xs), max(ys) - min(ys)
+def rotazione_che_contiene(punti, centro, scala, formato="A4 verticale",
+                           margine_mm=MARGINE_CORTESIA):
+    """La rotazione del foglio, in gon, che fa entrare 'punti' nel foglio alla
+    scala data. None se non basta nemmeno girarlo.
+
+    Il candidato viene dal rettangolo circoscritto minimo, ma NON ci si fida
+    dell'angolo: si verifica. Il segno della rotazione e' esattamente il genere
+    di dettaglio che si sbaglia in silenzio (QGIS gira il contenuto in senso
+    orario dentro una cornice ferma, quindi l'impronta sul terreno gira
+    dall'altra parte - vedi impronta_foglio), e un segno invertito darebbe un
+    consiglio che peggiora le cose. Si provano quindi l'angolo e il suo
+    complemento, e si tiene quello che DAVVERO contiene tutti i vertici,
+    misurato sull'impronta vera del foglio.
+
+    Il centro e' quello su cui il foglio verra' davvero centrato, non quello
+    ideale del rettangolo minimo: cosi' la risposta vale per il foglio che
+    l'utente otterra', non per uno migliore che nessuno stampera'."""
+    if not punti or centro is None:
+        return None
+    dx, dy, gon = rettangolo_minimo(punti)
+    if not _ci_sta(min(dx, dy), max(dx, dy), formato, scala, margine_mm) and \
+       not _ci_sta(max(dx, dy), min(dx, dy), formato, scala, margine_mm):
+        return None                      # non ci sta comunque, inutile girare
+    geometria = QgsGeometry.fromMultiPointXY([QgsPointXY(x, y) for x, y in punti])
+    for candidata in (gon % 400.0, (gon + 100.0) % 400.0,
+                      (-gon) % 400.0, (-gon + 100.0) % 400.0):
+        foglio = _foglio_ristretto(centro, scala, formato, candidata, margine_mm)
+        if foglio.contains(geometria):
+            return candidata
+    return None
 
 
-def _scafo_convesso(punti):
-    """Scansione di Andrew: ordina e costruisce le due catene."""
-    p = sorted(set((float(x), float(y)) for x, y in punti))
-    if len(p) < 3:
-        return p
-
-    def catena(seq):
-        out = []
-        for q in seq:
-            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (q[1] - out[-2][1]) -
-                                     (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0])) <= 0:
-                out.pop()
-            out.append(q)
-        return out
-    return catena(p)[:-1] + catena(list(reversed(p)))[:-1]
+def _foglio_ristretto(centro, scala, formato, rotazione_gon, margine_mm):
+    """L'impronta del foglio rimpicciolita del margine di cortesia: e' l'area
+    dentro cui un oggetto ci sta davvero, non quella in cui tocca la cornice."""
+    punti = impronta_foglio(centro, scala, formato, rotazione_gon)
+    poligono = QgsGeometry.fromPolygonXY([punti])
+    if margine_mm:
+        poligono = poligono.buffer(-margine_mm / 1000.0 * scala, 4)
+    return poligono
 
 
 def miglior_foglio(dx, dy, scala_voluta, formato_voluto="A4 verticale",

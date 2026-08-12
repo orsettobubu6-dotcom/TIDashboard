@@ -4,6 +4,7 @@
 # Copre le criticita' trovate e corrette, cosi' non possono rientrare in
 # silenzio: sovrapposizioni nel cartiglio, coordinate della griglia tagliate
 # dal bordo, nomi che si sovrascrivono, stabilita' del centro di rotazione.
+import math
 import os
 import sys
 import unittest
@@ -764,6 +765,50 @@ class TestRettangoloMinimo(unittest.TestCase):
 
     def test_punti_degeneri_non_esplodono(self):
         self.assertEqual(P.rettangolo_minimo([(5, 5), (5, 5)])[:2], (0.0, 0.0))
+
+
+class TestRotazioneCheContiene(unittest.TestCase):
+    """La rotazione proposta deve funzionare davvero: si verifica sull'impronta
+    vera del foglio, non sull'angolo del rettangolo minimo. Il segno della
+    rotazione e' il dettaglio che si sbaglia in silenzio."""
+
+    def _fondo_storto(self, lunghezza, larghezza, gradi):
+        a = math.radians(gradi)
+        return [(CX + x * math.cos(a) - y * math.sin(a),
+                 CY + x * math.sin(a) + y * math.cos(a))
+                for x, y in ((-lunghezza / 2, -larghezza / 2),
+                             (lunghezza / 2, -larghezza / 2),
+                             (lunghezza / 2, larghezza / 2),
+                             (-lunghezza / 2, larghezza / 2))]
+
+    def test_fondo_storto_ci_sta_girando_il_foglio(self):
+        # Lungo quanto il lato lungo dell'A4 verticale a 1:500 e stretto: dritto
+        # non ci sta (l'ingombro in diagonale supera il lato corto), storto si'.
+        _larghezza, altezza = P.area_utile("A4 verticale", P.MARGINE_CORTESIA)
+        lunghezza = altezza / 1000.0 * 500 - 2.0
+        punti = self._fondo_storto(lunghezza, 8.0, 40.0)
+        xs = [p[0] for p in punti]
+        ys = [p[1] for p in punti]
+        dritto = P.miglior_foglio(max(xs) - min(xs), max(ys) - min(ys), 500,
+                                  "A4 verticale")
+        self.assertNotEqual(dritto[2], "", "dritto non doveva starci")
+        giro = P.rotazione_che_contiene(punti, QgsPointXY(CX, CY), 500, "A4 verticale")
+        self.assertIsNotNone(giro, "girando il foglio ci deve stare")
+        # e la rotazione proposta deve contenerlo per davvero
+        impronta = QgsGeometry.fromPolygonXY(
+            [P.impronta_foglio(QgsPointXY(CX, CY), 500, "A4 verticale", giro)])
+        for x, y in punti:
+            self.assertTrue(impronta.contains(QgsGeometry.fromPointXY(QgsPointXY(x, y))),
+                            "vertice fuori dal foglio ruotato di %.1f gon" % giro)
+
+    def test_fondo_troppo_grande_non_si_salva_girando(self):
+        punti = self._fondo_storto(5000.0, 4000.0, 30.0)
+        self.assertIsNone(
+            P.rotazione_che_contiene(punti, QgsPointXY(CX, CY), 500, "A4 verticale"))
+
+    def test_senza_geometria_non_propone_niente(self):
+        self.assertIsNone(P.rotazione_che_contiene([], QgsPointXY(CX, CY), 500))
+        self.assertIsNone(P.rotazione_che_contiene([(0, 0)], None, 500))
 
 
 if __name__ == "__main__":

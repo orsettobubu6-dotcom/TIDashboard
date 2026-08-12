@@ -14,10 +14,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tidashboard import cerca_fondo as C
 
 
-def _blob(xmin, ymin, xmax, ymax, con_envelope=True, punto=False):
+def _blob(xmin, ymin, xmax, ymax, con_envelope=True, punto=False, anello=None):
     """Blob GeoPackage come quelli veri: intestazione "GP", versione 0, flag
     big endian, SRS 2056, poi l'envelope xy. Con con_envelope=False si
-    ottiene il caso - ammesso dal formato - in cui l'envelope manca."""
+    ottiene il caso - ammesso dal formato - in cui l'envelope manca.
+
+    'anello' scrive un POLYGON COMPLETO con quei vertici, per provare la
+    lettura del contorno; senza, il WKB resta troncato al tipo, che e' il caso
+    in cui si ha il solo envelope."""
     flag = 0x02 if con_envelope else 0x00
     testa = b"GP" + bytes([0, flag]) + struct.pack(">i", 2056)
     if con_envelope:
@@ -26,6 +30,12 @@ def _blob(xmin, ymin, xmax, ymax, con_envelope=True, punto=False):
         # WKB di un POINT big endian: serve a provare il ripiego quando
         # l'envelope non c'e'.
         return testa + b"\x00" + struct.pack(">I", 1) + struct.pack(">2d", xmin, ymin)
+    if anello:
+        corpo = b"\x00" + struct.pack(">I", 3) + struct.pack(">I", 1)
+        corpo += struct.pack(">I", len(anello))
+        for x, y in anello:
+            corpo += struct.pack(">2d", x, y)
+        return testa + corpo
     return testa + b"\x00" + struct.pack(">I", 3)      # tipo POLYGON, tronco
 
 
@@ -362,6 +372,52 @@ class TestFileAssenteOMalformato(unittest.TestCase):
         con.execute("CREATE TABLE altro (x INTEGER)")
         con.commit(); con.close()
         self.assertEqual(C.cerca(p, numero="1"), [])
+
+
+class TestContorno(unittest.TestCase):
+    """L'envelope basta per sapere se un fondo ci sta nel foglio, non per
+    sapere se ci starebbe girandolo: per quello servono i vertici veri."""
+
+    ANELLO = [(2717000.0, 1082000.0), (2717100.0, 1082000.0),
+              (2717100.0, 1082050.0), (2717000.0, 1082050.0),
+              (2717000.0, 1082000.0)]
+
+    def test_legge_l_anello_esterno(self):
+        blob = _blob(2717000.0, 1082000.0, 2717100.0, 1082050.0, anello=self.ANELLO)
+        self.assertEqual(C._contorno(blob), [(x, y) for x, y in self.ANELLO])
+
+    def test_wkb_troncato_non_esplode(self):
+        # Caso reale: l'envelope c'e', la geometria no. Si deve restare senza
+        # contorno, non sollevare.
+        self.assertEqual(C._contorno(_blob(0, 0, 10, 10)), [])
+
+    def test_un_punto_non_e_un_contorno(self):
+        self.assertEqual(C._contorno(_blob(5, 5, 5, 5, punto=True)), [])
+
+    def test_blob_vuoto_o_non_gpkg(self):
+        self.assertEqual(C._contorno(None), [])
+        self.assertEqual(C._contorno(b"XX"), [])
+
+    def test_arriva_fino_al_risultato_della_ricerca(self):
+        p = _gpkg(fondi=[(1, "TI63201", "452", None, "in_vigore", "bene_immobile")],
+                  parti=[(1, 2717000.0, 1082000.0, 2717100.0, 1082050.0)])
+        # riscrivo la geometria della parte con un poligono completo
+        con = sqlite3.connect(p)
+        con.execute("UPDATE beni_immobili_bene_immobile SET geometria = ?",
+                    (_blob(2717000.0, 1082000.0, 2717100.0, 1082050.0,
+                           anello=self.ANELLO),))
+        con.commit(); con.close()
+        trovati = C.cerca(p, numero="452")
+        self.assertEqual(len(trovati), 1)
+        self.assertEqual(len(trovati[0].contorno), 5)
+        self.assertIn((2717100.0, 1082050.0), trovati[0].contorno)
+
+    def test_senza_geometria_il_contorno_resta_vuoto(self):
+        # Ripiego su PosFondo: c'e' il centro, non c'e' il perimetro.
+        p = _gpkg(fondi=[(1, "TI63201", "452", None, "in_vigore", "bene_immobile")],
+                  posfondo=[(1, 2717050.0, 1082025.0)])
+        trovati = C.cerca(p, numero="452")
+        self.assertEqual(trovati[0].contorno, [])
 
 
 if __name__ == "__main__":

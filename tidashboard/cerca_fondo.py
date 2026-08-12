@@ -69,7 +69,8 @@ class FondoTrovato(object):
     __slots__ = ("identan", "numero", "sezione", "sezione_nome",
                  "comune_nr", "comune",
                  "egrid", "validita", "integralita", "genere", "superficie",
-                 "extent", "centro", "origine_geometria", "n_parti")
+                 "extent", "centro", "origine_geometria", "n_parti",
+                 "contorno")
 
     def __init__(self, **kw):
         for nome in self.__slots__:
@@ -279,6 +280,67 @@ def _punto(blob):
     return (x, y)
 
 
+def _salto_intestazione(b):
+    """Quanti byte occupa l'intestazione GeoPackage prima del WKB."""
+    codice = (b[3] >> 1) & 7
+    return 8 + {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}.get(codice, 0)
+
+
+def _contorno(blob):
+    """I vertici del contorno esterno di un POLYGON o MULTIPOLYGON.
+
+    L'envelope basta per sapere se un fondo ci sta nel foglio, ma non per
+    sapere se ci starebbe GIRANDO il foglio: un fondo lungo e stretto in
+    diagonale ha un envelope molto piu' grande di se stesso. Per quello
+    servono i vertici veri.
+
+    Si leggono solo gli anelli ESTERNI: i buchi stanno dentro, e per l'ingombro
+    non contano. Ritorna una lista di (x, y), vuota se la geometria non e' un
+    poligono o se il WKB e' troncato - caso che capita davvero, l'envelope e'
+    facoltativo ma il WKB puo' esserci a meta'."""
+    if not blob or len(blob) < 8:
+        return []
+    b = bytes(blob)
+    if b[0:2] != b"GP":
+        return []
+    p = _salto_intestazione(b)
+    fuori = []
+    try:
+        ordine = "<" if b[p] else ">"
+        tipo = struct.unpack_from(ordine + "I", b, p + 1)[0]
+        p += 5
+        if tipo % 1000 == 6:                       # MULTIPOLYGON
+            n = struct.unpack_from(ordine + "I", b, p)[0]
+            p += 4
+            for _ in range(n):
+                # ogni poligono di un multi riporta il proprio ordine di byte
+                ordine = "<" if b[p] else ">"
+                p += 5
+                p = _leggi_anelli(b, p, ordine, fuori)
+        elif tipo % 1000 == 3:                     # POLYGON
+            _leggi_anelli(b, p, ordine, fuori)
+        else:
+            return []
+    except (struct.error, IndexError):
+        return []
+    return fuori
+
+
+def _leggi_anelli(b, p, ordine, fuori):
+    """Legge gli anelli di un poligono, tiene solo il primo (l'esterno) e
+    ritorna la posizione dopo l'ultimo."""
+    n_anelli = struct.unpack_from(ordine + "I", b, p)[0]
+    p += 4
+    for i in range(n_anelli):
+        n_punti = struct.unpack_from(ordine + "I", b, p)[0]
+        p += 4
+        if i == 0:
+            valori = struct.unpack_from(ordine + "%dd" % (2 * n_punti), b, p)
+            fuori.extend(zip(valori[0::2], valori[1::2]))
+        p += 16 * n_punti
+    return p
+
+
 def _unione(estensioni):
     valide = [e for e in estensioni if e]
     if not valide:
@@ -466,7 +528,7 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
     nomi = _nomi_comune(con, t["comune"])
     nomi_sez = _nomi_sezione(con, t.get("localita"))
     ids = [r[0] for r in righe]
-    estensioni, quante = _estensioni_parti(con, t["parti"], ids)
+    estensioni, quante, contorni = _estensioni_parti(con, t["parti"], ids)
     mancanti = [i for i in ids if i not in estensioni]
     ripiego = _estensioni_posfondo(con, t["posfondo"], mancanti)
 
@@ -487,7 +549,7 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
             comune_nr=cnum, comune=nomi.get(cnum), egrid=egr, validita=val,
             integralita=integ, genere=gen, superficie=sup,
             extent=est, centro=centro, origine_geometria=origine,
-            n_parti=quante.get(tid, 0)))
+            n_parti=quante.get(tid, 0), contorno=contorni.get(tid) or []))
     return fuori
 
 
@@ -495,9 +557,9 @@ def _estensioni_parti(con, parti, ids):
     """Estensione di ogni fondo come UNIONE delle sue parti: un fondo puo'
     essere fatto di piu' Bene_immobile/DPSSP/Miniera, e prendere solo il
     primo darebbe un'estensione che non contiene il resto."""
-    per_id, quante = {}, {}
+    per_id, quante, contorni = {}, {}, {}
     if not ids:
-        return per_id, quante
+        return per_id, quante, contorni
     segnaposti = ",".join("?" for _ in ids)
     for tabella, riferimento in parti:
         sql = ('SELECT "%s", geometria FROM "%s" WHERE "%s" IN (%s)'
@@ -508,7 +570,13 @@ def _estensioni_parti(con, parti, ids):
                 continue
             quante[tid] = quante.get(tid, 0) + 1
             per_id[tid] = _unione([per_id.get(tid), est])
-    return per_id, quante
+            # I vertici servono solo a sapere se il fondo ci starebbe GIRANDO
+            # il foglio. Se il WKB e' troncato si resta con il solo envelope,
+            # cioe' con quello che si aveva prima: non e' un errore.
+            punti = _contorno(blob)
+            if punti:
+                contorni.setdefault(tid, []).extend(punti)
+    return per_id, quante, contorni
 
 
 def _estensioni_posfondo(con, posfondo, ids):
