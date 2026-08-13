@@ -2161,21 +2161,35 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.lbl_inventario.setVisible(False)
             self._inventario_atteso = None
             return
+        if percorso == getattr(self, "_inventario_atteso", None):
+            return          # stesso file: o e' gia' in corso, o e' gia' scritto
         self._inventario_atteso = percorso
         self.lbl_inventario.setText("Leggo cosa c'è nel file…")
         self.lbl_inventario.setVisible(True)
         worker = InventarioWorker(percorso)
         worker.fatto.connect(lambda c, t, e, p=percorso: self._mostra_inventario(p, c, t, e))
-        # Il riferimento va tenuto: senza, il QThread viene raccolto dal
-        # garbage collector mentre gira e il programma si chiude di schianto.
-        self._worker_inventario = worker
+        # I riferimenti vanno tenuti TUTTI, in una lista. Con un solo attributo
+        # riassegnarlo faceva perdere l'ultimo riferimento Python al thread
+        # precedente ancora in corso: PyQt distruggeva l'oggetto C++ mentre
+        # girava e Qt chiamava abort(), cioe' QGIS si chiudeva di schianto.
+        # Non e' teoria: bastava trascinare due .itf insieme, perche' dropEvent
+        # scrive nel campo due volte di fila, e il primo conteggio moriva
+        # microsecondi dopo essere partito.
+        if not hasattr(self, "_workers_inventario"):
+            self._workers_inventario = []
+        self._workers_inventario = [w for w in self._workers_inventario if not w.isFinished()]
+        self._workers_inventario.append(worker)
         worker.start()
 
     def _mostra_inventario(self, percorso, classi, totale, errore):
         """Scrive l'esito sotto il campo, se e' ancora quello che serve."""
         if getattr(self, "_inventario_atteso", None) != percorso:
             return                      # nel frattempo il file e' cambiato
-        if errore:
+        # Il fallimento si riconosce da 'classi' assente, non dal messaggio:
+        # un'eccezione con str() vuoto passerebbe il controllo sul messaggio e
+        # farebbe arrivare None dentro mancanti(), cioe' un TypeError dentro
+        # uno slot - dove non si vede.
+        if classi is None:
             # Non e' un errore dell'utente: l'importazione puo' andare
             # benissimo anche se questa lettura rapida non riesce.
             self.lbl_inventario.setText("Contenuto non leggibile in anteprima (%s)" % errore)

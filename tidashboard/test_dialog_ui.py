@@ -26,6 +26,7 @@ from tidashboard.tidashboard import TIDashboardDialog
 from tidashboard import planimetria as P
 
 CX, CY = 2718000.0, 1082000.0
+ITF_VERO = r"C:\Users\gabri\Downloads\5254010100\5254010100.itf"
 _avvisi = []
 QMessageBox.warning = staticmethod(
     lambda *a, **k: _avvisi.append(a[2] if len(a) > 2 else ""))
@@ -871,6 +872,74 @@ class TestIngombro(unittest.TestCase):
         dlg.chk_ingombro.setChecked(True)
         dlg.chk_ingombro.setChecked(False)
         self.assertTrue(dlg._banda_ingombro.asGeometry().isEmpty())
+
+
+class TestInventarioSenzaSchianti(unittest.TestCase):
+    """Regressione: il conteggio dell'ITF gira in un QThread, e tenerne il
+    riferimento in un attributo solo lo perdeva al secondo file. PyQt
+    distruggeva l'oggetto C++ mentre girava e Qt chiamava abort(): QGIS si
+    chiudeva. Bastava trascinare due .itf insieme, perché dropEvent scrive nel
+    campo due volte di fila."""
+
+    def _due_file(self):
+        cartella = tempfile.mkdtemp()
+        percorsi = []
+        for nome in ("uno.itf", "due.itf"):
+            p = os.path.join(cartella, nome)
+            with open(p, "w") as f:
+                f.write("MODL non importa, basta che il file esista\n")
+            percorsi.append(p)
+        return percorsi
+
+    @unittest.skipUnless(os.path.isfile(ITF_VERO), "ITF di prova non presente")
+    def test_un_secondo_file_non_molla_il_primo_thread_in_corso(self):
+        # Serve un ITF VERO come primo file: su un file finto il conteggio
+        # fallisce in un istante e a quel punto e' gia' finito, quindi non
+        # dimostrerebbe niente. Con questo (2.4 s) il primo thread e' ancora
+        # in corso quando parte il secondo - che e' il caso che faceva
+        # chiudere QGIS.
+        _a, b = self._due_file()
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText(ITF_VERO)
+        primo = dlg._workers_inventario[-1]
+        self.assertTrue(primo.isRunning(), "il primo doveva essere ancora in corso")
+        dlg.txt_itf.setText(b)
+        self.assertIn(primo, dlg._workers_inventario,
+                      "il thread in corso e' stato mollato: e' lo schianto")
+        for w in list(dlg._workers_inventario):
+            w.wait(30000)
+
+    def test_i_thread_gia_finiti_vengono_potati(self):
+        # L'altra faccia: tenere all'infinito i thread conclusi sarebbe una
+        # perdita di memoria a ogni file scelto.
+        a, b = self._due_file()
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText(a)
+        for w in list(dlg._workers_inventario):
+            w.wait(10000)
+        dlg.txt_itf.setText(b)
+        self.assertEqual(len(dlg._workers_inventario), 1)
+        for w in list(dlg._workers_inventario):
+            w.wait(10000)
+
+    def test_lo_stesso_file_non_fa_ripartire_il_conteggio(self):
+        # textChanged scatta a ogni carattere: senza questa guardia, scrivere
+        # uno spazio in coda a un percorso valido ne lanciava un altro.
+        a, _b = self._due_file()
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText(a)
+        quanti = len(dlg._workers_inventario)
+        dlg.txt_itf.setText(a + " ")          # .strip() lo rende lo stesso file
+        self.assertEqual(len(dlg._workers_inventario), quanti)
+        for w in dlg._workers_inventario:
+            w.wait(10000)
+
+    def test_un_file_illeggibile_non_rompe_niente(self):
+        a, _b = self._due_file()
+        dlg = TIDashboardDialog()
+        dlg._inventario_atteso = a          # è il file che stiamo aspettando
+        dlg._mostra_inventario(a, None, None, "")     # errore con messaggio vuoto
+        self.assertIn("non leggibile", dlg.lbl_inventario.text())
 
 
 class TestErroriValidazioneSullaMappa(unittest.TestCase):
