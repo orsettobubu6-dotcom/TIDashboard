@@ -47,6 +47,7 @@ try:
     from . import planimetria as _planimetria
     from . import cerca_fondo as _cerca_fondo
     from . import dati_comune as _dati_comune
+    from . import inventario as _inventario
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -70,6 +71,7 @@ except ImportError:
     import planimetria as _planimetria
     import cerca_fondo as _cerca_fondo
     import dati_comune as _dati_comune
+    import inventario as _inventario
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -221,6 +223,29 @@ _STILE_PULSANTE = (
     "padding: 10px; border-radius: 4px; }"
     "QPushButton:disabled { background-color: #757575; color: #E0E0E0; }"
 )
+
+
+class InventarioWorker(QThread):
+    """Conta cosa c'e' nell'ITF senza bloccare la finestra.
+
+    Misurato sul comune di prova: 2.5 secondi per 733 527 oggetti. Poco per
+    un'attesa, troppo per farlo nel thread dell'interfaccia mentre l'utente
+    sta ancora scegliendo i file - la finestra resterebbe ferma proprio
+    mentre ci si clicca dentro."""
+
+    fatto = pyqtSignal(object, object, str)      # classi, totale, errore
+
+    def __init__(self, percorso):
+        super().__init__()
+        self._percorso = percorso
+
+    def run(self):
+        try:
+            classi, totale = _inventario.leggi_inventario(self._percorso)
+        except Exception as e:                   # anche gli errori GDAL nativi
+            self.fatto.emit(None, None, str(e))
+            return
+        self.fatto.emit(classi, totale, "")
 
 
 class StrumentoSpostaFoglio(QgsMapTool):
@@ -402,6 +427,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.txt_itf = QLineEdit()
         self.txt_itf.setPlaceholderText("Seleziona il file dati .itf...")
         layout_import.addLayout(self.create_file_row("File ITF in:", self.txt_itf, "ITF files (*.itf)", False, "import"))
+
+        # Cosa c'e' dentro, prima di importare. Finora per saperlo bisognava
+        # lanciare l'importazione - minuti - e se si fermava a meta' restavi
+        # senza risposta proprio quando serviva.
+        self.lbl_inventario = QLabel()
+        self.lbl_inventario.setWordWrap(True)
+        self.lbl_inventario.setStyleSheet("color: #9E9E9E;")
+        self.lbl_inventario.setVisible(False)
+        layout_import.addWidget(self.lbl_inventario)
 
         # Modello INTERLIS in dotazione: vedi MODELLO_ILI. Stessa scelta del
         # traduttore DXF - visibile, cosi' si sa su quale modello si sta
@@ -825,6 +859,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # inserito a mano direttamente nel gruppo 2.
         # Catena dei nomi automatici: ITF -> GeoPackage -> DXF. Va collegata in
         # quest'ordine, cosi' scegliendo l'ITF si popolano gli altri due.
+        self.txt_itf.textChanged.connect(self._avvia_inventario)
         self.txt_itf.textChanged.connect(self._sync_gpkg_da_itf)
         self.txt_itf.textChanged.connect(self._sync_geobau_itf)
         self.txt_gpkg.textChanged.connect(self._sync_geobau_dxf)
@@ -2113,6 +2148,48 @@ class TIDashboardDialog(StiliMixin, QDialog):
     # (2719339.225, 1081435.757, NaN)". Sono geolocalizzati all'origine, e non
     # c'e' bisogno di andarli a cercare nell'ITF come per i vincoli di unicita'.
     _ILI2GPKG_LIVELLO_RE = re.compile(r"^(Error|Warning): (.+)$")
+
+    def _avvia_inventario(self, *_args):
+        """Conta cosa c'e' nell'ITF appena scelto, in un thread a parte.
+
+        Parte a ogni cambiamento del campo, quindi si scrive un percorso a
+        mano e ne arrivano dieci: si tiene solo l'ultimo, e un conteggio
+        gia' in corso lo si lascia finire e se ne ignora il risultato (vedi
+        _inventario_atteso)."""
+        percorso = self.txt_itf.text().strip()
+        if not percorso or not os.path.isfile(percorso):
+            self.lbl_inventario.setVisible(False)
+            self._inventario_atteso = None
+            return
+        self._inventario_atteso = percorso
+        self.lbl_inventario.setText("Leggo cosa c'è nel file…")
+        self.lbl_inventario.setVisible(True)
+        worker = InventarioWorker(percorso)
+        worker.fatto.connect(lambda c, t, e, p=percorso: self._mostra_inventario(p, c, t, e))
+        # Il riferimento va tenuto: senza, il QThread viene raccolto dal
+        # garbage collector mentre gira e il programma si chiude di schianto.
+        self._worker_inventario = worker
+        worker.start()
+
+    def _mostra_inventario(self, percorso, classi, totale, errore):
+        """Scrive l'esito sotto il campo, se e' ancora quello che serve."""
+        if getattr(self, "_inventario_atteso", None) != percorso:
+            return                      # nel frattempo il file e' cambiato
+        if errore:
+            # Non e' un errore dell'utente: l'importazione puo' andare
+            # benissimo anche se questa lettura rapida non riesce.
+            self.lbl_inventario.setText("Contenuto non leggibile in anteprima (%s)" % errore)
+            return
+        testo = _inventario.riassunto(classi, totale)
+        assenti = _inventario.mancanti(classi)
+        if assenti:
+            testo += ("<br><span style='color:#E65100'>Mancano: %s</span>"
+                      % ", ".join(assenti))
+        self.lbl_inventario.setText(testo)
+        self.log("   📦 %s" % _inventario.riassunto(classi, totale, quante_in_testa=5))
+        if assenti:
+            self.log("   ⚠️ Nella consegna non ci sono: %s" % ", ".join(assenti),
+                     Qgis.Warning)
 
     def _on_import_log_line(self, line):
         """Wrapper del log_signal del JavaWorker durante l'import: logga
