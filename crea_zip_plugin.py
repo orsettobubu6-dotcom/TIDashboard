@@ -9,6 +9,7 @@ metadata.txt, cosi' il nome del file non puo' divergere dal contenuto.
 """
 import hashlib
 import os
+import sys
 import zipfile
 
 QUI = os.path.dirname(os.path.abspath(__file__))
@@ -104,3 +105,9 @@ for c in OBBLIGATORI:
 print("  %-20s %s" % ("experimental", campi.get("experimental", "?")))
 
 print("\nESITO:", "PACCHETTO VALIDO" if esito else "ANOMALIE PRESENTI")
+
+# Il codice di uscita, non solo la riga stampata: lanciato da un'automazione
+# (vedi .github/workflows/rilascio.yml) un pacchetto con anomalie verrebbe
+# altrimenti pubblicato lo stesso, e nessuno legge il registro di una cosa
+# che dice di essere andata bene.
+sys.exit(0 if esito else 1)
