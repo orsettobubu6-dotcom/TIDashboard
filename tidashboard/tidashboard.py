@@ -235,8 +235,13 @@ class InventarioWorker(QThread):
 
     fatto = pyqtSignal(object, object, str)      # classi, totale, errore
 
-    def __init__(self, percorso):
-        super().__init__()
+    def __init__(self, percorso, parent=None):
+        # Il PADRE non e' un dettaglio: con un padre Qt la proprieta'
+        # dell'oggetto passa a Qt, e perdere il riferimento Python non lo
+        # distrugge piu'. Senza, PyQt lo raccoglie mentre gira e il processo
+        # muore con codice 127 (verificato). E' quello che rende inutile
+        # tenersi una lista di thread vivi.
+        super().__init__(parent)
         self._percorso = percorso
 
     def run(self):
@@ -2149,13 +2154,25 @@ class TIDashboardDialog(StiliMixin, QDialog):
     # c'e' bisogno di andarli a cercare nell'ITF come per i vincoli di unicita'.
     _ILI2GPKG_LIVELLO_RE = re.compile(r"^(Error|Warning): (.+)$")
 
-    def _avvia_inventario(self, *_args):
-        """Conta cosa c'e' nell'ITF appena scelto, in un thread a parte.
+    # Quanto si aspetta, dopo l'ultima modifica del campo, prima di leggere il
+    # file. Il campo cambia a ogni carattere digitato e dropEvent ci scrive
+    # due volte quando i file trascinati sono due: senza attesa partirebbe una
+    # lettura per ognuna, e sono 2.4 secondi di disco l'una. Aspettare toglie
+    # l'occasione invece di gestirne le conseguenze.
+    ATTESA_INVENTARIO_MS = 400
 
-        Parte a ogni cambiamento del campo, quindi si scrive un percorso a
-        mano e ne arrivano dieci: si tiene solo l'ultimo, e un conteggio
-        gia' in corso lo si lascia finire e se ne ignora il risultato (vedi
-        _inventario_atteso)."""
+    def _avvia_inventario(self, *_args):
+        """Programma la lettura dell'ITF, senza farla subito."""
+        if not hasattr(self, "_timer_inventario"):
+            self._timer_inventario = QTimer(self)
+            self._timer_inventario.setSingleShot(True)
+            self._timer_inventario.timeout.connect(self._esegui_inventario)
+        # start() su un timer gia' avviato lo fa ripartire da capo: e' proprio
+        # il comportamento voluto, l'ultima modifica azzera l'attesa.
+        self._timer_inventario.start(self.ATTESA_INVENTARIO_MS)
+
+    def _esegui_inventario(self):
+        """Conta cosa c'e' nell'ITF, in un thread a parte."""
         percorso = self.txt_itf.text().strip()
         if not percorso or not os.path.isfile(percorso):
             self.lbl_inventario.setVisible(False)
@@ -2166,19 +2183,12 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._inventario_atteso = percorso
         self.lbl_inventario.setText("Leggo cosa c'è nel file…")
         self.lbl_inventario.setVisible(True)
-        worker = InventarioWorker(percorso)
+        # parent=self: da li' in poi il thread e' di Qt e non serve tenerne un
+        # riferimento Python. deleteLater lo fa sparire quando ha finito,
+        # senza liste da potare e senza il rischio di potare quello sbagliato.
+        worker = InventarioWorker(percorso, parent=self)
         worker.fatto.connect(lambda c, t, e, p=percorso: self._mostra_inventario(p, c, t, e))
-        # I riferimenti vanno tenuti TUTTI, in una lista. Con un solo attributo
-        # riassegnarlo faceva perdere l'ultimo riferimento Python al thread
-        # precedente ancora in corso: PyQt distruggeva l'oggetto C++ mentre
-        # girava e Qt chiamava abort(), cioe' QGIS si chiudeva di schianto.
-        # Non e' teoria: bastava trascinare due .itf insieme, perche' dropEvent
-        # scrive nel campo due volte di fila, e il primo conteggio moriva
-        # microsecondi dopo essere partito.
-        if not hasattr(self, "_workers_inventario"):
-            self._workers_inventario = []
-        self._workers_inventario = [w for w in self._workers_inventario if not w.isFinished()]
-        self._workers_inventario.append(worker)
+        worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def _mostra_inventario(self, percorso, classi, totale, errore):

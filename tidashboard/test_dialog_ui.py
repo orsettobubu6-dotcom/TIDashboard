@@ -891,48 +891,66 @@ class TestInventarioSenzaSchianti(unittest.TestCase):
             percorsi.append(p)
         return percorsi
 
-    @unittest.skipUnless(os.path.isfile(ITF_VERO), "ITF di prova non presente")
-    def test_un_secondo_file_non_molla_il_primo_thread_in_corso(self):
-        # Serve un ITF VERO come primo file: su un file finto il conteggio
-        # fallisce in un istante e a quel punto e' gia' finito, quindi non
-        # dimostrerebbe niente. Con questo (2.4 s) il primo thread e' ancora
-        # in corso quando parte il secondo - che e' il caso che faceva
-        # chiudere QGIS.
-        _a, b = self._due_file()
-        dlg = TIDashboardDialog()
-        dlg.txt_itf.setText(ITF_VERO)
-        primo = dlg._workers_inventario[-1]
-        self.assertTrue(primo.isRunning(), "il primo doveva essere ancora in corso")
-        dlg.txt_itf.setText(b)
-        self.assertIn(primo, dlg._workers_inventario,
-                      "il thread in corso e' stato mollato: e' lo schianto")
-        for w in list(dlg._workers_inventario):
-            w.wait(30000)
+    def _threads(self, dlg):
+        """I thread vivi appesi alla finestra. Non c'e' piu' una lista da
+        interrogare: il padre Qt E' il registro, e questo lo dimostra."""
+        from tidashboard.tidashboard import InventarioWorker
+        return dlg.findChildren(InventarioWorker)
 
-    def test_i_thread_gia_finiti_vengono_potati(self):
-        # L'altra faccia: tenere all'infinito i thread conclusi sarebbe una
-        # perdita di memoria a ogni file scelto.
+    def test_scrivere_il_percorso_non_lancia_una_lettura_per_carattere(self):
+        # Il campo cambia a ogni tasto. Con l'attesa, finche' si scrive non
+        # parte niente: e' il ritardo che toglie l'occasione allo schianto,
+        # invece di gestirne le conseguenze.
+        a, _b = self._due_file()
+        dlg = TIDashboardDialog()
+        for i in range(1, len(a) + 1):
+            dlg.txt_itf.setText(a[:i])
+        self.assertEqual(self._threads(dlg), [], "non doveva partire niente")
+        self.assertTrue(dlg._timer_inventario.isActive(), "l'attesa doveva essere in corso")
+
+    def test_due_file_trascinati_insieme_fanno_una_lettura_sola(self):
+        # dropEvent scrive nel campo due volte di fila: e' l'innesco che
+        # faceva chiudere QGIS. Ora le due modifiche si fondono, e quella che
+        # vale e' l'ultima.
         a, b = self._due_file()
         dlg = TIDashboardDialog()
         dlg.txt_itf.setText(a)
-        for w in list(dlg._workers_inventario):
-            w.wait(10000)
         dlg.txt_itf.setText(b)
-        self.assertEqual(len(dlg._workers_inventario), 1)
-        for w in list(dlg._workers_inventario):
-            w.wait(10000)
+        self.assertEqual(self._threads(dlg), [])
+        dlg._esegui_inventario()                    # come se l'attesa fosse scaduta
+        vivi = self._threads(dlg)
+        self.assertEqual(len(vivi), 1)
+        self.assertEqual(dlg._inventario_atteso, b, "doveva valere l'ultimo file")
+        vivi[0].wait(10000)
+
+    @unittest.skipUnless(os.path.isfile(ITF_VERO), "ITF di prova non presente")
+    def test_il_thread_e_di_qt_non_di_python(self):
+        # Il nocciolo della correzione: nessun riferimento Python al thread, e
+        # deve restare vivo lo stesso perche' il padre e' la finestra. Senza
+        # padre, buttare il riferimento uccide il processo (codice 127).
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText(ITF_VERO)
+        dlg._esegui_inventario()
+        vivi = self._threads(dlg)
+        self.assertEqual(len(vivi), 1)
+        self.assertTrue(vivi[0].isRunning())
+        self.assertIs(vivi[0].parent(), dlg)
+        import gc
+        gc.collect()                                 # niente riferimenti nostri
+        ancora = self._threads(dlg)
+        self.assertEqual(len(ancora), 1, "il thread e' sparito col garbage collector")
+        ancora[0].wait(30000)
 
     def test_lo_stesso_file_non_fa_ripartire_il_conteggio(self):
-        # textChanged scatta a ogni carattere: senza questa guardia, scrivere
-        # uno spazio in coda a un percorso valido ne lanciava un altro.
         a, _b = self._due_file()
         dlg = TIDashboardDialog()
         dlg.txt_itf.setText(a)
-        quanti = len(dlg._workers_inventario)
-        dlg.txt_itf.setText(a + " ")          # .strip() lo rende lo stesso file
-        self.assertEqual(len(dlg._workers_inventario), quanti)
-        for w in dlg._workers_inventario:
+        dlg._esegui_inventario()
+        for w in self._threads(dlg):
             w.wait(10000)
+        dlg.txt_itf.setText(a + " ")          # .strip() lo rende lo stesso file
+        dlg._esegui_inventario()
+        self.assertEqual(dlg._inventario_atteso, a)
 
     def test_un_file_illeggibile_non_rompe_niente(self):
         a, _b = self._due_file()
