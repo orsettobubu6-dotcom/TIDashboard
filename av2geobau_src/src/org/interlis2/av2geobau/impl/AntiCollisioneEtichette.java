@@ -350,10 +350,17 @@ public final class AntiCollisioneEtichette {
         } else if (etichetta.hali == 2) {
             dx = -larghezza;
         }
+        // Gruppo 73: 0 = linea di base, 1 = basso, 2 = mezzo, 3 = alto. Nei
+        // primi due casi il punto scritto nel DXF e' gia' il bordo inferiore e
+        // non c'e' niente da scostare (per una cifra, che sotto la linea di
+        // base non scende, base e basso coincidono).
+        // Qui c'era 1 = mezzo e 2 = alto, cioe' la scala spostata di un posto:
+        // sul comune di prova sono 45 194 numeri di punto di confine con 73=1,
+        // il cui riquadro finiva mezza altezza piu' in basso del vero.
         double dy = 0.0;
-        if (etichetta.vali == 1) {
+        if (etichetta.vali == 2) {
             dy = -etichetta.altezza / 2.0;
-        } else if (etichetta.vali == 2) {
+        } else if (etichetta.vali == 3) {
             dy = -etichetta.altezza;
         }
         return new Riquadro(x + dx - margine, y + dy - margine,

@@ -176,13 +176,21 @@ class JavaWorker(QThread):
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(int, str)
 
-    def __init__(self, command, task_type):
-        super().__init__()
+    def __init__(self, command, task_type, parent=None):
+        # Il PADRE Qt e' quello che impedisce a PyQt di distruggere il thread
+        # quando l'attributo che lo teneva viene riassegnato al lavoro
+        # successivo: senza, Qt chiama abort() su un thread in corso e QGIS si
+        # chiude. Stessa correzione gia' fatta su InventarioWorker.
+        super().__init__(parent)
         self.command = command
         self.task_type = task_type
         # Riferimento al Popen in corso, per poterlo terminare da fuori il
         # thread (vedi cancel() / closeEvent della dialog).
         self._proc = None
+        # cancel() puo' arrivare PRIMA che run() abbia fatto Popen: chiudendo
+        # la finestra subito dopo l'avvio, _proc e' ancora None e il processo
+        # java resterebbe in giro. Il flag lo fa terminare appena esiste.
+        self._annullato = False
 
     def run(self):
         try:
@@ -194,6 +202,8 @@ class JavaWorker(QThread):
                 self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding='utf-8', errors='replace', bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if self._annullato:
+                self._proc.terminate()
             with self._proc as process:
                 for line in process.stdout:
                     if line:
@@ -208,6 +218,7 @@ class JavaWorker(QThread):
         dialog alla chiusura della finestra). terminate() chiude lo stdout del
         processo: il ciclo di lettura in run() finisce da solo e il thread
         termina regolarmente (poi il chiamante fa wait() per sincronizzarsi)."""
+        self._annullato = True
         proc = self._proc
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -2572,7 +2583,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_geobau.setEnabled(False)
         self._inizio_lavoro("Fase 1: creazione schema")
 
-        self.worker = JavaWorker(cmd_schema, "schemaimport")
+        self.worker = JavaWorker(cmd_schema, "schemaimport", parent=self)
+        self.worker.finished.connect(self.worker.deleteLater)
         self.worker.log_signal.connect(self._on_import_log_line)
         self.worker.finished_signal.connect(self.on_schema_finished)
         self.worker.start()
@@ -2590,7 +2602,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log("\n📥 FASE 2: Importazione dati dal file ITF...")
             self.log(f"   Comando: {' '.join(self._pending_import_cmd)}")
             self._inizio_lavoro("Fase 2: importazione dati")
-            self.worker = JavaWorker(self._pending_import_cmd, "dataimport")
+            self.worker = JavaWorker(self._pending_import_cmd, "dataimport", parent=self)
+            self.worker.finished.connect(self.worker.deleteLater)
             self.worker.log_signal.connect(self._on_import_log_line)
             self.worker.finished_signal.connect(self.on_data_finished)
             self.worker.start()
@@ -4440,7 +4453,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_import.setEnabled(False)
         self.btn_geobau.setEnabled(False)
         self._inizio_lavoro("Traduzione av2geobau")
-        self.worker = JavaWorker(cmd, "av2geobau")
+        self.worker = JavaWorker(cmd, "av2geobau", parent=self)
+        self.worker.finished.connect(self.worker.deleteLater)
         self.worker.log_signal.connect(self.log)
         self.worker.finished_signal.connect(self.on_geobau_finished)
         self.worker.start()
@@ -4451,19 +4465,28 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_import.setEnabled(True)
         self.btn_geobau.setEnabled(True)
         if returncode == 0:
-            self.log("✅ Esportazione DXF completata!", Qgis.Success)
-            self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
-            self._segna_passo("dxf")
             # Il codice di ritorno del processo Java da solo non basta: il jar
             # puo' uscire con successo (0) anche quando il file prodotto e'
             # strutturalmente incompleto/vuoto - un controllo minimo qui
             # (dimensione, EOF, conteggio entita') avrebbe segnalato subito
             # problemi come "Error in APPID Table" scoperti solo aprendo il
             # file in AutoCAD, senza dover aspettare quel passaggio manuale.
+            # Percio' la verifica viene PRIMA di dichiarare fatto: dirlo e poi
+            # scoprire che il file e' vuoto lascia una spunta verde su un
+            # passo non riuscito, ed e' peggio che non dire niente.
             dxf_path = self.txt_geobau_dxf.text().strip()
+            valido = True
             if dxf_path:
                 self.log("\n🔎 Verifica struttura DXF...")
-                self._validate_dxf(dxf_path)
+                valido = self._validate_dxf(dxf_path)
+            if valido:
+                self.log("✅ Esportazione DXF completata!", Qgis.Success)
+                self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
+                self._segna_passo("dxf")
+            else:
+                self.log("❌ Il convertitore ha finito senza errori ma il DXF "
+                         "non ha superato la verifica: il passo NON è completo.",
+                         Qgis.Critical)
         else:
             self.log("❌ Esportazione DXF fallita.", Qgis.Critical)
 
@@ -4478,32 +4501,35 @@ class TIDashboardDialog(StiliMixin, QDialog):
         in_entities = False
         expect_type = False
         expect_layer = False
+        # Il DXF e' fatto di COPPIE: una riga col codice, una col valore. Non
+        # tenerne il conto e guardare ogni riga per conto suo sembra funzionare
+        # finche' non capita un VALORE uguale a "0" - e capita di continuo: ogni
+        # VERTEX 2d finisce con 70/0, ogni HATCH con 98/0. Quel valore veniva
+        # scambiato per il codice di una nuova entita', la riga dopo (il vero
+        # codice) veniva mangiata come se fosse un tipo, e il conteggio non si
+        # risincronizzava piu': tre VERTEX e un SEQEND risultavano una entita'
+        # sola. Ora le righe si leggono a due a due, come sono scritte.
         try:
             with open(dxf_path, "r", encoding="latin-1", errors="replace") as f:
                 for raw in f:
-                    s = raw.strip()
+                    codice = raw.strip()
+                    valore_raw = f.readline()
+                    if not valore_raw:
+                        break
+                    valore = valore_raw.strip()
                     if not in_entities:
-                        if s == "ENTITIES":
+                        if valore == "ENTITIES":
                             in_entities = True
                         continue
-                    if s == "ENDSEC":
+                    if codice == "0" and valore == "ENDSEC":
                         break
-                    if expect_type:
-                        if s and not s.isdigit():
-                            stats[s] = stats.get(s, 0) + 1
-                            total += 1
-                        expect_type = False
-                        continue
-                    if expect_layer:
-                        if s and s not in layer_seen and len(layer_seen) < max_layers_sample:
-                            layer_seen.add(s)
-                            layers.append(s)
-                        expect_layer = False
-                        continue
-                    if s == "0":
-                        expect_type = True
-                    elif s == "8":
-                        expect_layer = True
+                    if codice == "0":
+                        stats[valore] = stats.get(valore, 0) + 1
+                        total += 1
+                    elif codice == "8":
+                        if valore and valore not in layer_seen and len(layer_seen) < max_layers_sample:
+                            layer_seen.add(valore)
+                            layers.append(valore)
         except OSError as e:
             return {"_error": str(e), "_total": 0, "_layers_sample": []}
         stats["_total"] = total
