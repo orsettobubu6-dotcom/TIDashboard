@@ -222,11 +222,33 @@ class StiliMixin:
             return self._gen_stile_elemento_puntiforme(is_gb)
         # Punto_singolo (punto non altrimenti classificato, in piu' topic) e
         # Punto_fisso_ausiliario (punti fissi ausiliari senza tenuta a giorno):
-        # nessun simbolo specifico documentato -> punto generico nero.
+        # NON rappresentati sul piano.
+        #
+        # Prima prendevano un "punto generico nero" - un cerchio pieno di
+        # 0.6 mm - con la motivazione che il catalogo non documenta un simbolo
+        # per loro. Era il ragionamento al contrario: se il catalogo dei segni
+        # non ne ha uno, il tema non si disegna, non lo si inventa. Sul comune
+        # di prova sono 33 487 pallini (22 251 punti singoli della copertura
+        # del suolo, 6 319 degli oggetti singoli, 4 917 punti fissi
+        # ausiliari), e a 1:500 il fattore di proporzionalita' li porta a
+        # 1.2 mm.
+        #
+        # Il danno peggiore era sui confini: i punti singoli della copertura
+        # del suolo stanno PER DEFINIZIONE sulle linee di copertura, quindi
+        # 22 251 dischi neri finivano appoggiati esattamente sopra le linee e
+        # fusi con esse. Sul foglio sembrava che le linee passassero sopra i
+        # punti di confine - e invece i punti di confine erano a posto, con il
+        # loro anello bianco e la linea che si ferma: quelle macchie erano
+        # questi.
+        #
+        # Sono punti di appoggio del rilievo, non oggetti giuridici: il piano
+        # per il registro fondiario non li mostra. Restano nel progetto, con la
+        # loro tabella, per chi li deve consultare.
         if "Punto_singolo" in class_name or "Punto_fisso_ausiliario" in class_name \
            or "punto_singolo" in t_low or "punto_fisso_ausiliario" in t_low:
-            self.log("   🎯 Riconosciuto: Punto_singolo/Punto_fisso_ausiliario -> Punto generico")
-            return self._gen_stile_punto_generico()
+            self.log("   ⏭️ Punto_singolo/Punto_fisso_ausiliario: punti di appoggio "
+                     "del rilievo, non rappresentati sul piano -> invisibile")
+            return self._gen_stile_invisibile(geom_type_name)
         # PCGiurisdizionale ha lo stesso campo "Segno: Materiale" di Punto_di_confine.
         if "Punto_di_confine" in class_name or "PCGiurisdizionale" in class_name \
            or "punto_di_confine" in t_low or "pcgiurisdizionale" in t_low:
@@ -353,14 +375,11 @@ class StiliMixin:
         apply_rule(root, sym, "", "Linea di richiamo etichetta")
         return QgsRuleBasedRenderer(root)
 
-    def _gen_stile_punto_generico(self):
-        """Punto generico nero, per tabelle puntuali senza un simbolo ufficiale
-        documentato (es. Punto_singolo, Punto_fisso_ausiliario)."""
-        root = QgsRuleBasedRenderer.Rule(None)
-        root.setLabel("Punto_generico")
-        sym = build_sym('point', [make_simple_marker("circle", 0.6, C_NERO)])
-        apply_rule(root, sym, "", "Punto generico")
-        return QgsRuleBasedRenderer(root)
+    # _gen_stile_punto_generico e' stato tolto insieme al suo unico uso: era il
+    # cerchio nero pieno di Punto_singolo e Punto_fisso_ausiliario, cioe' un
+    # simbolo inventato per temi che il piano non rappresenta. Lasciarlo qui
+    # inutilizzato vorrebbe dire offrirlo alla prossima tabella senza simbolo,
+    # che e' esattamente come ci si e' arrivati la prima volta.
 
     def _gen_stile_superficiecs(self, is_gb):
         """Stile per SuperficieCS. Tutti i filtri usano genere_in() (non il

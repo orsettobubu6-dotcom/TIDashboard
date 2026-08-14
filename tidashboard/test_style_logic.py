@@ -133,6 +133,64 @@ class TestApplyRuleIsElse(unittest.TestCase):
         self.assertFalse(r.isElse())
 
 
+class TestPuntiDiAppoggioNonRappresentati(unittest.TestCase):
+    """Punto_singolo e Punto_fisso_ausiliario non si disegnano sul piano.
+
+    Prima prendevano un cerchio nero pieno di 0.6 mm - un simbolo inventato,
+    perché il catalogo non ne documenta uno. Sul comune di prova erano 33 487
+    pallini, e i 22 251 punti singoli della copertura del suolo stanno per
+    definizione SULLE linee di copertura: sul foglio sembravano linee che
+    passano sopra i punti di confine."""
+
+    def _renderer(self, nome_tabella):
+        # make_dialog_stub e' definito piu' in basso nel file: in Python il
+        # nome si risolve alla chiamata, non alla definizione della classe.
+        layer = QgsVectorLayer("Point?crs=EPSG:2056&field=segno:string", nome_tabella, "memory")
+        return make_dialog_stub()._get_renderer_for_table(
+            nome_tabella, nome_tabella.lower(), "gb", "POINT", layer)
+
+    def _disegna_qualcosa(self, renderer):
+        """True se almeno una regola lascia un segno sulla carta.
+
+        Non basta guardare enabled(): lo stile "invisibile" del plugin e' un
+        simbolo REGOLARE con colore a trasparenza zero (vedi
+        _gen_stile_invisibile), quindi i suoi livelli risultano abilitati.
+        Quello che conta e' se ha colore."""
+        for regola in renderer.rootRule().children():
+            simbolo = regola.symbol()
+            if simbolo is None:
+                continue
+            for i in range(simbolo.symbolLayerCount()):
+                livello = simbolo.symbolLayer(i)
+                if not livello.enabled():
+                    continue
+                if livello.color().alpha() > 0 or livello.strokeColor().alpha() > 0:
+                    return True
+        return False
+
+    def test_punto_singolo_della_copertura_non_si_vede(self):
+        self.assertFalse(self._disegna_qualcosa(
+            self._renderer("copertura_dl_solo_punto_singolo")))
+
+    def test_punto_singolo_degli_oggetti_singoli_non_si_vede(self):
+        self.assertFalse(self._disegna_qualcosa(
+            self._renderer("oggetti_singoli_punto_singolo")))
+
+    def test_punto_fisso_ausiliario_non_si_vede(self):
+        self.assertFalse(self._disegna_qualcosa(
+            self._renderer("punti_fissctgria3_punto_fisso_ausiliario")))
+
+    def test_il_punto_di_confine_invece_si_vede(self):
+        # La controprova: la modifica non deve aver spento anche i punti che
+        # il piano DEVE mostrare.
+        self.assertTrue(self._disegna_qualcosa(
+            self._renderer("beni_immobili_punto_di_confine")))
+
+    def test_il_simbolo_inventato_non_esiste_piu(self):
+        # Se torna, torna anche il difetto: era l'unico cerchio nero pieno.
+        self.assertFalse(hasattr(cd.TIDashboardDialog, "_gen_stile_punto_generico"))
+
+
 class TestPuntoDiConfineFieldGuard(unittest.TestCase):
     """Regressione: niente riferimenti a un campo assente dal layer."""
 

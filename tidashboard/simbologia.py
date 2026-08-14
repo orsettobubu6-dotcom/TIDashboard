@@ -489,13 +489,20 @@ def make_simple_marker(shape="circle", size=1.0, c=C_NERO, outline_w=0):
     trasparente (il default precedente, unico per tutte le forme) risultano
     completamente invisibili, non solo prive di bordo - verificato con un
     render isolato. Per queste va passato un outline_w > 0."""
+    # L'alfa e' quello del colore ricevuto, non 255 fisso. Con 255 fisso chi
+    # chiedeva un simbolo TRASPARENTE - QColor(0,0,0,0), il caso di
+    # _gen_stile_invisibile - ne otteneva uno nero opaco: invisibile solo
+    # perche' grande 0.01 mm, cioe' sotto la risoluzione di stampa. Regge per
+    # caso, e smette di reggere appena il fattore di proporzionalita' lo
+    # ingrandisce (a 1:200 vale x5) o la risoluzione sale. Gli altri chiamanti
+    # passano colori opachi, per loro non cambia niente.
     p = {
         'name': shape,
-        'color': f"{c.red()},{c.green()},{c.blue()},255",
+        'color': f"{c.red()},{c.green()},{c.blue()},{c.alpha()}",
         'size': str(size), 'size_unit': 'MM'
     }
     if outline_w > 0:
-        p['outline_color'] = f"{c.red()},{c.green()},{c.blue()},255"
+        p['outline_color'] = f"{c.red()},{c.green()},{c.blue()},{c.alpha()}"
         p['outline_width'] = str(outline_w)
         p['outline_width_unit'] = 'MM'
     else:
