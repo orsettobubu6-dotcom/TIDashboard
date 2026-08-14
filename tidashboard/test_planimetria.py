@@ -767,6 +767,57 @@ class TestRettangoloMinimo(unittest.TestCase):
         self.assertEqual(P.rettangolo_minimo([(5, 5), (5, 5)])[:2], (0.0, 0.0))
 
 
+class TestOrdineDiDisegnoSulFoglio(unittest.TestCase):
+    """Regressione da un PDF reale: sul canvas la gerarchia del cap. 1.5.4 era
+    giusta, sul FOGLIO no. La planimetria riceveva i layer nell'ordine di
+    CARICAMENTO e li passava così a setLayers(), che disegna il primo in cima:
+    le linee di confine finivano sopra i punti di confine."""
+
+    def _due_layer(self, prj):
+        sotto, sopra = _layer(), _layer()
+        sotto.setName("copertura")      # va disegnato in fondo
+        sopra.setName("punti")          # va disegnato in cima
+        prj.addMapLayer(sotto)
+        prj.addMapLayer(sopra)
+        return sotto, sopra
+
+    def test_il_foglio_segue_l_ordine_del_progetto_non_quello_di_caricamento(self):
+        prj = QgsProject.instance()
+        prj.removeAllMapLayers()
+        sotto, sopra = self._due_layer(prj)
+        # il progetto dichiara: prima i punti (in cima), poi la copertura
+        prj.layerTreeRoot().setHasCustomLayerOrder(True)
+        prj.layerTreeRoot().setCustomLayerOrder([sopra, sotto])
+        # ...e la planimetria li riceve nell'ordine SBAGLIATO, come fa il plugin
+        lay = P.crea_planimetria(prj, [sotto, sopra], QgsPointXY(CX, CY), 1000,
+                                 nome="OrdineFoglio")
+        nomi = [l.name() for l in _mappa(lay).layers()]
+        self.assertEqual(nomi[0].split()[0], "punti",
+                         "in cima al foglio deve esserci il layer che il progetto mette per primo")
+
+    def test_senza_ordine_personalizzato_si_rispetta_quello_ricevuto(self):
+        prj = QgsProject.instance()
+        prj.removeAllMapLayers()
+        sotto, sopra = self._due_layer(prj)
+        prj.layerTreeRoot().setHasCustomLayerOrder(False)
+        lay = P.crea_planimetria(prj, [sopra, sotto], QgsPointXY(CX, CY), 1000,
+                                 nome="OrdineRicevuto")
+        nomi = [l.name() for l in _mappa(lay).layers()]
+        self.assertEqual(nomi[0].split()[0], "punti")
+
+    def test_un_layer_fuori_dall_ordine_finisce_in_coda(self):
+        prj = QgsProject.instance()
+        prj.removeAllMapLayers()
+        sotto, sopra = self._due_layer(prj)
+        estraneo = _layer()
+        estraneo.setName("estraneo")
+        prj.addMapLayer(estraneo)
+        prj.layerTreeRoot().setHasCustomLayerOrder(True)
+        prj.layerTreeRoot().setCustomLayerOrder([sopra, sotto])
+        ordinati = P.ordina_come_il_progetto(prj, [estraneo, sotto, sopra])
+        self.assertEqual([l.name() for l in ordinati], ["punti", "copertura", "estraneo"])
+
+
 class TestStatoCapienza(unittest.TestCase):
     """Mentre si trascina il foglio la domanda non è quale scala serve, ma se
     il fondo agganciato è ancora tutto dentro."""

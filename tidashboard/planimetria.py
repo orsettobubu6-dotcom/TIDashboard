@@ -606,6 +606,34 @@ def _layers_visibili(project, layers, log=None):
     return visibili
 
 
+def ordina_come_il_progetto(project, layers):
+    """I layer nell'ordine di disegno del progetto, non in quello di
+    caricamento.
+
+    QUI STAVA UN DIFETTO SERIO. Il plugin applica al progetto l'ordine di
+    disegno del cap.1.5.4 con setCustomLayerOrder - punti fissi e di confine
+    sempre davanti, copertura del suolo sempre in fondo - ma la planimetria
+    riceveva l'elenco dei layer CARICATI e lo passava cosi' com'era a
+    QgsLayoutItemMap.setLayers(), che disegna il primo in cima. Risultato: sul
+    canvas la gerarchia era giusta, sul FOGLIO STAMPATO no, e le linee di
+    confine finivano sopra i punti di confine - segnalato guardando un PDF
+    reale, dove la linea passa dentro l'anello del punto.
+
+    L'ordine si legge dal progetto invece di ricalcolarlo qui: la regola sta
+    in un posto solo (ordinamento.py, applicato in fase 4), e due copie della
+    stessa gerarchia prima o poi divergono.
+
+    I layer che nell'ordine personalizzato non compaiono restano in coda,
+    nell'ordine ricevuto: e' il caso d'uso da script, dove un ordine
+    personalizzato puo' non esserci affatto."""
+    radice = project.layerTreeRoot() if project else None
+    if radice is None or not radice.hasCustomLayerOrder():
+        return list(layers)
+    posizione = {l.id(): i for i, l in enumerate(radice.customLayerOrder()) if l}
+    in_coda = len(posizione)
+    return sorted(layers, key=lambda l: posizione.get(l.id(), in_coda))
+
+
 def area_mappa(formato):
     """Dimensioni in mm della finestra di mappa: il foglio meno i margini e la
     fascia del cartiglio. Sta qui, e non dentro crea_planimetria, perche' la
@@ -713,7 +741,9 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     mappa.setCrs(QgsCoordinateReferenceSystem(CRS_MU))
     id_cloni = []
     if layers:
-        visibili = _layers_visibili(project, layers, _log)
+        # L'ordine PRIMA del filtro sui visibili e prima dei cloni: entrambi
+        # conservano l'ordine che ricevono, quindi basta metterlo qui.
+        visibili = _layers_visibili(project, ordina_come_il_progetto(project, layers), _log)
         per_il_foglio, id_cloni = _layers_proporzionati(project, visibili, scala,
                                                         prodotto, _log,
                                                         lettera_norma)
