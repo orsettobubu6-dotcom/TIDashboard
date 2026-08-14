@@ -874,6 +874,36 @@ class TestIngombro(unittest.TestCase):
         self.assertTrue(dlg._banda_ingombro.asGeometry().isEmpty())
 
 
+class TestWorkerDistrutto(unittest.TestCase):
+    """Regressione segnalata da un utente: chiudendo la finestra dopo un
+    lavoro finito usciva «RuntimeError: wrapped C/C++ object of type
+    JavaWorker has been deleted». Da quando il worker si distrugge da solo
+    (finished → deleteLater) l'attributo Python resta appeso a un oggetto C++
+    già cancellato, e interrogarlo solleva - proprio in chiusura, dove un
+    errore dà più fastidio."""
+
+    def test_riconosce_un_oggetto_gia_distrutto(self):
+        from tidashboard.tidashboard import _vivo, JavaWorker
+        from PyQt6 import sip
+        w = JavaWorker(["x"], "prova")
+        self.assertTrue(_vivo(w))
+        sip.delete(w)
+        self.assertFalse(_vivo(w), "un guscio senza C++ non è vivo")
+
+    def test_none_non_e_vivo(self):
+        from tidashboard.tidashboard import _vivo
+        self.assertFalse(_vivo(None))
+
+    def test_la_chiusura_non_solleva_con_il_worker_distrutto(self):
+        from tidashboard.tidashboard import JavaWorker
+        from PyQt6 import sip
+        from qgis.PyQt.QtGui import QCloseEvent
+        dlg = TIDashboardDialog()
+        dlg.worker = JavaWorker(["x"], "prova")
+        sip.delete(dlg.worker)
+        dlg.closeEvent(QCloseEvent())      # prima: RuntimeError
+
+
 class TestConteggioEntitaDXF(unittest.TestCase):
     """Regressione: il DXF è fatto di COPPIE codice/valore, e leggere ogni riga
     per conto suo si rompe al primo VALORE uguale a "0" — cosa che capita di

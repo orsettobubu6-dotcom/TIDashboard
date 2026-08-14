@@ -236,6 +236,31 @@ _STILE_PULSANTE = (
 )
 
 
+def _vivo(oggetto):
+    """L'oggetto Qt esiste ancora, o e' solo un guscio Python?
+
+    Con parent Qt e deleteLater il C++ puo' sparire mentre l'attributo Python
+    che lo teneva resta: da quel momento QUALSIASI chiamata su quel guscio
+    solleva RuntimeError. sip.isdeleted lo dice senza toccarlo; se sip non e'
+    disponibile si ripiega su una chiamata innocua dentro un try."""
+    if oggetto is None:
+        return False
+    # In PyQt6 sip sta sotto il pacchetto (PyQt6.sip), non piu' al primo
+    # livello: cercarlo solo come "sip" fallisce in silenzio e si finirebbe
+    # sempre sul ripiego.
+    for modulo in ("PyQt6.sip", "PyQt5.sip", "sip"):
+        try:
+            sip = __import__(modulo, fromlist=["isdeleted"])
+            return not sip.isdeleted(oggetto)
+        except (ImportError, AttributeError):
+            continue
+    try:
+        oggetto.objectName()
+        return True
+    except RuntimeError:
+        return False
+
+
 class InventarioWorker(QThread):
     """Conta cosa c'e' nell'ITF senza bloccare la finestra.
 
@@ -1848,6 +1873,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         interrotto. Su conferma, il processo viene terminato (worker.cancel)
         e si attende al massimo 3 secondi che il thread finisca."""
         worker = getattr(self, "worker", None)  # getattr: i test usano __new__ senza __init__
+        # Il wrapper Python puo' sopravvivere all'oggetto C++: da quando il
+        # worker si distrugge da solo a lavoro finito (finished -> deleteLater)
+        # self.worker resta appeso a un oggetto gia' cancellato, e interrogarlo
+        # solleva RuntimeError proprio nella chiusura della finestra - dove un
+        # errore e' piu' fastidioso che altrove. Segnalato da un utente:
+        # "RuntimeError: wrapped C/C++ object of type JavaWorker has been
+        # deleted" in closeEvent.
+        if not _vivo(worker):
+            worker = None
         if worker is not None and worker.isRunning():
             reply = QMessageBox.warning(
                 self, "Processo in esecuzione",
@@ -2476,7 +2510,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def run_import(self):
         # Guardia contro il doppio avvio: un secondo worker in parallelo
         # scriverebbe sullo stesso GPKG del primo, corrompendolo.
-        if self.worker is not None and self.worker.isRunning():
+        if _vivo(getattr(self, "worker", None)) and self.worker.isRunning():
             QMessageBox.warning(self, "Operazione in corso",
                                 "Un processo e' gia' in esecuzione: attendi che termini "
                                 "(o chiudi la finestra per interromperlo).")
@@ -4383,7 +4417,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         commento su AV2GEOBAU_JAR). Traduttore e modello .ili sono entrambi
         quelli in dotazione (MODELLO_ILI serve a risolvere --modeldir)."""
         # Guardia contro il doppio avvio (vedi run_import).
-        if self.worker is not None and self.worker.isRunning():
+        if _vivo(getattr(self, "worker", None)) and self.worker.isRunning():
             QMessageBox.warning(self, "Operazione in corso",
                                 "Un processo e' gia' in esecuzione: attendi che termini "
                                 "(o chiudi la finestra per interromperlo).")
