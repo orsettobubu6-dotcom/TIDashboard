@@ -38,7 +38,7 @@ Il modello INTERLIS e il traduttore DXF sono in dotazione e non si scelgono.
 
 ## Installazione
 
-Estensioni → Gestisci ed installa estensioni → Installa da ZIP → `tidashboard_1.1.1.zip`.
+Estensioni → Gestisci ed installa estensioni → Installa da ZIP → `tidashboard_1.2.0.zip`.
 
 Poiché è marcato sperimentale, va prima attivata l'opzione *Mostra anche le
 estensioni sperimentali* nelle impostazioni del gestore.

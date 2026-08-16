@@ -1,5 +1,36 @@
 # Diario delle versioni
 
+## 1.2.0 — sperimentale
+
+### Dati ufficiali scaricabili dal plugin
+
+- Nuova voce «⬇️ Cantone...» accanto al campo dell'ITF: sceglie il comune da
+  **data.geo.ti.ch** e scarica l'archivio ufficiale, lo estrae e compila da solo
+  il percorso. L'elenco dei 130 comuni (e comunanze) arriva dal portale a ogni
+  apertura, con la data di aggiornamento di ciascuno: è quella l'informazione
+  che serve per decidere se riscaricare.
+- **L'impronta si verifica.** Ogni archivio porta l'MD5 calcolato dal Cantone;
+  dopo l'estrazione viene ricalcolato e confrontato. Un ITF troncato da una
+  connessione caduta è altrimenti indistinguibile da uno buono finché ili2gpkg
+  non fallisce a metà, parlando d'altro.
+- Il modello dichiarato nell'ITF viene letto e confrontato con
+  `MD01MUTI7MN95`: se si finisce per sbaglio sul modello federale di
+  geodienste.ch (`MD01MUCH24MN95I`, un modello diverso) lo si scopre subito e
+  non dopo un'importazione fallita.
+
+### Scala di stampa
+
+- La scala del layout del piano di base non è più fissata a 1:5000 nel codice:
+  la decide il menu «Scala», come già per la planimetria RF. Prima chi ne
+  sceglieva un'altra otteneva comunque un foglio 1:5000, con sopra stampato
+  «Scala: 1:5000». Passando a PB-MU il menu si porta su 1:5000 solo se
+  l'utente non ha già scelto.
+
+### Correzioni
+
+- Chiudere la finestra mentre una conversione era in corso poteva sollevare
+  «wrapped C/C++ object of type JavaWorker has been deleted».
+
 ## 1.1.1 — sperimentale
 
 Prima versione preparata per la pubblicazione. Rinominata da «Cadastra

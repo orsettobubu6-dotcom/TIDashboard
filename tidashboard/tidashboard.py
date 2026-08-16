@@ -48,6 +48,7 @@ try:
     from . import cerca_fondo as _cerca_fondo
     from . import dati_comune as _dati_comune
     from . import inventario as _inventario
+    from . import scarica_mu as _scarica_mu
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -72,6 +73,7 @@ except ImportError:
     import cerca_fondo as _cerca_fondo
     import dati_comune as _dati_comune
     import inventario as _inventario
+    import scarica_mu as _scarica_mu
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -289,6 +291,259 @@ class InventarioWorker(QThread):
         self.fatto.emit(classi, totale, "")
 
 
+class IndiceMuWorker(QThread):
+    """Legge l'elenco dei comuni dal portale cantonale.
+
+    Sta su un thread perche' e' una chiamata di rete: su una linea lenta, o con
+    il portale giu', la finestra resterebbe congelata fino al timeout (30 s)."""
+
+    fatto = pyqtSignal(object, str)              # elenco, errore
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def run(self):
+        try:
+            self.fatto.emit(_scarica_mu.scarica_indice(), "")
+        except Exception as e:
+            self.fatto.emit(None, str(e))
+
+
+class ScaricaMuWorker(QThread):
+    """Scarica l'archivio di un comune, lo estrae e ne verifica l'impronta."""
+
+    avanzamento = pyqtSignal(int, int)           # byte fatti, byte totali
+    fatto = pyqtSignal(str, str)                 # percorso itf, errore
+
+    def __init__(self, comune, cartella, parent=None):
+        super().__init__(parent)
+        self._comune = comune
+        self._cartella = cartella
+        self._annullato = False
+
+    def annulla(self):
+        self._annullato = True
+
+    def run(self):
+        percorso_zip = None
+        try:
+            percorso_zip = _scarica_mu.scarica_archivio(
+                self._comune, self._cartella,
+                progresso=lambda f, t: self.avanzamento.emit(f, t),
+                annullato=lambda: self._annullato)
+            itf = _scarica_mu.estrai_itf(percorso_zip, self._cartella)
+        except _scarica_mu.InterruttoDallUtente:
+            self.fatto.emit("", "")              # annullato: nessun errore da mostrare
+            return
+        except Exception as e:
+            self.fatto.emit("", str(e))
+            return
+        finally:
+            # L'archivio ha gia' dato quel che doveva: tenerlo raddoppia lo
+            # spazio occupato (Bellinzona: 31 MB di zip per 130 MB di ITF).
+            if percorso_zip and os.path.exists(percorso_zip):
+                try:
+                    os.remove(percorso_zip)
+                except OSError:
+                    pass
+        self.fatto.emit(itf, "")
+
+
+class DialogScaricaMU(QDialog):
+    """Scelta del comune e scaricamento dell'ITF dal portale cantonale.
+
+    L'elenco arriva dal portale a ogni apertura invece di stare scritto qui:
+    le date di aggiornamento cambiano di continuo (meta' dei comuni entro il
+    mese) ed e' proprio quella l'informazione che serve per decidere se
+    riscaricare. Un elenco fisso nel codice direbbe solo i nomi, che si sanno
+    gia'."""
+
+    def __init__(self, parent=None, cartella=None, avvia_indice=True):
+        super().__init__(parent)
+        self.setWindowTitle("Scarica dati MU dal Cantone")
+        self.resize(560, 520)
+        self.percorso_itf = ""
+        self._comuni = []
+        self._indice = None
+        self._scarico = None
+        # I thread NON hanno per padre questa finestra ma quella che la apre:
+        # devono poterle sopravvivere. Chiudere mentre la rete e' ancora in
+        # corso distruggerebbe il padre di un QThread vivo, che e' il modo
+        # classico di far morire il processo. Con il padre piu' in alto, Qt
+        # scollega da solo i segnali diretti a questa finestra quando sparisce.
+        self._padrone = parent if parent is not None else self
+
+        colonna = QVBoxLayout()
+        intro = QLabel(
+            "Misurazione ufficiale del Cantone Ticino, modello cantonale "
+            "<b>%s</b>.<br>Fonte: <a href=\"%s\">data.geo.ti.ch</a> — "
+            "<a href=\"%s\">condizioni di utilizzo</a>."
+            % (_scarica_mu.MODELLO_ATTESO, _scarica_mu.URL_INDICE,
+               _scarica_mu.URL_CONDIZIONI))
+        intro.setOpenExternalLinks(True)
+        intro.setWordWrap(True)
+        colonna.addWidget(intro)
+
+        self.txt_filtro = QLineEdit()
+        self.txt_filtro.setPlaceholderText("Filtra per nome o numero...")
+        self.txt_filtro.textChanged.connect(self._filtra)
+        colonna.addWidget(self.txt_filtro)
+
+        self.elenco = QListWidget()
+        self.elenco.itemSelectionChanged.connect(self._aggiorna_pulsanti)
+        self.elenco.itemDoubleClicked.connect(self._scarica)
+        colonna.addWidget(self.elenco, 1)
+
+        riga_cartella = QHBoxLayout()
+        riga_cartella.addWidget(QLabel("Salva in:"))
+        self.txt_cartella = QLineEdit(cartella or "")
+        riga_cartella.addWidget(self.txt_cartella)
+        btn_sfoglia = QPushButton("Sfoglia...")
+        btn_sfoglia.clicked.connect(self._scegli_cartella)
+        riga_cartella.addWidget(btn_sfoglia)
+        colonna.addLayout(riga_cartella)
+
+        self.barra = QProgressBar()
+        self.barra.setVisible(False)
+        colonna.addWidget(self.barra)
+
+        self.lbl_stato = QLabel("Leggo l'elenco dei comuni...")
+        self.lbl_stato.setWordWrap(True)
+        colonna.addWidget(self.lbl_stato)
+
+        riga_pulsanti = QHBoxLayout()
+        riga_pulsanti.addStretch()
+        self.btn_scarica = QPushButton("Scarica")
+        self.btn_scarica.setEnabled(False)
+        self.btn_scarica.clicked.connect(self._scarica)
+        riga_pulsanti.addWidget(self.btn_scarica)
+        self.btn_chiudi = QPushButton("Chiudi")
+        self.btn_chiudi.clicked.connect(self.reject)
+        riga_pulsanti.addWidget(self.btn_chiudi)
+        colonna.addLayout(riga_pulsanti)
+        self.setLayout(colonna)
+
+        if avvia_indice:
+            self._indice = IndiceMuWorker(self._padrone)
+            self._indice.fatto.connect(self._indice_pronto)
+            self._indice.finished.connect(self._indice.deleteLater)
+            self._indice.start()
+
+    # --- elenco --------------------------------------------------------------
+    def _indice_pronto(self, comuni, errore):
+        if errore or not comuni:
+            self.lbl_stato.setText(
+                "Non riesco a leggere l'elenco dal portale: %s\n"
+                "Puoi scaricare a mano da %s"
+                % (errore or "nessun comune trovato", _scarica_mu.URL_INDICE))
+            return
+        self._comuni = comuni
+        self.lbl_stato.setText("%d comuni disponibili. Scegline uno."
+                               % len(comuni))
+        self._filtra()
+
+    def _filtra(self):
+        cercato = self.txt_filtro.text().strip().lower()
+        self.elenco.clear()
+        for c in self._comuni:
+            if cercato and cercato not in c.nome.lower() and cercato not in c.codice:
+                continue
+            voce = QListWidgetItem("%s  —  %s  —  %s"
+                                   % (c.nome, c.data, c.dimensione))
+            voce.setData(Qt.ItemDataRole.UserRole, c)
+            voce.setToolTip("%s\naggiornato il %s\n%s"
+                            % (c.archivio, c.data, c.url))
+            self.elenco.addItem(voce)
+        self._aggiorna_pulsanti()
+
+    def _comune_scelto(self):
+        voce = self.elenco.currentItem()
+        return voce.data(Qt.ItemDataRole.UserRole) if voce else None
+
+    def _aggiorna_pulsanti(self):
+        in_corso = _vivo(self._scarico) and self._scarico.isRunning()
+        self.btn_scarica.setEnabled(bool(self._comune_scelto()) and not in_corso)
+
+    def _scegli_cartella(self):
+        cartella = QFileDialog.getExistingDirectory(
+            self, "Dove salvare l'ITF", self.txt_cartella.text().strip())
+        if cartella:
+            self.txt_cartella.setText(cartella)
+
+    # --- scaricamento --------------------------------------------------------
+    def _scarica(self):
+        comune = self._comune_scelto()
+        if comune is None:
+            return
+        cartella = self.txt_cartella.text().strip()
+        if not os.path.isdir(cartella):
+            QMessageBox.warning(self, "Scarica dati MU",
+                                "La cartella di destinazione non esiste:\n%s"
+                                % (cartella or "(vuota)"))
+            return
+        self.barra.setVisible(True)
+        self.barra.setValue(0)
+        self.lbl_stato.setText("Scarico %s (%s)..." % (comune.nome, comune.dimensione))
+        self._scarico = ScaricaMuWorker(comune, cartella, self._padrone)
+        self._scarico.avanzamento.connect(self._avanza)
+        self._scarico.fatto.connect(self._scarico_finito)
+        self._scarico.finished.connect(self._scarico.deleteLater)
+        self._scarico.start()
+        self._aggiorna_pulsanti()
+        self.btn_chiudi.setText("Annulla")
+
+    def _avanza(self, fatti, totali):
+        if totali > 0:
+            self.barra.setRange(0, totali)
+            self.barra.setValue(fatti)
+            self.barra.setFormat("%.1f di %.1f MB (%%p%%)"
+                                 % (fatti / 1048576.0, totali / 1048576.0))
+        else:
+            # Senza Content-Length non c'e' una percentuale da mostrare: una
+            # barra indeterminata dice "sto lavorando" senza mentire.
+            self.barra.setRange(0, 0)
+            self.barra.setFormat("%.1f MB" % (fatti / 1048576.0))
+
+    def _scarico_finito(self, percorso, errore):
+        self.barra.setVisible(False)
+        self.btn_chiudi.setText("Chiudi")
+        self._aggiorna_pulsanti()
+        if errore:
+            self.lbl_stato.setText("Non riuscito: %s" % errore)
+            QMessageBox.warning(self, "Scarica dati MU", errore)
+            return
+        if not percorso:
+            self.lbl_stato.setText("Annullato.")
+            return
+        modello = _scarica_mu.modello_dichiarato(percorso)
+        if modello and modello != _scarica_mu.MODELLO_ATTESO:
+            # Non e' un errore fatale - il file c'e' ed e' integro - ma la
+            # catena a valle e' tarata su un modello solo, e scoprirlo qui
+            # costa un avviso, scoprirlo dopo costa un'importazione fallita.
+            QMessageBox.warning(
+                self, "Scarica dati MU",
+                "L'archivio dichiara il modello %s invece di %s: il resto del "
+                "plugin e' tarato sul modello cantonale e potrebbe non "
+                "riconoscere le classi." % (modello, _scarica_mu.MODELLO_ATTESO))
+        self.percorso_itf = percorso
+        self.accept()
+
+    def reject(self):
+        if _vivo(self._scarico) and self._scarico.isRunning():
+            self._scarico.annulla()
+            self._scarico.wait(5000)
+            return                          # il primo Annulla ferma, non chiude
+        super().reject()
+
+    def closeEvent(self, evento):
+        """Chiudere con la X non deve lasciare un download a scrivere su un
+        file di cui nessuno guarda piu' l'esito."""
+        if _vivo(self._scarico) and self._scarico.isRunning():
+            self._scarico.annulla()
+            self._scarico.wait(5000)
+        super().closeEvent(evento)
+
+
 class StrumentoSpostaFoglio(QgsMapTool):
     """Prende il rettangolo del foglio e lo porta dove serve.
 
@@ -467,7 +722,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
         self.txt_itf = QLineEdit()
         self.txt_itf.setPlaceholderText("Seleziona il file dati .itf...")
-        layout_import.addLayout(self.create_file_row("File ITF in:", self.txt_itf, "ITF files (*.itf)", False, "import"))
+        riga_itf = self.create_file_row("File ITF in:", self.txt_itf,
+                                        "ITF files (*.itf)", False, "import")
+        # Il dato ufficiale si scarica da qui, non a mano dal browser: il
+        # portale cantonale pubblica un archivio per comune, e prenderlo dal
+        # plugin evita sia di sbagliare comune sia di finire per errore sul
+        # modello federale di geodienste.ch, che e' un modello diverso.
+        self._btn_scarica_mu = QPushButton("⬇️ Cantone...")
+        self._btn_scarica_mu.setToolTip(
+            "Scarica l'ITF ufficiale di un comune da data.geo.ti.ch\n"
+            "(modello cantonale %s)" % _scarica_mu.MODELLO_ATTESO)
+        self._btn_scarica_mu.clicked.connect(self.scarica_itf_dal_cantone)
+        riga_itf.addWidget(self._btn_scarica_mu)
+        layout_import.addLayout(riga_itf)
 
         # Cosa c'e' dentro, prima di importare. Finora per saperlo bisognava
         # lanciare l'importazione - minuti - e se si fermava a meta' restavi
@@ -1805,6 +2072,37 @@ class TIDashboardDialog(StiliMixin, QDialog):
         path, _ = QFileDialog.getSaveFileName(self, "Salva File", "", filter_str)
         if path:
             line_edit.setText(path)
+
+    def _cartella_di_lavoro(self):
+        """Dove proporre di salvare: accanto ai file con cui si sta gia'
+        lavorando, non in una cartella qualunque."""
+        for campo in (getattr(self, "txt_itf", None), getattr(self, "txt_gpkg", None)):
+            testo = campo.text().strip() if campo else ""
+            if testo:
+                cartella = os.path.dirname(testo)
+                if os.path.isdir(cartella):
+                    return cartella
+        scaricati = os.path.join(os.path.expanduser("~"), "Downloads")
+        return scaricati if os.path.isdir(scaricati) else os.path.expanduser("~")
+
+    def scarica_itf_dal_cantone(self):
+        """Apre la scelta del comune e, se lo scaricamento riesce, compila da
+        solo il campo dell'ITF: fine dello scaricamento e inizio del lavoro
+        sono la stessa cosa, e farli scrivere a mano sarebbe l'unico modo di
+        sbagliarli."""
+        finestra = DialogScaricaMU(self, self._cartella_di_lavoro())
+        if finestra.exec() != QDialog.DialogCode.Accepted:
+            return
+        percorso = finestra.percorso_itf
+        if not percorso:
+            return
+        self.txt_itf.setText(percorso)
+        self.log("\n⬇️ DATI MU DAL CANTONE")
+        self.log("   ✅ %s (%.1f MB), impronta MD5 verificata"
+                 % (percorso, os.path.getsize(percorso) / 1048576.0),
+                 Qgis.Success)
+        self.log("   ℹ️ Fonte: %s — %s"
+                 % (_scarica_mu.URL_INDICE, "condizioni: " + _scarica_mu.URL_CONDIZIONI))
 
     def _livello_riga(self, msg, level):
         """Classifica una riga come 'errore', 'avviso' o 'normale'.

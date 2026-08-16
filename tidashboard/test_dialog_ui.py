@@ -1276,6 +1276,105 @@ class TestScalaFoglioIndipendenteDallaVista(unittest.TestCase):
         prog.removeMapLayer(lyr.id())
 
 
+class TestFinestraScaricaMU(unittest.TestCase):
+    """La finestra di scaricamento dal portale cantonale. L'elenco arriva da un
+    finto worker: qui si prova l'interfaccia, non la rete (per la rete e il
+    formato della pagina c'e' test_scarica_mu.py)."""
+
+    def _finestra(self, comuni=None):
+        from tidashboard.tidashboard import DialogScaricaMU
+        from tidashboard import scarica_mu as S
+        # avvia_indice=False: niente chiamata al portale nei test.
+        f = DialogScaricaMU(None, tempfile.mkdtemp(), avvia_indice=False)
+        if comuni is None:
+            comuni = [S.ComuneMU("5304000101.zip", "Bosco Gurin", "30.07.2026",
+                                 "904.63 KB"),
+                      S.ComuneMU("5254010100.zip", "Mendrisio", "14.08.2026",
+                                 "11.21 MB")]
+        f._indice_pronto(comuni, "")
+        return f
+
+    def test_l_elenco_si_riempie_e_il_pulsante_parte_spento(self):
+        f = self._finestra()
+        self.assertEqual(f.elenco.count(), 2)
+        self.assertFalse(f.btn_scarica.isEnabled(),
+                         "senza un comune scelto non c'e' niente da scaricare")
+        f.elenco.setCurrentRow(0)
+        self.assertTrue(f.btn_scarica.isEnabled())
+
+    def test_il_filtro_cerca_per_nome_e_per_numero(self):
+        f = self._finestra()
+        f.txt_filtro.setText("mendri")
+        self.assertEqual(f.elenco.count(), 1)
+        f.txt_filtro.setText("5304")
+        self.assertEqual(f.elenco.count(), 1)
+        self.assertIn("Bosco Gurin", f.elenco.item(0).text())
+        f.txt_filtro.setText("")
+        self.assertEqual(f.elenco.count(), 2)
+
+    def test_il_portale_muto_lo_dice_e_lascia_l_indirizzo(self):
+        """Se il portale non risponde la finestra non deve restare a fissare
+        una lista vuota senza spiegazioni."""
+        from tidashboard import scarica_mu as S
+        f = self._finestra(comuni=None)
+        f._indice_pronto(None, "timed out")
+        self.assertIn("timed out", f.lbl_stato.text())
+        self.assertIn(S.URL_INDICE, f.lbl_stato.text())
+        self.assertFalse(f.btn_scarica.isEnabled())
+
+    def test_una_cartella_che_non_esiste_ferma_lo_scaricamento(self):
+        f = self._finestra()
+        f.elenco.setCurrentRow(0)
+        f.txt_cartella.setText(r"C:\questa\non\esiste")
+        prima = len(_avvisi)
+        f._scarica()
+        self.assertGreater(len(_avvisi), prima)
+        self.assertIsNone(f._scarico, "non deve partire nessun thread")
+
+    def test_il_modello_sbagliato_viene_segnalato(self):
+        """Il caso che rende utile il controllo: un ITF nel modello federale
+        (geodienste.ch) scarica benissimo e poi non si importa."""
+        from tidashboard import scarica_mu as S
+        cartella = tempfile.mkdtemp()
+        percorso = os.path.join(cartella, "x.itf")
+        with open(percorso, "wb") as fh:
+            fh.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUCH24MN95I\r\n")
+        f = self._finestra()
+        prima = len(_avvisi)
+        f._scarico_finito(percorso, "")
+        self.assertGreater(len(_avvisi), prima)
+        self.assertIn("MD01MUCH24MN95I", _avvisi[-1])
+        self.assertEqual(f.percorso_itf, percorso,
+                         "il file c'e' ed e' integro: si tiene, con l'avviso")
+
+    def test_il_modello_giusto_non_disturba(self):
+        from tidashboard import scarica_mu as S
+        cartella = tempfile.mkdtemp()
+        percorso = os.path.join(cartella, "y.itf")
+        with open(percorso, "wb") as fh:
+            fh.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL %s\r\n"
+                     % S.MODELLO_ATTESO.encode())
+        f = self._finestra()
+        prima = len(_avvisi)
+        f._scarico_finito(percorso, "")
+        self.assertEqual(len(_avvisi), prima)
+        self.assertEqual(f.percorso_itf, percorso)
+
+
+class TestCartellaDiLavoro(unittest.TestCase):
+    def test_propone_la_cartella_dell_itf_in_uso(self):
+        dlg = TIDashboardDialog()
+        cartella = tempfile.mkdtemp()
+        dlg.txt_itf.setText(os.path.join(cartella, "5254010100.itf"))
+        self.assertEqual(dlg._cartella_di_lavoro(), cartella)
+
+    def test_senza_niente_in_mano_non_torna_vuoto(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText("")
+        dlg.txt_gpkg.setText("")
+        self.assertTrue(os.path.isdir(dlg._cartella_di_lavoro()))
+
+
 if __name__ == "__main__":
     risultato = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()
