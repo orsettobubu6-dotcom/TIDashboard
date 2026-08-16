@@ -50,6 +50,7 @@ try:
     from . import inventario as _inventario
     from . import scarica_mu as _scarica_mu
     from . import modello as _modello
+    from . import verifica_dxf as _verifica_dxf
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -76,6 +77,7 @@ except ImportError:
     import inventario as _inventario
     import scarica_mu as _scarica_mu
     import modello as _modello
+    import verifica_dxf as _verifica_dxf
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -291,6 +293,26 @@ class InventarioWorker(QThread):
             self.fatto.emit(None, None, str(e))
             return
         self.fatto.emit(classi, totale, "")
+
+
+class VerificaDxfWorker(QThread):
+    """Rilegge il DXF appena prodotto con GDAL, in un thread.
+
+    Misurato sul DXF di Mendrisio, 209 MB: 13 secondi. Poco rispetto ai minuti
+    della conversione, troppo per farlo nel thread dell'interfaccia - la
+    finestra resterebbe ferma proprio mentre mostra l'esito."""
+
+    fatto = pyqtSignal(object, str)             # esito, errore
+
+    def __init__(self, percorso, parent=None):
+        super().__init__(parent)
+        self._percorso = percorso
+
+    def run(self):
+        try:
+            self.fatto.emit(_verifica_dxf.verifica(self._percorso), "")
+        except Exception as e:                  # anche gli errori nativi di GDAL
+            self.fatto.emit(None, str(e))
 
 
 class IndiceMuWorker(QThread):
@@ -4982,9 +5004,14 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 self.log("\n🔎 Verifica struttura DXF...")
                 valido = self._validate_dxf(dxf_path)
             if valido:
-                self.log("✅ Esportazione DXF completata!", Qgis.Success)
-                self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
-                self._segna_passo("dxf")
+                # Il primo controllo legge il file con il NOSTRO codice: se
+                # sbagliamo a scrivere e sbagliamo allo stesso modo a rileggere,
+                # passa. Il secondo lo fa rileggere a GDAL, che e'
+                # un'implementazione diversa - ed e' quello che decide se il
+                # passo e' completo. Dirlo fatto e poi scoprire che meta' del
+                # disegno non si rilegge sarebbe una spunta verde su un passo
+                # non riuscito.
+                self._avvia_rilettura_gdal(dxf_path)
             else:
                 self.log("❌ Il convertitore ha finito senza errori ma il DXF "
                          "non ha superato la verifica: il passo NON è completo.",
@@ -5037,6 +5064,43 @@ class TIDashboardDialog(StiliMixin, QDialog):
         stats["_total"] = total
         stats["_layers_sample"] = layers
         return stats
+
+    def _avvia_rilettura_gdal(self, dxf_path):
+        """Fa rileggere il DXF a GDAL e rimanda a dopo il verdetto sul passo."""
+        if not dxf_path:
+            return
+        self.log("\n🔁 Rilettura con GDAL (secondo parere, motore diverso dal "
+                 "nostro)...")
+        worker = VerificaDxfWorker(dxf_path, parent=self)
+        worker.fatto.connect(self._rilettura_gdal_finita)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _rilettura_gdal_finita(self, esito, errore):
+        if errore or esito is None:
+            # Un guasto della verifica non e' un guasto del DXF: si dice cosa
+            # non ha funzionato e si lascia buono il file, invece di bocciarlo
+            # per colpa nostra.
+            self.log("   ⚠️ Rilettura non riuscita: %s" % (errore or "esito assente"),
+                     Qgis.Warning)
+            self.log("✅ Esportazione DXF completata (senza il secondo parere).",
+                     Qgis.Success)
+            self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
+            self._segna_passo("dxf")
+            return
+        for riga in _verifica_dxf.righe_di_esito(esito):
+            self.log(riga, Qgis.Critical if riga.strip().startswith("❌") else Qgis.Info)
+        if esito.ok:
+            self.log("✅ Esportazione DXF completata e riletta!", Qgis.Success)
+            self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")
+            self._segna_passo("dxf")
+        else:
+            self.log("❌ Il DXF non supera la rilettura: il passo NON è completo.",
+                     Qgis.Critical)
+            QMessageBox.warning(self, "Verifica DXF",
+                                "Il DXF è stato prodotto ma rileggendolo con "
+                                "GDAL non torna:\n\n%s"
+                                % "\n".join(esito.problemi))
 
     def _validate_dxf(self, dxf_path):
         """Controlli strutturali minimi su un DXF appena esportato: esiste,

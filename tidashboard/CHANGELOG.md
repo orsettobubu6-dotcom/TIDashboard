@@ -39,6 +39,26 @@ all'utente una decisione che è sua. Quando il modello trovato è quello federal
 di geodienste.ch il messaggio lo dice, e indica il pulsante da cui scaricare
 l'equivalente cantonale.
 
+### Il DXF viene riletto da GDAL prima di dirlo fatto
+
+Il controllo strutturale che c'era legge il file con il nostro stesso codice:
+se sbagliamo a scrivere e sbagliamo allo stesso modo a rileggere, passa. Ora
+dopo la conversione il DXF viene riletto da **GDAL**, che è già dentro QGIS ed
+è un'implementazione completamente diversa. L'invariante: ogni entità scritta
+deve tornare una feature, sullo stesso layer.
+
+Misurato sul DXF di Mendrisio (209 MB): **468 622 scritte, 468 622 rilette,
+scarto zero** su tutti e 90 i layer, in 9 secondi. Vengono segnalati anche i
+layer non dichiarati nella tabella LAYER (colore e spessore li deciderebbe chi
+apre il file), le coordinate fuori dai limiti di MN95, e i messaggi che GDAL
+scrive per conto suo — che prima finivano su `stderr`, cioè in nessun posto.
+
+Cosa prende e cosa no è **misurato**, costruendo un DXF apposta per ciascun
+difetto: scarta i tipi di entità sconosciuti, la `REGION`, la `POLYLINE` senza
+vertici e quella senza `SEQEND`; legge invece il flag `70=1` sui vertici (che
+era ezdxf a scartare), `MLINE`, il testo senza altezza e l'hatch senza
+contorno. I due lettori non si sostituiscono a vicenda.
+
 ### Scala di stampa
 
 - La scala del layout del piano di base non è più fissata a 1:5000 nel codice:
