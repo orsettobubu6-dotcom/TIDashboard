@@ -1375,6 +1375,104 @@ class TestCartellaDiLavoro(unittest.TestCase):
         self.assertTrue(os.path.isdir(dlg._cartella_di_lavoro()))
 
 
+class TestModelloAOgniPasso(unittest.TestCase):
+    """Il modello dei dati va controllato in tutti i passi, non solo allo
+    scaricamento: un ITF ricevuto per posta e un GeoPackage importato altrove
+    entrano dalle altre porte."""
+
+    TESTA = (b"SCNT\r\nINTERLIS Export\r\n////\r\nMTID INTERLIS1\r\nMODL %s\r\n")
+
+    def _itf(self, nome_modello=b"MD01MUTI7MN95"):
+        percorso = os.path.join(tempfile.mkdtemp(), "prova.itf")
+        with open(percorso, "wb") as f:
+            f.write(self.TESTA % nome_modello)
+        return percorso
+
+    def _dialog_pronta(self, itf):
+        """Una dialog con tutti i campi a posto tranne, eventualmente, il
+        modello: cosi' il pulsante si spegne per quel motivo e non per altri."""
+        dlg = TIDashboardDialog()
+        cartella = tempfile.mkdtemp()
+        jar = os.path.join(cartella, "ili2gpkg.jar")
+        with open(jar, "wb") as f:
+            f.write(b"x")
+        dlg.txt_jar.setText(jar)
+        dlg.txt_itf.setText(itf)
+        dlg.txt_gpkg.setText(os.path.join(cartella, "uscita.gpkg"))
+        return dlg
+
+    def test_il_modello_giusto_lascia_acceso_il_pulsante(self):
+        dlg = self._dialog_pronta(self._itf())
+        self.assertTrue(dlg.btn_import.isEnabled(),
+                        "con tutto a posto l'importazione deve poter partire")
+
+    def test_il_modello_federale_spegne_l_importazione(self):
+        dlg = self._dialog_pronta(self._itf(b"MD01MUCH24MN95I"))
+        self.assertFalse(dlg.btn_import.isEnabled())
+        self.assertIn("MD01MUCH24MN95I", dlg.lbl_esito_import.text())
+        spie = {le: et for le, _s, et, _sc in dlg._campi_percorso}
+        self.assertEqual(spie[dlg.txt_itf].text(), "✖")
+        self.assertIn("MD01MUTI7MN95", spie[dlg.txt_itf].toolTip())
+
+    def test_anche_l_itf_della_conversione_dxf(self):
+        """La conversione puo' lavorare su un ITF diverso da quello importato:
+        e' il caso in cui il modello sbagliato passerebbe inosservato."""
+        dlg = self._dialog_pronta(self._itf())
+        dlg.chk_itf_diverso.setChecked(True)
+        dlg.txt_geobau_itf.setText(self._itf(b"MD01MUCH24MN95I"))
+        dlg.txt_geobau_dxf.setText(os.path.join(tempfile.mkdtemp(), "u.dxf"))
+        self.assertFalse(dlg.btn_geobau.isEnabled())
+        self.assertIn("MD01MUCH24MN95I", dlg.lbl_esito_dxf.text())
+
+    def test_un_modello_illeggibile_avvisa_ma_non_blocca(self):
+        percorso = os.path.join(tempfile.mkdtemp(), "strano.itf")
+        with open(percorso, "wb") as f:
+            f.write(b"SCNT\r\nMTID INTERLIS1\r\n")
+        dlg = self._dialog_pronta(percorso)
+        self.assertTrue(dlg.btn_import.isEnabled(),
+                        "un dubbio non deve togliere una decisione all'utente")
+
+    def test_l_importazione_si_ferma_prima_di_avviare_java(self):
+        """Ultimo controllo: il file puo' essere cambiato da quando lo si e'
+        scelto, e un pulsante acceso non e' una garanzia."""
+        buono = self._itf()
+        dlg = self._dialog_pronta(buono)
+        # il file cambia sotto i piedi, senza passare dall'interfaccia
+        with open(buono, "wb") as f:
+            f.write(self.TESTA % b"MD01MUCH24MN95I")
+        prima = len(_avvisi)
+        dlg.run_import()
+        self.assertGreater(len(_avvisi), prima)
+        self.assertIsNone(getattr(dlg, "_last_itf_path", None),
+                          "non deve nemmeno arrivare a preparare l'importazione")
+
+    def test_la_memoria_rilegge_quando_il_file_cambia(self):
+        dlg = TIDashboardDialog()
+        percorso = self._itf()
+        self.assertEqual(dlg._modello_di(percorso)[0], "ok")
+        import time
+        time.sleep(1.1)              # la memoria e' per (percorso, dimensione, data)
+        with open(percorso, "wb") as f:
+            f.write(self.TESTA % b"MD01MUCH24MN95I")
+        self.assertEqual(dlg._modello_di(percorso)[0], "diverso")
+
+    def test_il_geopackage_di_un_altro_modello_viene_segnalato(self):
+        import sqlite3
+        cartella = tempfile.mkdtemp()
+        percorso = os.path.join(cartella, "altro.gpkg")
+        con = sqlite3.connect(percorso)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (filename TEXT, iliversion TEXT, "
+                    "modelName TEXT, content TEXT, importDate INTEGER)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES "
+                    "('x.ili','1.0','MD01MUCH24MN95I','',0)")
+        con.commit()
+        con.close()
+        dlg = TIDashboardDialog()
+        esito, trovato = dlg._modello_di(percorso, e_gpkg=True)
+        self.assertEqual(esito, "diverso")
+        self.assertEqual(trovato, "MD01MUCH24MN95I")
+
+
 if __name__ == "__main__":
     risultato = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()

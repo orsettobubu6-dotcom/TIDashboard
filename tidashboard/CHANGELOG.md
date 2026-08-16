@@ -13,10 +13,31 @@
   dopo l'estrazione viene ricalcolato e confrontato. Un ITF troncato da una
   connessione caduta è altrimenti indistinguibile da uno buono finché ili2gpkg
   non fallisce a metà, parlando d'altro.
-- Il modello dichiarato nell'ITF viene letto e confrontato con
-  `MD01MUTI7MN95`: se si finisce per sbaglio sul modello federale di
-  geodienste.ch (`MD01MUCH24MN95I`, un modello diverso) lo si scopre subito e
-  non dopo un'importazione fallita.
+### Il modello dei dati, controllato a ogni passo
+
+Il modello sbagliato entra da ogni porta — un ITF ricevuto per posta, un
+GeoPackage importato mesi fa da qualcun altro, un secondo ITF scelto a mano per
+la sola conversione DXF — e un controllo che sta in una porta sola non è un
+controllo. Ora la definizione sta in `modello.py` e la chiamano tutti i passi:
+
+- **scelta del file**: la spia accanto al campo diventa rossa e il pulsante si
+  spegne, con il motivo nel tooltip. Prima lo si scopriva dopo minuti di
+  `ili2gpkg`, con un errore che parlava di classi mancanti invece che di
+  modello sbagliato;
+- **inventario**: il modello è scritto sotto il campo, sempre — anche quando è
+  quello giusto. È la premessa di tutto il resto;
+- **importazione** e **conversione DXF**: riletto un istante prima di avviare
+  Java, perché il file può essere cambiato da quando lo si è scelto;
+- **caricamento del GeoPackage**: letto da `T_ILI2DB_MODEL`, dove `ili2gpkg` lo
+  registra. Qui avvisa e prosegue, invece di bloccare: caricare i layer è
+  proprio l'operazione che permette di guardare cosa è arrivato.
+
+Un modello **diverso** ferma il lavoro; un modello **non dichiarato**
+(intestazione insolita) si limita ad avvisare: il primo è un fatto letto nel
+file, il secondo un'incertezza nostra, e bloccare su un dubbio toglierebbe
+all'utente una decisione che è sua. Quando il modello trovato è quello federale
+di geodienste.ch il messaggio lo dice, e indica il pulsante da cui scaricare
+l'equivalente cantonale.
 
 ### Scala di stampa
 

@@ -49,6 +49,7 @@ try:
     from . import dati_comune as _dati_comune
     from . import inventario as _inventario
     from . import scarica_mu as _scarica_mu
+    from . import modello as _modello
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -74,6 +75,7 @@ except ImportError:
     import dati_comune as _dati_comune
     import inventario as _inventario
     import scarica_mu as _scarica_mu
+    import modello as _modello
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -515,16 +517,13 @@ class DialogScaricaMU(QDialog):
         if not percorso:
             self.lbl_stato.setText("Annullato.")
             return
-        modello = _scarica_mu.modello_dichiarato(percorso)
-        if modello and modello != _scarica_mu.MODELLO_ATTESO:
+        esito, trovato = _modello.controlla_itf(percorso)
+        messaggio = _modello.spiega(esito, trovato, "l'archivio scaricato")
+        if messaggio:
             # Non e' un errore fatale - il file c'e' ed e' integro - ma la
             # catena a valle e' tarata su un modello solo, e scoprirlo qui
             # costa un avviso, scoprirlo dopo costa un'importazione fallita.
-            QMessageBox.warning(
-                self, "Scarica dati MU",
-                "L'archivio dichiara il modello %s invece di %s: il resto del "
-                "plugin e' tarato sul modello cantonale e potrebbe non "
-                "riconoscere le classi." % (modello, _scarica_mu.MODELLO_ATTESO))
+            QMessageBox.warning(self, "Scarica dati MU", messaggio)
         self.percorso_itf = percorso
         self.accept()
 
@@ -1824,6 +1823,74 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return "✖", self._rosso_avviso(), "il file non esiste"
         return "✔", self._verde_ok(), ""
 
+    # --- IL MODELLO, A OGNI PASSO -------------------------------------------
+    # Il modello sbagliato entra da ogni porta: un ITF ricevuto per posta, un
+    # GeoPackage importato mesi fa da qualcun altro, un secondo ITF scelto a
+    # mano per la sola conversione DXF. Il controllo sta quindi dove si sceglie
+    # il file (spia sempre accesa) e di nuovo prima di ogni operazione lunga,
+    # non in un punto solo.
+    def _modello_di(self, percorso, e_gpkg=False):
+        """(esito, modello) con memoria: _convalida_percorsi gira a ogni
+        battuta sulla tastiera, e rileggere il file a ogni tasto sarebbe
+        sprecato. La memoria e' per (percorso, dimensione, data): un file
+        riscritto viene riletto."""
+        percorso = (percorso or "").strip()
+        if not percorso or not os.path.isfile(percorso):
+            return _modello.NON_LEGGIBILE, ""
+        try:
+            stato = os.stat(percorso)
+            chiave = (percorso, stato.st_size, int(stato.st_mtime))
+        except OSError:
+            return _modello.NON_LEGGIBILE, ""
+        memoria = getattr(self, "_memoria_modello", None)
+        if memoria is None:
+            memoria = self._memoria_modello = {}
+        if chiave not in memoria:
+            memoria[chiave] = (_modello.controlla_gpkg(percorso) if e_gpkg
+                               else _modello.controlla_itf(percorso))
+        return memoria[chiave]
+
+    def _campi_con_modello(self):
+        """I campi che puntano a un ITF, cioe' quelli che dichiarano un
+        modello. Sono due perche' la conversione DXF puo' lavorare su un ITF
+        diverso da quello importato: e' proprio il caso in cui il modello
+        sbagliato passerebbe inosservato."""
+        return [c for c in (getattr(self, "txt_itf", None),
+                            getattr(self, "txt_geobau_itf", None)) if c is not None]
+
+    def _registra_modello(self, percorso, esito, trovato):
+        """Una riga di log sola per file: senza, l'inventario ripeterebbe lo
+        stesso avviso a ogni ricalcolo e la console diventerebbe illeggibile."""
+        detti = getattr(self, "_modelli_detti", None)
+        if detti is None:
+            detti = self._modelli_detti = set()
+        if percorso in detti:
+            return
+        detti.add(percorso)
+        if esito == _modello.OK:
+            self.log("   🧬 Modello dei dati: %s (quello atteso)" % trovato)
+        else:
+            self.log("   ⚠️ %s" % _modello.spiega(esito, trovato, "il file scelto"),
+                     Qgis.Warning)
+
+    def _controlla_modello_prima_di(self, percorso, cosa, e_gpkg=False):
+        """Ultimo controllo prima di un'operazione lunga. True = si prosegue.
+
+        Il file puo' essere cambiato da quando lo si e' scelto, e un pulsante
+        acceso non e' una garanzia: si rilegge qui, dove costa un istante e
+        risparmia minuti."""
+        esito, trovato = self._modello_di(percorso, e_gpkg)
+        messaggio = _modello.spiega(esito, trovato, cosa)
+        if not messaggio:
+            return True
+        if _modello.e_bloccante(esito):
+            QMessageBox.warning(self, "Modello dei dati", messaggio)
+            self.log("   ❌ %s" % messaggio, Qgis.Critical)
+            return False
+        # Incertezza, non certezza: si avvisa e si lascia decidere.
+        self.log("   ⚠️ %s" % messaggio, Qgis.Warning)
+        return True
+
     def _convalida_percorsi(self):
         """Aggiorna le spie dei campi e abilita i pulsanti solo quando la
         rispettiva scheda e' completa."""
@@ -1832,6 +1899,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         mancanti = {"import": [], "dxf": []}
         for line_edit, is_save, etichetta, scheda in self._campi_percorso:
             simbolo, colore, motivo = self._stato_percorso(line_edit.text(), is_save)
+            # Un percorso valido non basta: se il file c'e' ma dichiara un
+            # altro modello, la spia lo dice subito e il pulsante resta spento.
+            # Prima lo si scopriva dopo minuti di ili2gpkg, con un errore che
+            # parlava di classi mancanti invece che di modello sbagliato.
+            if not motivo and line_edit in self._campi_con_modello():
+                esito, trovato = self._modello_di(line_edit.text())
+                if _modello.e_bloccante(esito):
+                    simbolo, colore = "✖", self._rosso_avviso()
+                    motivo = _modello.spiega(esito, trovato, "il file scelto")
             etichetta.setText(simbolo)
             etichetta.setStyleSheet("color: %s; font-weight: bold;" % colore)
             etichetta.setToolTip(motivo)
@@ -2578,7 +2654,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if assenti:
             testo += ("<br><span style='color:#E65100'>Mancano: %s</span>"
                       % ", ".join(assenti))
+        # Il modello si dice SEMPRE, anche quando e' quello giusto: e' la
+        # premessa di tutto quello che il plugin fa dopo, e vederla scritta
+        # costa una riga mentre scoprirla sbagliata costa un'importazione.
+        esito, trovato = _modello.controlla_itf(percorso)
+        if esito == _modello.OK:
+            testo += ("<br><span style='color:%s'>Modello %s ✔</span>"
+                      % (self._verde_ok(), trovato))
+        else:
+            testo += ("<br><span style='color:%s'>%s</span>"
+                      % (self._rosso_avviso(),
+                         _modello.spiega(esito, trovato, "questo ITF")))
         self.lbl_inventario.setText(testo)
+        self._registra_modello(percorso, esito, trovato)
         self.log("   📦 %s" % _inventario.riassunto(classi, totale, quante_in_testa=5))
         if assenti:
             self.log("   ⚠️ Nella consegna non ci sono: %s" % ", ".join(assenti),
@@ -2854,6 +2942,12 @@ class TIDashboardDialog(StiliMixin, QDialog):
                                 "Reinstalla %s." % (ili_path, NOME_PLUGIN))
             self.log("   ❌ Modello in dotazione mancante: %s" % ili_path, Qgis.Critical)
             return
+        # Il modello DEI DATI, che e' un'altra cosa dal .ili in dotazione: qui
+        # si controlla che l'ITF sia davvero ticinese. La spia del campo lo dice
+        # gia', ma il file puo' essere cambiato da allora e un'importazione dura
+        # minuti - riletto qui, costa un istante.
+        if not self._controlla_modello_prima_di(str(itf_path), "l'ITF da importare"):
+            return
         self._last_itf_path = itf_path
         self._import_unique_errors = []
         # Azzerato a ogni importazione, se no i punti della volta prima
@@ -2998,6 +3092,29 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if not gpkg_path.exists():
             self.log(f"❌ File GeoPackage non trovato: {gpkg_path}", Qgis.Critical)
             return
+
+        # Il modello anche qui, che e' il passo in cui puo' arrivare un
+        # GeoPackage importato altrove: ili2gpkg lo registra in T_ILI2DB_MODEL,
+        # e da li' si legge senza dover riaprire l'ITF (che potrebbe non esserci
+        # nemmeno piu').
+        #
+        # QUI SI AVVISA E SI PROSEGUE, mentre sull'ITF si blocca. Non e' una
+        # svista: importare e convertire sono operazioni lunghe che non possono
+        # riuscire con il modello sbagliato, e fermarle risparmia minuti;
+        # caricare dei layer e' invece la cosa che permette all'utente di
+        # GUARDARE cosa gli e' arrivato. Rifiutarsi di mostrarglielo non lo
+        # aiuterebbe - gli stili non troveranno le tabelle attese, e l'avviso
+        # dice perche' invece di lasciarlo davanti a un progetto vuoto.
+        esito_mod, trovato_mod = self._modello_di(str(gpkg_path), e_gpkg=True)
+        if esito_mod == _modello.OK:
+            self.log("   🧬 Modello del GeoPackage: %s (quello atteso)" % trovato_mod)
+        else:
+            self.log("   ⚠️ %s" % _modello.spiega(esito_mod, trovato_mod,
+                                                  "il GeoPackage"), Qgis.Warning)
+            if _modello.e_bloccante(esito_mod):
+                QMessageBox.warning(self, "Modello dei dati",
+                                    _modello.spiega(esito_mod, trovato_mod,
+                                                    "il GeoPackage"))
 
         # Rimuovi i layer caricati da un'esecuzione precedente in questa stessa
         # sessione QGIS. Senza questo, i layer vecchi restano nel progetto ma
@@ -4795,6 +4912,13 @@ class TIDashboardDialog(StiliMixin, QDialog):
                                  "Compila tutti i campi di av2geobau (JAR, ITF, DXF e il modello .ili "
                                  "nel gruppo 1, necessario per risolvere --modeldir).")
             self.log("   ❌ Campi mancanti!")
+            return
+
+        # La conversione DXF puo' lavorare su un ITF diverso da quello
+        # importato (la spunta "ITF diverso"): e' il caso in cui un modello
+        # sbagliato passerebbe piu' facilmente inosservato, perche' quel file
+        # non e' mai passato dall'importazione.
+        if not self._controlla_modello_prima_di(str(itf_path), "l'ITF da convertire"):
             return
 
         java_exe = self.find_java()

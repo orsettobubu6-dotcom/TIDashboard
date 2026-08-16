@@ -30,6 +30,11 @@ import re
 import zipfile
 from urllib.request import Request, urlopen
 
+try:
+    from .modello import MODELLO_ATTESO, modello_di_itf
+except ImportError:              # importato come modulo top-level (test)
+    from modello import MODELLO_ATTESO, modello_di_itf
+
 # Il portale e' un TYPO3: l'identificativo del prodotto e' la versione del
 # modello, quindi cambiera' se e quando il Cantone passera' a un modello nuovo.
 PRODOTTO = "ti_mu_version1_7_mn95"
@@ -37,7 +42,6 @@ URL_INDICE = "https://data.geo.ti.ch/?p=" + PRODOTTO
 URL_ARCHIVIO = "https://data.geo.ti.ch/geodata/%s/%%s" % PRODOTTO
 URL_CONDIZIONI = ("https://www4.ti.ch/dt/sg/sai/ugeo/temi/geoportale-ticino/"
                   "geoportale/condizioni-di-utilizzo")
-MODELLO_ATTESO = "MD01MUTI7MN95"
 
 # Il portale non e' un servizio a contratto: un'attesa lunga e' un guasto, non
 # una coda. Trenta secondi per l'indice (81 KB), di piu' per gli archivi, che
@@ -252,13 +256,7 @@ def estrai_itf(percorso_zip, cartella, log=None):
 
 
 def modello_dichiarato(percorso_itf):
-    """La riga MODL dell'ITF, cioe' il modello dei dati. Si legge solo la testa
-    del file: l'intestazione INTERLIS 1 sta nelle prime righe e i file arrivano
-    a centinaia di MB."""
-    try:
-        with open(percorso_itf, "rb") as f:
-            testa = f.read(4096).decode("latin-1", "replace")
-    except OSError:
-        return ""
-    m = re.search(r"^MODL\s+(\S+)", testa, re.M)
-    return m.group(1) if m else ""
+    """La riga MODL dell'ITF. Rinvio a modello.modello_di_itf: la definizione
+    di cosa sia il modello giusto sta in un posto solo, perche' ora la
+    controllano tutti i passi e non piu' il solo scaricamento."""
+    return modello_di_itf(percorso_itf)
