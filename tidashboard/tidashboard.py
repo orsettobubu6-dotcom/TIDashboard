@@ -620,6 +620,11 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # tendina invece di un campo libero rende impossibile sbagliarla.
         self.combo_scala.addItems(["1:%d" % s for s in _planimetria.SCALE_UFFICIALI_MU])
         self.combo_scala.setCurrentText("1:1000")
+        # activated, non currentIndexChanged: il primo scatta SOLO quando a
+        # cambiare la voce e' l'utente. Serve a distinguere una scala scelta da
+        # una scala di partenza, cosi' il cambio di prodotto puo' proporre la
+        # scala di riferimento senza mai sovrascrivere una decisione presa.
+        self.combo_scala.activated.connect(self._scala_scelta_dall_utente)
         riga_plan.addWidget(self.combo_scala)
 
         riga_plan.addWidget(QLabel("Rotazione (gon):"))
@@ -1030,6 +1035,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def on_product_changed(self, index):
         self.product_mode = self.combo_product.currentData()
         self._aggiorna_pulsante_layout()
+        # La scala di stampa parte da quella di riferimento del prodotto (1:1000
+        # per il piano RF, 1:5000 per il piano di base): e' la scala a cui il
+        # prodotto e' pensato, ed e' il valore che il PB-MU aveva fisso nel
+        # codice. Ma se l'utente ne ha scelta una A MANO non si tocca: la scala
+        # di stampa la decide lui, e cambiare prodotto non e' un modo per
+        # revocargliela.
+        if not getattr(self, "_scala_scelta_a_mano", False):
+            riferimento = _planimetria.SCALA_RIFERIMENTO.get(self.product_mode)
+            if riferimento in _planimetria.SCALE_UFFICIALI_MU:
+                self.combo_scala.setCurrentText("1:%d" % riferimento)
         # Il fattore dipende dal prodotto: la scala di riferimento e' 1:1000 per
         # il piano RF e 1:5000 per il piano di base, quindi cambiando prodotto
         # cambia anche quanto il limite di leggibilita' morde.
@@ -1105,6 +1120,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
             colore, coda = "#2E7D32", "<br>Proporzione esatta della norma."
         self.lbl_fattore.setText("<span style='color:%s'>%s%s</span>"
                                  % (colore, testo, coda))
+
+    def _scala_scelta_dall_utente(self, _indice=None):
+        """L'utente ha scelto la scala di stampa: da qui in poi comanda lei."""
+        self._scala_scelta_a_mano = True
 
     def _aggiorna_pulsante_layout(self):
         """Il layout del piano di base ha senso solo in modalita' PB-MU."""
@@ -1247,6 +1266,13 @@ class TIDashboardDialog(StiliMixin, QDialog):
                     widget.setChecked(str(valore).lower() in ("true", "1"))
             except (TypeError, ValueError):
                 continue    # un valore corrotto non deve impedire l'avvio
+            if chiave == "scala":
+                # Una scala ripristinata resta una scala scelta dall'utente,
+                # solo in una sessione precedente: cambiare prodotto non deve
+                # riportarla alla scala di riferimento. Senza questa riga
+                # l'ordine dell'elenco qui sopra (prodotto prima di scala)
+                # sarebbe l'unica cosa a salvarla.
+                self._scala_scelta_a_mano = True
         self._convalida_percorsi()
 
     def _salva_impostazioni(self):
@@ -3706,18 +3732,26 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def create_layout_bp(self):
         """Crea un layout per il piano di base (PB-MU): mappa a tutto foglio
         (meno i margini per titolo e barra di scala), titolo e barra di scala
-        collegata alla mappa. La scala di stampa e' fissa a 1:5000
-        (hardcoded: scala tipica del piano di base per un intero foglio
-        comunale, richiesta corrente dell'utente) - ma ora e' applicata
-        DAVVERO alla mappa via setScale(5000), non solo scritta nel titolo:
-        la versione precedente creava un layout con la sola etichetta e una
-        barra di scala non collegata a nessuna mappa (niente QgsLayoutItemMap
-        nel layout, quindi il PDF esportato non mostrava alcuna mappa)."""
+        collegata alla mappa.
+
+        LA SCALA E' QUELLA SCELTA nel menu "Scala", non piu' 1:5000 fisso nel
+        codice. Il valore 1:5000 era la scala tipica del piano di base ed era
+        scritto in due punti - setScale e il titolo - senza che nulla lo legasse
+        al menu: chi sceglieva 1:1000 otteneva comunque un foglio 1:5000, con
+        sopra stampato "Scala: 1:5000", cioe' un foglio coerente con se stesso e
+        con nient'altro. Ora 1:5000 resta il PUNTO DI PARTENZA (on_product_changed
+        lo preseleziona passando a PB-MU) ma e' una proposta, non un vincolo.
+
+        La versione ancora precedente creava un layout con la sola etichetta e
+        una barra di scala non collegata a nessuna mappa (niente
+        QgsLayoutItemMap nel layout, quindi il PDF esportato non mostrava
+        alcuna mappa)."""
         if not self.loaded_layers:
             self.log("   ⚠️ Nessun layer caricato, skip layout")
             return
 
-        self.log("   📐 Creazione layout PB-MU...")
+        _formato, scala, _rot, _com, _data = self._parametri_planimetria()
+        self.log("   📐 Creazione layout PB-MU (scala 1:%d)..." % scala)
         project = QgsProject.instance()
         # QgsPrintLayout, non QgsLayout: solo il primo ha setName e puo' essere
         # registrato nel gestore dei layout. Con QgsLayout questo metodo
@@ -3725,7 +3759,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # alcun layout.
         layout = QgsPrintLayout(project)
         layout.initializeDefaults()
-        layout.setName("Basisplan_PB-MU")
+        # Il nome porta la scala: ora che non e' piu' fissa, due layout a scale
+        # diverse sono due fogli diversi. Con il nome unico "Basisplan_PB-MU" il
+        # secondo si sarebbe scontrato con il primo nel gestore dei layout.
+        layout.setName("Basisplan_PB-MU_1-%d" % scala)
 
         page = layout.pageCollection().page(0)
         page_w = page.sizeWithUnits().width()
@@ -3759,15 +3796,17 @@ class TIDashboardDialog(StiliMixin, QDialog):
                     n_ext += 1
         if not extent.isEmpty():
             map_item.setExtent(extent)          # centra la mappa sull'unione
-            map_item.setScale(5000)             # scala fissa 1:5000 (vedi docstring)
-            self.log(f"   🗺️ Mappa: extent da {n_ext} layer, scala 1:5000")
+            # setExtent PRIMA di setScale: l'estensione fissa il centro, la
+            # scala poi ridimensiona attorno a quel centro senza spostarlo.
+            map_item.setScale(float(scala))
+            self.log(f"   🗺️ Mappa: extent da {n_ext} layer, scala 1:{scala}")
         else:
             self.log("   ⚠️ Nessun extent valido dai layer caricati: la mappa "
                       "resta con l'estensione di default del layout.", Qgis.Warning)
 
         _ensure_cadastra_text_font_loaded()
         title_label = QgsLayoutItemLabel(layout)
-        title_label.setText(f"Piano di base della misurazione ufficiale\nScala: 1:5000\nData: {datetime.now().strftime('%d.%m.%Y')}\nLegenda: www.cadastre.ch/legende")
+        title_label.setText(f"Piano di base della misurazione ufficiale\nScala: 1:{scala}\nData: {datetime.now().strftime('%d.%m.%Y')}\nLegenda: www.cadastre.ch/legende")
         title_label.setFont(QFont(CADASTRA_TEXT_FAMILY, 10))
         title_label.adjustSizeToText()
         layout.addLayoutItem(title_label)
@@ -3787,8 +3826,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         scalebar.applyDefaultSize()
         scalebar.update()
 
-        project.layoutManager().addLayout(layout)
-        self.log("   ✅ Layout creato: Basisplan_PB-MU")
+        # Un layout con lo stesso nome c'e' gia' quando si rigenera lo stesso
+        # foglio: si sostituisce, altrimenti addLayout fallisce in silenzio e
+        # resta appeso quello vecchio, che e' il modo peggiore di scoprirlo.
+        gestore = project.layoutManager()
+        vecchio = gestore.layoutByName(layout.name())
+        if vecchio is not None:
+            gestore.removeLayout(vecchio)
+        gestore.addLayout(layout)
+        self.log("   ✅ Layout creato: %s" % layout.name())
 
         reply = QMessageBox.question(self, "Esporta PDF", "Layout creato. Vuoi esportarlo in PDF/A?", _MB_SI | _MB_NO)
         if reply == _MB_SI:

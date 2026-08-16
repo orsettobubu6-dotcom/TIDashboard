@@ -1179,6 +1179,103 @@ class TestTrascinamentoDelFoglio(unittest.TestCase):
         self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX + 25, places=6)
 
 
+class TestScalaDiStampa(unittest.TestCase):
+    """La scala di stampa la sceglie l'utente: quella della vista non c'entra,
+    e nemmeno il prodotto puo' scavalcarla.
+
+    Il difetto: create_layout_bp aveva 1:5000 scritto nel codice in due punti
+    (setScale e il titolo) e non guardava affatto il menu "Scala". Chi
+    sceglieva 1:1000 riceveva un foglio 1:5000."""
+
+    def _dialog_bp(self):
+        dlg = TIDashboardDialog()
+        dlg.combo_product.setCurrentIndex(
+            dlg.combo_product.findData("bp"))
+        return dlg
+
+    def test_il_layout_pb_usa_la_scala_scelta_non_1_5000(self):
+        from qgis.core import QgsLayoutItemMap
+        dlg = self._dialog_bp()
+        dlg.combo_scala.setCurrentText("1:1000")
+        dlg.loaded_layers = [_layer()]
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
+        dlg.create_layout_bp()
+        layout = QgsProject.instance().layoutManager().layoutByName(
+            "Basisplan_PB-MU_1-1000")
+        self.assertIsNotNone(layout, "il layout non e' stato registrato")
+        mappe = [i for i in layout.items() if isinstance(i, QgsLayoutItemMap)]
+        self.assertEqual(len(mappe), 1)
+        self.assertAlmostEqual(mappe[0].scale(), 1000.0, places=3)
+        testi = [i.text() for i in layout.items() if hasattr(i, "text")]
+        self.assertTrue(any("Scala: 1:1000" in t for t in testi),
+                        "il titolo non dichiara la scala usata: %s" % testi)
+        QgsProject.instance().layoutManager().removeLayout(layout)
+
+    def test_passando_a_pb_mu_la_scala_parte_da_1_5000(self):
+        dlg = TIDashboardDialog()
+        # La dialog ricorda la scala fra una sessione e l'altra (QgsSettings):
+        # si riparte da uno stato noto, com'e' alla primissima apertura.
+        dlg.combo_scala.setCurrentText("1:1000")
+        dlg._scala_scelta_a_mano = False
+        dlg.combo_product.setCurrentIndex(dlg.combo_product.findData("bp"))
+        self.assertEqual(dlg.combo_scala.currentText(), "1:5000")
+
+    def test_una_scala_ripristinata_vale_come_scelta(self):
+        """Il ripristino delle impostazioni non deve poter essere scavalcato
+        dal cambio di prodotto: la scala salvata e' pur sempre una scelta,
+        fatta in una sessione precedente."""
+        from qgis.core import QgsSettings
+        from tidashboard.tidashboard import NOME_PLUGIN
+        chiave = "%s/scala" % NOME_PLUGIN
+        impostazioni = QgsSettings()
+        prima = impostazioni.value(chiave, None)
+        impostazioni.setValue(chiave, "1:250")
+        try:
+            dlg = TIDashboardDialog()
+            dlg._scala_scelta_a_mano = False
+            dlg._ripristina_impostazioni()
+            self.assertEqual(dlg.combo_scala.currentText(), "1:250")
+            self.assertTrue(dlg._scala_scelta_a_mano)
+            dlg.combo_product.setCurrentIndex(dlg.combo_product.findData("bp"))
+            self.assertEqual(dlg.combo_scala.currentText(), "1:250")
+        finally:
+            if prima is None:
+                impostazioni.remove(chiave)
+            else:
+                impostazioni.setValue(chiave, prima)
+
+    def test_una_scala_scelta_a_mano_non_viene_sovrascritta(self):
+        dlg = TIDashboardDialog()
+        dlg.combo_scala.setCurrentText("1:500")
+        dlg._scala_scelta_dall_utente()      # cio' che fa il segnale activated
+        dlg.combo_product.setCurrentIndex(dlg.combo_product.findData("bp"))
+        self.assertEqual(dlg.combo_scala.currentText(), "1:500")
+
+
+class TestScalaFoglioIndipendenteDallaVista(unittest.TestCase):
+    """Il foglio esce alla scala scelta qualunque sia lo zoom della mappa."""
+
+    def test_la_scala_del_foglio_e_quella_scelta(self):
+        from qgis.core import QgsLayoutItemMap
+        prog = QgsProject.instance()
+        lyr = _layer()
+        prog.addMapLayer(lyr)
+        for scala in P.SCALE_UFFICIALI_MU:
+            layout = P.crea_planimetria(
+                prog, [lyr], QgsPointXY(CX, CY), scala,
+                formato="A4 orizzontale", comune="Prova",
+                nome="scala_%d" % scala, log=lambda *a, **k: None)
+            mappa = [i for i in layout.items()
+                     if isinstance(i, QgsLayoutItemMap)][0]
+            self.assertAlmostEqual(mappa.scale(), float(scala), places=3)
+            # e l'estensione e' quella che quella scala impone sul foglio
+            larghezza_mm, _h = P.area_mappa("A4 orizzontale")
+            self.assertAlmostEqual(mappa.extent().width(),
+                                   larghezza_mm / 1000.0 * scala, places=3)
+            prog.layoutManager().removeLayout(layout)
+        prog.removeMapLayer(lyr.id())
+
+
 if __name__ == "__main__":
     risultato = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()
