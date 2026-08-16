@@ -13,6 +13,35 @@
   dopo l'estrazione viene ricalcolato e confrontato. Un ITF troncato da una
   connessione caduta è altrimenti indistinguibile da uno buono finché ili2gpkg
   non fallisce a metà, parlando d'altro.
+### I simboli uscivano al 75% della misura prescritta
+
+Confronto dei capitoli 2 e 5 dell'istruzione contro il font CADASTRA in
+dotazione, glifo per glifo. Ne sono usciti due difetti veri.
+
+**I simboli per i punti erano tutti troppo piccoli di un quarto.** La tabella
+che converte la grandezza voluta nella dimensione del font era stata misurata
+con `QFontMetricsF` «a corpo 1000 pt», ma Qt disegna i punti a 96 dpi contro i
+72 della definizione tipografica: quell'em misurava 1333 pixel e non 1000, e
+ogni frazione risultava 4/3 troppo grande. Siccome la dimensione effettiva si
+ottiene *dividendo* per la frazione, ogni simbolo usciva al 75%.
+
+Misurato disegnando i simboli a 600 dpi e contando l'inchiostro: da −19.6% a
+−25.9% su 24 tasti, mentre un cerchio di dimensione dichiarata usciva giusto
+allo 0.5%. Dopo la correzione lo scarto massimo è +2.8%. I valori ora si
+leggono dal file del font (bounding box diviso unitsPerEm) invece che a
+schermo. Il percorso SVG, usato per le trame di vigna, canneto e torbiera, non
+aveva il difetto: là la misura non passa dai punti tipografici.
+
+**Due grandezze di scrittura erano sbagliate** (cap. 5.5 e 5.6): il numero di
+edificio stava a 1.5 mm invece di 1.8 — 7 672 iscrizioni sul solo comune di
+Mendrisio — e il nome degli oggetti singoli a 2.2 invece di 2.5. Il 2.2
+appartiene al cap. 5.9, `elemento_condotta`: le due tabelle stanno sulla stessa
+pagina e in una trascrizione a colonne il valore era migrato da una all'altra.
+
+Entrambi i difetti sono ora presidiati da test che **disegnano** il simbolo e
+lo misurano, invece di confrontare una costante con un'altra costante: la
+tabella sbagliata era perfettamente coerente con se stessa.
+
 ### Il modello dei dati, controllato a ogni passo
 
 Il modello sbagliato entra da ogni porta — un ITF ricevuto per posta, un

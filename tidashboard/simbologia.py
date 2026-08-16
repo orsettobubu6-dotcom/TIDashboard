@@ -170,36 +170,50 @@ def _ensure_cadastra_text_font_loaded():
         _load_font_file(os.path.join(FONTS_DIR, fname))
     _cadastra_text_font_loaded = True
 
-# Frazione ink/dimensione-nominale per i tasti CadastraSymbol usati da
-# Punto_di_confine/PFP/PFA/Segnale condotta, misurata con
-# QFontMetricsF.tightBoundingRect() a corpo 1000pt (script one-off, non
-# incluso nel plugin) - stesso motivo della tabella _SVG_INK_FRACTION: la
-# dimensione nominale passata a QgsFontMarkerSymbolLayer non e' la dimensione
-# visibile del glifo. Font Regular e Mask hanno bounding box quasi identici
-# per ogni tasto (stesso contorno esterno, la differenza e' il riempimento
-# pieno invece che cavo) tranne 'I', dove il glifo Mask e' disegnato
-# volutamente piu' grande (fraz. 0.15 contro 0.099 del Regular) - un punto
-# non materializzato e' cosi' piccolo che il solo riempimento pieno non
-# basterebbe a renderlo leggibile come alone.
+# Frazione fra l'ink del glifo e la dimensione nominale del font, per i tasti
+# CadastraSymbol. Serve perche' la dimensione passata a
+# QgsFontMarkerSymbolLayer e' quella dell'em, non quella VISIBILE del segno:
+# senza compensazione un simbolo chiesto a 3.2 mm ne misura 1.4.
+#
+# I valori sono ora letti DAL FILE DEL FONT (bounding box del glifo diviso
+# unitsPerEm, fontTools sul CadastraSymbol-Regular.ttf in dotazione), non piu'
+# misurati a schermo.
+#
+# ERRORE CORRETTO QUI, e vale la pena raccontarlo perche' era invisibile.
+# La tabella precedente veniva da QFontMetricsF.tightBoundingRect() "a corpo
+# 1000pt": ma Qt disegna i punti a 96 dpi contro i 72 dpi della definizione
+# tipografica, quindi quell'em misurava 1333 pixel e non 1000. Ogni frazione
+# risultava 4/3 troppo grande, e siccome la dimensione effettiva si ottiene
+# DIVIDENDO per la frazione, ogni simbolo usciva al 75% della misura prescritta.
+# Misurato rendendo i simboli su un'immagine a 600 dpi e contando l'inchiostro:
+# scarto da -19.6% a -25.9% su tutti e 24 i tasti provati, mentre un cerchio
+# semplice di dimensione dichiarata usciva giusto allo 0.5-1.6% (l'antialiasing).
+# Il rapporto fra vecchi e nuovi valori e' 1.3347 in media su 33 glifi
+# (min 1.3329, max 1.3432): 4/3, con la dispersione del rumore di misura.
+#
+# Font Regular e Mask hanno bounding box identici per ogni tasto (stesso
+# contorno esterno, la differenza e' il riempimento pieno invece che cavo)
+# tranne 'I', dove il glifo Mask e' disegnato volutamente piu' grande.
 _FONT_INK_FRACTION = {
-    'A': 0.5972, 'B': 0.7097, 'C': 0.3579, 'D': 0.3579, 'E': 0.2989, 'F': 0.2250,
-    'G': 0.1869, 'H': 0.3426, 'I': 0.0994, 'J': 0.4858, 'K': 0.4858, 'L': 0.4858,
-    'M': 0.4858, 'N': 0.6727, 'P': 0.6727, 'Q': 0.6727, 'R': 0.6727,
-    'l': 0.7474, 'm': 0.7474,
-    # Elemento_puntiforme (o/g/i/k/h/p/n/f/u/y/q/a): stessa misurazione,
-    # QFontMetricsF.tightBoundingRect a corpo 1000pt. 'u' (Rovina/oggetto
-    # archeologico) e' un caso noto: il font Mask non ha il glifo corretto
-    # (ripiega su un fallback testuale, verificato via QRawFont.
-    # supportsCharacter()==False e via render) - l'alone per 'u' risultera'
-    # visibilmente sbagliato (una lettera "u" invece di un alone a L), difetto
-    # accettato esplicitamente dall'utente invece di lasciare 'u' sugli SVG.
-    'o': 0.7478, 'g': 0.7465, 'i': 0.7471, 'k': 0.7470, 'h': 0.7474, 'p': 0.7481,
-    'n': 0.9304, 'f': 0.6038, 'u': 0.4488, 'y': 0.7470, 'q': 0.5978, 'a': 1.1202,
-    # make_font_marker_line (Confine_nazionale/Confine_cantonale): stessa misurazione.
-    '3': 0.3739, '4': 0.5612,
+    'A': 0.4480, 'B': 0.5320, 'C': 0.2680, 'D': 0.2680, 'E': 0.2240, 'F': 0.1680,
+    'G': 0.1400, 'H': 0.2570, 'I': 0.0740, 'J': 0.3640, 'K': 0.3640, 'L': 0.3640,
+    'M': 0.3640, 'N': 0.5040, 'P': 0.5040, 'Q': 0.5040, 'R': 0.5040,
+    'l': 0.5600, 'm': 0.5600,
+    # Elemento_puntiforme (o/g/i/k/h/p/n/f/u/y/q/a). 'u' (Rovina/oggetto
+    # archeologico) resta un caso noto: il font Mask non ha il glifo (verificato
+    # anche leggendo la cmap del file: il carattere non e' mappato), quindi
+    # l'alone per 'u' e' un ripiego testuale sbagliato - difetto accettato
+    # esplicitamente dall'utente invece di lasciare 'u' sugli SVG.
+    'o': 0.5610, 'g': 0.5600, 'i': 0.5600, 'k': 0.5600, 'h': 0.5600, 'p': 0.5610,
+    'n': 0.6980, 'f': 0.4530, 'u': 0.3360, 'y': 0.5600, 'q': 0.4480, 'a': 0.8400,
+    # make_font_marker_line (Confine_nazionale/Confine_cantonale).
+    '3': 0.2800, '4': 0.4210,
 }
-_FONT_INK_FRACTION_MASK_I = 0.1500  # vedi nota sopra: solo 'I' differisce tra Regular e Mask
-_FONT_INK_FRACTION_DEFAULT = 0.5
+# Vedi la nota sopra: solo 'I' ha un glifo diverso fra Regular e Mask, disegnato
+# apposta piu' grande perche' un punto non materializzato e' troppo piccolo
+# perche' il solo riempimento pieno faccia da alone.
+_FONT_INK_FRACTION_MASK_I = 0.1120
+_FONT_INK_FRACTION_DEFAULT = 0.375
 
 def _font_effective_size(ch, desired_mm, mask=False):
     """Converte la grandezza VISIBILE desiderata (in mm) nel valore di 'size'

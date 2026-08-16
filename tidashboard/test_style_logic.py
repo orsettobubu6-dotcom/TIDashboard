@@ -588,6 +588,86 @@ class TestExtractLv95Coords(unittest.TestCase):
         self.assertIsNone(self._extract(""))
 
 
+class TestGrandezzaDeiSimboliDisegnati(unittest.TestCase):
+    """Il simbolo che finisce sulla carta misura quello che la norma chiede?
+
+    Non si controlla una costante contro un'altra costante: si DISEGNA il
+    simbolo su un'immagine a DPI noto e si conta l'inchiostro. E' l'unico modo
+    in cui l'errore che questo test presidia si sarebbe visto - la tabella
+    _FONT_INK_FRACTION era coerente con se stessa e sbagliata di 4/3, perche'
+    misurata attraverso la conversione punti->pixel di Qt (96 dpi contro i 72
+    della definizione tipografica). Ogni simbolo usciva al 75% della misura
+    prescritta dal cap. 2 e nessun confronto fra costanti poteva accorgersene.
+
+    Il banco di prova e' tarato sul caso semplice: un cerchio di dimensione
+    dichiarata deve misurare quella dimensione. Se sbagliasse li', il resto
+    non proverebbe niente."""
+
+    DPI = 600.0
+    LATO = 700
+    # (tasto, mm prescritti dal cap. 2.2/2.3)
+    CASI = (("A", 3.2), ("B", 3.6), ("E", 1.4), ("H", 2.4), ("N", 3.4),
+            ("f", 4.5), ("n", 5.0), ("a", 6.0))
+    TOLLERANZA = 0.06        # 6%: antialiasing e differenza contorno/inchiostro
+
+    def _ink_mm(self, livelli):
+        from qgis.core import QgsMarkerSymbol, QgsRenderContext
+        from qgis.PyQt.QtGui import QImage, QPainter, QColor
+        from qgis.PyQt.QtCore import QPointF
+        sym = QgsMarkerSymbol(livelli)
+        img = QImage(self.LATO, self.LATO, QImage.Format.Format_ARGB32)
+        punti_per_metro = int(self.DPI / 25.4 * 1000)
+        img.setDotsPerMeterX(punti_per_metro)
+        img.setDotsPerMeterY(punti_per_metro)
+        img.fill(QColor(255, 255, 255))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        ctx = QgsRenderContext.fromQPainter(p)
+        sym.startRender(ctx)
+        sym.renderPoint(QPointF(self.LATO / 2.0, self.LATO / 2.0), None, ctx)
+        sym.stopRender(ctx)
+        p.end()
+        xs, ys = [], []
+        for y in range(self.LATO):
+            for x in range(self.LATO):
+                c = img.pixelColor(x, y)
+                if c.red() < 200 or c.green() < 200 or c.blue() < 200:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return None
+        k = ctx.scaleFactor()
+        return max((max(xs) - min(xs) + 1) / k, (max(ys) - min(ys) + 1) / k)
+
+    def test_il_banco_di_prova_misura_giusto_un_cerchio(self):
+        from qgis.core import QgsSimpleMarkerSymbolLayer, QgsUnitTypes
+        for mm in (0.8, 3.2):
+            l = QgsSimpleMarkerSymbolLayer.create(
+                {"name": "circle", "size": str(mm), "color": "0,0,0,255",
+                 "outline_style": "no"})
+            l.setSizeUnit(QgsUnitTypes.RenderUnit.RenderMillimeters)
+            reso = self._ink_mm([l])
+            self.assertAlmostEqual(reso / mm, 1.0, delta=self.TOLLERANZA,
+                                   msg="il banco sbaglia sul cerchio da %.1f mm "
+                                       "(reso %.3f): la misura sui simboli non "
+                                       "proverebbe niente" % (mm, reso))
+
+    def test_ogni_simbolo_misura_quello_che_la_norma_chiede(self):
+        from simbologia import (make_true_font_marker_with_mask,
+                                _ensure_cadastra_text_font_loaded)
+        _ensure_cadastra_text_font_loaded()
+        for tasto, mm in self.CASI:
+            # solo il livello REGOLARE: la maschera e' piu' grande apposta
+            # (alone) e misurerebbe il contorno bianco, non il segno.
+            livelli = make_true_font_marker_with_mask(tasto, sz=mm)[-1:]
+            reso = self._ink_mm(livelli)
+            self.assertIsNotNone(reso, "il tasto %r non ha disegnato nulla" % tasto)
+            self.assertAlmostEqual(
+                reso / mm, 1.0, delta=self.TOLLERANZA,
+                msg="tasto %r: la norma chiede %.2f mm, ne misura %.3f (%+.1f%%)"
+                    % (tasto, mm, reso, (reso - mm) / mm * 100))
+
+
 class TestGrandezzeDelCapitolo5(unittest.TestCase):
     """Le grandezze delle scritture contro il testo dell'istruzione.
 
