@@ -11,7 +11,9 @@
 #
 # Tre vincoli normativi guidano il modulo:
 #  - le SCALE ammesse sono solo quelle elencate da circ154_allegato2 cap.1.5.1;
-#  - il CARTIGLIO deve riportare le 7 iscrizioni obbligatorie del cap.1.5.7;
+#  - il CARTIGLIO deve riportare le NOVE iscrizioni obbligatorie del cap.1.5.7
+#    nella versione in vigore (stato 1.2.2014); la versione marzo 2007 ne
+#    elencava sette - vedi H_CARTIGLIO;
 #  - le dimensioni di simboli e scritture sono definite per una scala di
 #    RIFERIMENTO - 1:1000 per il piano RF (cap.1.5.2), 1:5000 per il piano di
 #    base (Weisung-BP-AV cap.2.2) - e a scale diverse va applicato un FATTORE DI
@@ -817,7 +819,7 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     riquadro.attemptSetSceneRect(QRectF(MARGINE, y_cart, larghezza - 2 * MARGINE, H_CARTIGLIO))
     layout.addLayoutItem(riquadro)
 
-    # Le 7 iscrizioni obbligatorie del cap.1.5.7, disposte su TRE COLONNE che
+    # Le NOVE iscrizioni obbligatorie del cap.1.5.7, disposte su TRE COLONNE che
     # non si toccano: testi a sinistra, rotazione e barra di scala al centro,
     # freccia nord a destra. La versione precedente posizionava gli elementi a
     # frazioni fisse della larghezza e i riquadri si sovrapponevano in tutti i

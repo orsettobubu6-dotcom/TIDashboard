@@ -4682,7 +4682,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                                 "non so su cosa centrare il foglio.")
             return
         formato, scala, rotazione, comune, data_validita = self._parametri_planimetria()
-        # Il comune e' una delle sette iscrizioni obbligatorie del cap.1.5.7:
+        # Il comune e' una delle nove iscrizioni obbligatorie del cap.1.5.7:
         # senza, il cartiglio stampava "Comune di —" e la planimetria usciva
         # non conforme senza che nulla lo segnalasse.
         if not comune:

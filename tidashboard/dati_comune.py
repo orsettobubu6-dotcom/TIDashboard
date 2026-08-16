@@ -8,7 +8,7 @@
 
 # Lettura del nome del comune dai dati INTERLIS, per non farlo digitare a mano.
 #
-# Il comune e' una delle sette iscrizioni obbligatorie del cartiglio
+# Il comune e' una delle nove iscrizioni obbligatorie del cartiglio
 # (circ154_allegato2 cap.1.5.7): scriverlo a mano vuol dire poterlo sbagliare,
 # mentre nel modello MD01MUTI7MN95 c'e' gia', in due punti:
 #
