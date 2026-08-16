@@ -31,10 +31,22 @@
 # vedi _font_size_for_cap.
 #
 # Prima erano valori in PUNTI tipografici scelti a occhio (8-12 pt): le
-# proporzioni fra le classi di scrittura non tornavano (nome di localita' 4.5mm
-# e numero di edificio 1.5mm devono stare 3:1, stavano 1.5:1), e il cap.1.5.2
-# indica proprio nel rispetto delle proporzioni cio' che rende riconoscibile il
-# piano a qualunque scala.
+# proporzioni fra le classi di scrittura non tornavano, e il cap.1.5.2 indica
+# proprio nel rispetto delle proporzioni cio' che rende riconoscibile il piano a
+# qualunque scala. Nome di localita' 4.5 e numero di edificio 1.8 stanno 2.5:1.
+#
+# DUE VALORI ERANO SBAGLIATI, e lo si e' visto solo rileggendo le tabelle del
+# cap.5 nel testo in vigore (stato 1.2.2014) invece che nella trascrizione:
+#  - numero_di_edificio stava a 1.5 invece di 1.8 (cap.5.5). Sono 7 672
+#    iscrizioni sul solo comune di Mendrisio, cioe' la scrittura piu' numerosa
+#    del piano dopo i numeri dei punti;
+#  - nome_oggetto degli Oggetti singoli stava a 2.2 invece di 2.5 (cap.5.6). Il
+#    2.2 esiste, ma e' di un'altra tabella: cap.5.9, elemento_condotta. Le due
+#    tabelle stanno sulla stessa pagina e in una trascrizione a colonne il
+#    valore era migrato da una all'altra.
+# Il cap.5.6 prescrive per nome_oggetto la STESSA grandezza del cap.5.5: la
+# regola specifica per gli Oggetti singoli resta solo a dire che il caso e'
+# stato verificato, non perche' i due valori differiscano.
 #
 # I valori senza corrispondenza federale (numeri dei punti fissi e dei punti di
 # confine, che il piano RF non rappresenta - cap.5.4 e 5.10 - e il punto quotato,
@@ -43,18 +55,22 @@ TEXT_LABEL_RULES = (
     ("nome_del_luogo",         ("Nome",),        False, False, 4.5),  # normale
     ("nome_di_localita",       ("Nome",),        True,  False, 4.5),  # grassetto
     ("nome_locale",            ("Nome",),        False, True,  4.5),  # corsivo
-    # Oggetti singoli: stessa tabella Pos* della Copertura del suolo, ma il
-    # cap.5.6 prescrive 2.2 invece dei 2.5 del cap.5.5. Deve stare PRIMA della
-    # voce generica: _apply_labels_to_layer esce (return) al primo riscontro,
-    # quindi vince la prima regola che combacia, non l'ultima.
-    ("oggetti_singoli_posnome_oggetto", ("Nome",), False, True, 2.2),  # corsivo
+    # Oggetti singoli: stessa tabella Pos* della Copertura del suolo e stessa
+    # grandezza (cap.5.6 = cap.5.5 = 2.5). Deve stare PRIMA della voce generica:
+    # _apply_labels_to_layer esce (return) al primo riscontro, quindi vince la
+    # prima regola che combacia, non l'ultima.
+    ("oggetti_singoli_posnome_oggetto", ("Nome",), False, True, 2.5),  # corsivo
     ("posnome_oggetto",        ("Nome",),        False, True,  2.5),  # corsivo (Copertura del suolo)
     ("posnome_localizzazione", ("Testo",),       False, True,  3.0),  # corsivo
     ("posnome_edificio",       ("Testo",),       False, False, 1.8),  # normale
     ("posnome_localita",       ("Testo",),       True,  False, 4.5),  # grassetto
     ("posnumero_casa",         ("Numero_casa",), False, False, 1.8),  # normale
-    ("posnumero_di_edificio",  ("Numero",),      False, True,  1.5),  # corsivo
-    ("posnumero_ne",           ("Numero",),      False, True,  1.5),  # corsivo
+    ("posnumero_di_edificio",  ("Numero",),      False, True,  1.8),  # corsivo (cap.5.5)
+    # Numero_NE e' un numero di edificio della Copertura del suolo come
+    # l'altro, e prende la stessa grandezza. Sui dati reali non ha iscrizioni
+    # (PosNumero_NE: 0 righe su Mendrisio), quindi il valore non si vede - ma
+    # lasciarlo diverso avrebbe solo aspettato dati che lo usano.
+    ("posnumero_ne",           ("Numero",),      False, True,  1.8),  # corsivo (cap.5.5)
     ("posnumero_os",           ("Numero",),      False, True,  1.8),  # corsivo
     ("posnumero_oggetto",      ("Numero",),      False, True,  1.8),  # corsivo
     ("posfondo",               ("Numero",),      True,  False, 2.5),  # grassetto (numero_immobile)

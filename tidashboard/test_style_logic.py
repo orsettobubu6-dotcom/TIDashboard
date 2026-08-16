@@ -588,6 +588,60 @@ class TestExtractLv95Coords(unittest.TestCase):
         self.assertIsNone(self._extract(""))
 
 
+class TestGrandezzeDelCapitolo5(unittest.TestCase):
+    """Le grandezze delle scritture contro il testo dell'istruzione.
+
+    Non e' un test tautologico che ricopia il codice: i valori qui sotto sono
+    TRASCRITTI DALLE TABELLE del cap.5 (Rappresentazione del piano per il
+    registro fondiario, stato 1.2.2014), tema per tema. Due erano sbagliati e
+    lo si e' scoperto solo rileggendo il testo:
+      - numero_di_edificio stava a 1.5 invece di 1.8 (cap.5.5);
+      - nome_oggetto degli Oggetti singoli stava a 2.2 invece di 2.5 (cap.5.6);
+        il 2.2 e' di un'altra tabella - cap.5.9, elemento_condotta - e nella
+        trascrizione era migrato fra due tabelle della stessa pagina.
+    Da qui in avanti uno scivolamento del genere fa fallire un test."""
+
+    # (sottostringa della regola, mm, grassetto, corsivo, capitolo)
+    NORMA = (
+        ("posnumero_di_edificio",           1.8, False, True,  "5.5 numero_di_edificio"),
+        ("posnome_oggetto",                 2.5, False, True,  "5.5 nome_oggetto"),
+        ("posnumero_oggetto",               1.8, False, True,  "5.6 numero_oggetto"),
+        ("oggetti_singoli_posnome_oggetto", 2.5, False, True,  "5.6 nome_oggetto"),
+        ("nome_locale",                     4.5, False, True,  "5.7 nome_locale"),
+        ("nome_di_localita",                4.5, True,  False, "5.7 nome_di_localita"),
+        ("nome_del_luogo",                  4.5, False, False, "5.7 nome di luogo"),
+        ("posfondo",                        2.5, True,  False, "5.8 numero_immobile"),
+        ("posnome_localizzazione",          3.0, False, True,  "5.12 nome_localizzazione"),
+        ("posnumero_casa",                  1.8, False, False, "5.12 numero_casa"),
+        ("posnome_edificio",                1.8, False, False, "5.12 Nome_edificio"),
+        ("posnome_localita",                4.5, True,  False, "5.12 Nome_localita"),
+    )
+
+    def test_ogni_grandezza_corrisponde_alla_tabella_della_norma(self):
+        from etichette import TEXT_LABEL_RULES
+        regole = {r[0]: r for r in TEXT_LABEL_RULES}
+        for chiave, mm, grassetto, corsivo, capitolo in self.NORMA:
+            self.assertIn(chiave, regole, "regola sparita: %s" % chiave)
+            _k, _campi, g, c, dim = regole[chiave]
+            self.assertAlmostEqual(dim, mm, places=3,
+                                   msg="%s: cap.%s prescrive %.1f mm, noi %.1f"
+                                       % (chiave, capitolo, mm, dim))
+            self.assertEqual((g, c), (grassetto, corsivo),
+                             "%s: stile diverso da quello del cap.%s"
+                             % (chiave, capitolo))
+
+    def test_il_2_2_delle_condotte_non_e_finito_sugli_oggetti_singoli(self):
+        """Il valore 2.2 del cap.5.9 (elemento_condotta) non deve comparire
+        sulle scritture di Copertura del suolo o Oggetti singoli: e' li' che
+        era migrato."""
+        from etichette import TEXT_LABEL_RULES
+        for chiave, _campi, _g, _c, dim in TEXT_LABEL_RULES:
+            if "nome_oggetto" in chiave:
+                self.assertNotAlmostEqual(
+                    dim, 2.2, places=3,
+                    msg="%s ha la grandezza delle condotte" % chiave)
+
+
 if __name__ == "__main__":
     result = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()
