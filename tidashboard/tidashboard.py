@@ -4208,41 +4208,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 self.combo_comune.currentText().strip(),
                 self.data_validita.date().toString("dd.MM.yyyy"))
 
-    # Nessun comune svizzero e' largo piu' di questo: oltre, l'estensione
-    # dichiarata non descrive i dati (vedi _centro_planimetria).
-    LARGHEZZA_MAX_COMUNE = 50000.0
-
-    def _estensione_reale(self, layer):
-        """Estensione VERA di un layer, calcolata dalle geometrie quando quella
-        dichiarata non e' credibile.
-
-        ili2gpkg scrive in gpkg_contents un riquadro segnaposto pari ai limiti
-        della Svizzera (E2480000..2850000, N1070000..1310000) invece
-        dell'estensione dei dati, e QGIS si fida di quel valore: verificato su
-        un GeoPackage reale di Chiasso, layer.extent() e updateExtents()
-        restituivano entrambi tutta la Svizzera, con centro E2665000 N1190000 -
-        cioe' l'Argovia. La planimetria di ripiego usciva quindi centrata a
-        150 km dai dati. Qui si riconosce il segnaposto dalla larghezza e si
-        ricalcola scorrendo le geometrie."""
-        estensione = layer.extent()
-        if estensione.width() <= self.LARGHEZZA_MAX_COMUNE:
-            return estensione
-        vera = QgsRectangle()
-        vera.setMinimal()
-        for f in layer.getFeatures():
-            g = f.geometry()
-            if g and not g.isEmpty():
-                vera.combineExtentWith(g.boundingBox())
-        # Se il layer non ha geometrie si torna VUOTO, non il segnaposto:
-        # restituendo quest'ultimo bastava un solo layer vuoto - e ce ne sono
-        # decine, tutte le tabelle *Prog - a riportare l'unione a tutta la
-        # Svizzera, annullando il ricalcolo fatto su tutti gli altri.
-        return vera
-
-    # Layer su cui centrare il foglio quando non c'e' una vista: sono l'oggetto
-    # stesso del piano, ed e' li' che si centra un estratto.
-    LAYER_DI_CENTRAMENTO = ("bene_immobile", "punto_di_confine")
-
     # --- CERCA FONDO --------------------------------------------------------
     def _gpkg_corrente(self):
         """Il GeoPackage su cui cercare: prima quello dei layer caricati (sono
@@ -4423,35 +4388,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._aggiorna_ingombro()
 
     def _rotazione_che_salva_la_scala(self, f, scala, formato):
-        """Se girando il foglio il fondo ci sta alla scala voluta: su quale
-        formato e di quanto. (None, None) se non basta.
-
-        Si provano TUTTI i formati, nello stesso ordine di preferenza di
-        miglior_foglio. Fermarsi all'A4 sembrava prudente ed era invece
-        inutile: sui dati di Mendrisio, dei 1 248 fondi che a 1:500 non ci
-        stanno dritti in nessun formato, quelli recuperabili girando il foglio
-        sono 214, e NESSUNO di questi ci sta su un A4 - il rettangolo minimo è
-        più piccolo dell'ingombro dritto, ma non tanto da rientrare nel foglio
-        piccolo. Con la sola coppia A4 la funzione non scattava mai.
-
-        Senza la geometria vera (WKB troncato, o ripiego su PosFondo) non si
-        può calcolare il rettangolo minimo e si risponde di no."""
+        """Il formato e la rotazione che salvano la scala per un fondo
+        trovato. Scarta il guscio del risultato di ricerca e chiama
+        planimetria.rotazione_che_salva_la_scala, che ragiona di geometria e
+        non deve sapere cos'e' un FondoTrovato."""
         punti = getattr(f, "contorno", None)
         if not punti or f.centro is None:
             return None, None
-        centro = QgsPointXY(f.centro[0], f.centro[1])
-        candidati = [formato]
-        altro = _planimetria._altro_orientamento(formato)
-        if altro:
-            candidati.append(altro)
-        for nome, _w, _h in _planimetria.FORMATI:
-            if nome not in candidati:
-                candidati.append(nome)
-        for nome in candidati:
-            giro = _planimetria.rotazione_che_contiene(punti, centro, scala, nome)
-            if giro is not None:
-                return nome, giro
-        return None, None
+        return _planimetria.rotazione_che_salva_la_scala(
+            punti, QgsPointXY(f.centro[0], f.centro[1]), scala, formato)
 
     def _avvisa_capienza(self, f):
         """Centrare non basta: la scala resta quella scelta prima, e un fondo
@@ -4539,49 +4484,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._aggiorna_ingombro()
 
     def _centro_planimetria(self):
-        """Centro del foglio: il centro della vista corrente se la mappa di
-        QGIS e' disponibile (cosi' l'utente inquadra e stampa quel che vede),
-        altrimenti il centro dei fondi.
-
-        NON si usa l'unione di TUTTI i layer, come faceva prima: basta un solo
-        layer con geometrie anomale a portare il centro altrove. Riscontrato sui
-        dati reali di Chiasso - Geometria_AN (aree di numerazione, 29 oggetti)
-        ha geometrie che si estendono da E2485409 a E2833842, cioe' mezza
-        Svizzera, e da sola spostava il centro di 100 km. Centrare sui fondi e'
-        anche piu' corretto nel merito: sono l'oggetto del piano.
-
-        Un fondo scelto con "Cerca fondo" ha pero' la precedenza su tutto: e'
-        una decisione esplicita dell'utente, mentre la vista corrente e' solo
-        dove si e' fermata la mappa."""
-        scelto = getattr(self, "_centro_da_fondo", None)
-        if scelto is not None:
-            return scelto
-
+        """Centro del foglio. La regola di precedenza sta in
+        planimetria.centro_planimetria; qui restano le due cose che
+        appartengono alla finestra: il fondo agganciato con "Cerca fondo" e
+        il canvas di QGIS."""
         _iface = getattr(self, "_iface", None)
-        if _iface and _iface.mapCanvas():
-            return _iface.mapCanvas().extent().center()
-
-        for chiave in self.LAYER_DI_CENTRAMENTO:
-            for lyr in (self.loaded_layers or []):
-                if not (lyr and lyr.isSpatial()):
-                    continue
-                nome = _raw_table_name(lyr).lower()
-                if nome.endswith(chiave) and lyr.featureCount() > 0:
-                    reale = self._estensione_reale(lyr)
-                    if not reale.isEmpty():
-                        return reale.center()
-
-        # Ripiego: unione di tutto, com'era prima. Meglio di niente quando la
-        # consegna non porta i fondi.
-        estensione = QgsRectangle()
-        estensione.setMinimal()
-        for lyr in (self.loaded_layers or []):
-            if not (lyr and lyr.isSpatial()):
-                continue
-            reale = self._estensione_reale(lyr)
-            if not reale.isEmpty():
-                estensione.combineExtentWith(reale)
-        return None if estensione.isEmpty() else estensione.center()
+        canvas = _iface.mapCanvas() if _iface else None
+        return _planimetria.centro_planimetria(
+            self.loaded_layers,
+            centro_fissato=getattr(self, "_centro_da_fondo", None),
+            centro_vista=canvas.extent().center() if canvas else None)
 
     def run_planimetria(self):
         """Crea il layout della planimetria e lo apre nel compositore."""

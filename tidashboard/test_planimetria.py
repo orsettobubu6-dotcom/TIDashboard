@@ -909,6 +909,146 @@ class TestRotazioneCheContiene(unittest.TestCase):
         self.assertIsNone(P.rotazione_che_contiene([(0, 0)], None, 500))
 
 
+class TestCentroPlanimetria(unittest.TestCase):
+    """Il centro del foglio, provato SENZA canvas.
+
+    E' il motivo per cui questa logica e' uscita dalla dialog: prima andava a
+    pescarsi iface.mapCanvas() da sola e non c'era modo di provarla se non
+    aprendo QGIS."""
+
+    CX, CY = 2718000.0, 1082000.0
+
+    def _layer(self, nome, punti=None, vuoto=False):
+        from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY
+        lyr = QgsVectorLayer("Polygon?crs=EPSG:2056", nome, "memory")
+        if vuoto:
+            return lyr
+        punti = punti or [(self.CX - 50, self.CY - 50), (self.CX + 50, self.CY - 50),
+                          (self.CX + 50, self.CY + 50), (self.CX - 50, self.CY + 50),
+                          (self.CX - 50, self.CY - 50)]
+        f = QgsFeature(lyr.fields())
+        f.setGeometry(QgsGeometry.fromPolygonXY([[QgsPointXY(x, y) for x, y in punti]]))
+        lyr.dataProvider().addFeatures([f])
+        lyr.updateExtents()
+        return lyr
+
+    def test_il_fondo_scelto_batte_tutto(self):
+        """E' una decisione esplicita dell'utente; la vista e' solo dove si e'
+        fermata la mappa."""
+        from qgis.core import QgsPointXY
+        scelto = QgsPointXY(1.0, 2.0)
+        vista = QgsPointXY(3.0, 4.0)
+        c = P.centro_planimetria([self._layer("beni_immobili_bene_immobile")],
+                                 centro_fissato=scelto, centro_vista=vista)
+        self.assertEqual((c.x(), c.y()), (1.0, 2.0))
+
+    def test_la_vista_batte_i_layer(self):
+        from qgis.core import QgsPointXY
+        c = P.centro_planimetria([self._layer("beni_immobili_bene_immobile")],
+                                 centro_vista=QgsPointXY(3.0, 4.0))
+        self.assertEqual((c.x(), c.y()), (3.0, 4.0))
+
+    def test_senza_vista_si_centra_sui_fondi(self):
+        c = P.centro_planimetria([self._layer("beni_immobili_bene_immobile")])
+        self.assertAlmostEqual(c.x(), self.CX, places=3)
+        self.assertAlmostEqual(c.y(), self.CY, places=3)
+
+    def test_un_layer_qualunque_non_e_un_centro(self):
+        """IL DIFETTO CHE QUESTA REGOLA EVITA: sui dati di Chiasso, Geometria_AN
+        (29 oggetti) si estende da E2485409 a E2833842 - mezza Svizzera - e da
+        sola spostava il centro di 100 km. Un layer che non e' l'oggetto del
+        piano non deve poter decidere dove va il foglio."""
+        anomalo = self._layer("geometria_an", punti=[
+            (2485409.0, 1075000.0), (2833842.0, 1075000.0),
+            (2833842.0, 1290000.0), (2485409.0, 1290000.0),
+            (2485409.0, 1075000.0)])
+        self.assertIsNone(P.centro_planimetria([anomalo]))
+
+    def test_i_fondi_vincono_sull_anomalo(self):
+        anomalo = self._layer("geometria_an", punti=[
+            (2485409.0, 1075000.0), (2833842.0, 1075000.0),
+            (2833842.0, 1290000.0), (2485409.0, 1290000.0),
+            (2485409.0, 1075000.0)])
+        c = P.centro_planimetria([anomalo,
+                                  self._layer("beni_immobili_bene_immobile")])
+        self.assertAlmostEqual(c.x(), self.CX, places=3)
+
+    def test_i_beni_immobili_vengono_prima_dei_punti_di_confine(self):
+        confini = self._layer("beni_immobili_punto_di_confine",
+                              punti=[(2700000.0, 1070000.0), (2700100.0, 1070000.0),
+                                     (2700100.0, 1070100.0), (2700000.0, 1070000.0)])
+        c = P.centro_planimetria([confini,
+                                  self._layer("beni_immobili_bene_immobile")])
+        self.assertAlmostEqual(c.x(), self.CX, places=3,
+                               msg="l'ordine di LAYER_DI_CENTRAMENTO deve valere "
+                                   "anche se il layer arriva dopo nell'elenco")
+
+    def test_niente_su_cui_centrare(self):
+        self.assertIsNone(P.centro_planimetria([]))
+        self.assertIsNone(P.centro_planimetria(None))
+        self.assertIsNone(P.centro_planimetria(
+            [self._layer("beni_immobili_bene_immobile", vuoto=True)]))
+
+
+class TestEstensioneReale(unittest.TestCase):
+    def test_un_estensione_credibile_si_usa_com_e(self):
+        from qgis.core import QgsVectorLayer, QgsFeature, QgsGeometry, QgsPointXY
+        lyr = QgsVectorLayer("Point?crs=EPSG:2056", "x", "memory")
+        f = QgsFeature(lyr.fields())
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(2718000.0, 1082000.0)))
+        lyr.dataProvider().addFeatures([f])
+        lyr.updateExtents()
+        self.assertAlmostEqual(P.estensione_reale(lyr).center().x(), 2718000.0,
+                               places=3)
+
+    def test_layer_senza_geometrie_torna_vuoto(self):
+        """Non il segnaposto: bastava un solo layer vuoto - e i *Prog sono
+        parecchi - per riaffogare l'unione in tutta la Svizzera."""
+        from qgis.core import QgsVectorLayer
+        lyr = QgsVectorLayer("Point?crs=EPSG:2056", "vuoto", "memory")
+        self.assertTrue(P.estensione_reale(lyr).isEmpty())
+
+
+class TestRotazioneCheSalvaLaScala(unittest.TestCase):
+    def test_una_striscia_stretta_si_recupera_girando(self):
+        """Una striscia lunga 180 m e larga 8 m, posata a 45 gradi.
+
+        I numeri contano: a 1:500 l'area utile di un A3 orizzontale e' circa
+        191 x 110 m sul terreno (foglio meno margini, cartiglio e margine di
+        cortesia). Dritta, la striscia diagonale ha un ingombro di 133 x 133 m
+        e in altezza non ci sta; allineata al foglio diventa 180 x 8 e ci sta
+        comodamente. E' esattamente il caso che la funzione deve recuperare."""
+        from qgis.core import QgsPointXY
+        cx, cy = 2718000.0, 1082000.0
+        centro = QgsPointXY(cx, cy)
+        punti = [QgsPointXY(cx + 60.81, cy + 66.47),
+                 QgsPointXY(cx + 66.47, cy + 60.81),
+                 QgsPointXY(cx - 60.81, cy - 66.47),
+                 QgsPointXY(cx - 66.47, cy - 60.81),
+                 QgsPointXY(cx + 60.81, cy + 66.47)]
+        formato, giro = P.rotazione_che_salva_la_scala(
+            punti, centro, 500, "A4 verticale")
+        self.assertIsNotNone(formato, "una striscia diagonale deve entrare girata")
+        self.assertIsNotNone(giro)
+        # e senza girare NON ci sta: se ci stesse, il test non proverebbe niente
+        self.assertEqual(P.stato_capienza(punti, centro, 500, formato), "fuori")
+
+    def test_senza_contorno_risponde_di_no(self):
+        """WKB troncato o ripiego su PosFondo: senza il contorno non c'e'
+        rettangolo minimo da calcolare."""
+        from qgis.core import QgsPointXY
+        self.assertEqual(
+            P.rotazione_che_salva_la_scala(None, QgsPointXY(1, 2), 500), (None, None))
+        self.assertEqual(
+            P.rotazione_che_salva_la_scala([], QgsPointXY(1, 2), 500), (None, None))
+
+    def test_senza_centro_risponde_di_no(self):
+        from qgis.core import QgsPointXY
+        self.assertEqual(
+            P.rotazione_che_salva_la_scala([QgsPointXY(1, 2)], None, 500),
+            (None, None))
+
+
 if __name__ == "__main__":
     result = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()

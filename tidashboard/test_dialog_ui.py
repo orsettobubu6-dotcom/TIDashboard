@@ -62,8 +62,15 @@ def _gpkg_con_tenuta_a_giorno(in_vigore, comuni=("Giubiasco",)):
     return percorso
 
 
-def _layer():
-    lyr = QgsVectorLayer("Polygon?crs=EPSG:2056", "prova", "memory")
+def _layer(nome="beni_immobili_bene_immobile"):
+    """Un layer di prova con il nome di una tabella VERA.
+
+    Il nome non e' un dettaglio: planimetria.centro_planimetria centra il
+    foglio solo sui layer di centramento (bene_immobile, punto_di_confine), e
+    con un layer chiamato "prova" non troverebbe nessun centro. E' anche la
+    situazione realistica - un piano si centra sui fondi, non su un layer
+    qualunque che capita di avere aperto."""
+    lyr = QgsVectorLayer("Polygon?crs=EPSG:2056", nome, "memory")
     f = QgsFeature(lyr.fields())
     f.setGeometry(QgsGeometry.fromPolygonXY([[
         QgsPointXY(CX - 50, CY - 50), QgsPointXY(CX + 50, CY - 50),

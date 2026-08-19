@@ -44,6 +44,15 @@ from qgis.core import (
 from qgis.PyQt.QtCore import QRectF
 from qgis.PyQt.QtGui import QColor, QFont
 
+# Il nome RAW della tabella si legge da un posto solo: una seconda copia di
+# quella riga prima o poi divergerebbe, e la copia sbagliata sarebbe sempre
+# l'altra. Vedi la nota in ordinamento._raw_table_name sul difetto vero che
+# quella funzione ha risolto (join falliti per 123 layer su 128).
+try:
+    from .ordinamento import _raw_table_name
+except ImportError:      # importato come modulo top-level (test)
+    from ordinamento import _raw_table_name
+
 # PyQt6 (QGIS 4): gli enum delle classi Qt vanno referenziati nella forma
 # annidata Classe.EnumType.Valore - QFont.Bold "piatto" lancia AttributeError.
 _GRASSETTO = QFont.Weight.Bold
@@ -449,6 +458,138 @@ def _altro_orientamento(formato):
             candidato = formato[: -len(verso)] + opposto
             return candidato if any(n == candidato for n, _, _ in FORMATI) else None
     return None
+
+
+# Nessun comune svizzero e' largo piu' di questo: oltre, l'estensione
+# dichiarata non descrive i dati.
+LARGHEZZA_MAX_COMUNE = 50000.0
+
+# Layer su cui centrare il foglio quando non c'e' una vista: sono l'oggetto
+# stesso del piano.
+LAYER_DI_CENTRAMENTO = ("bene_immobile", "punto_di_confine")
+
+
+def estensione_reale(layer):
+    """Estensione VERA di un layer, calcolata dalle geometrie quando quella
+    dichiarata non e' credibile.
+
+    ili2gpkg scrive in gpkg_contents un riquadro segnaposto pari ai limiti
+    della Svizzera (E2480000..2850000, N1070000..1310000) invece
+    dell'estensione dei dati, e QGIS si fida di quel valore: verificato su un
+    GeoPackage reale di Chiasso, layer.extent() e updateExtents() restituivano
+    entrambi tutta la Svizzera, con centro E2665000 N1190000 - cioe' l'Argovia.
+    La planimetria di ripiego usciva quindi centrata a 150 km dai dati. Qui si
+    riconosce il segnaposto dalla larghezza e si ricalcola scorrendo le
+    geometrie.
+
+    NON E' UN CASO RARO, E' LA REGOLA. Misurato sul GeoPackage di Mendrisio:
+    dei 121 layer che dichiarano un'estensione, TUTTI E 121 portano il
+    segnaposto (larghezza 370 km). La scorciatoia non scatta mai, quindi il
+    costo di questa funzione e' sempre quello del ciclo sulle geometrie:
+    11 160 oggetti per i beni immobili, 75 298 per i punti di confine.
+
+    Un layer senza geometrie torna VUOTO, non il segnaposto: restituendo
+    quest'ultimo bastava un solo layer vuoto - e ce ne sono parecchi, tutti i
+    *Prog - per riaffogare l'unione in tutta la Svizzera."""
+    estensione = layer.extent()
+    if estensione.width() <= LARGHEZZA_MAX_COMUNE:
+        return estensione
+    vera = QgsRectangle()
+    vera.setMinimal()
+    for f in layer.getFeatures():
+        g = f.geometry()
+        if g and not g.isEmpty():
+            vera.combineExtentWith(g.boundingBox())
+    return vera
+
+
+def _e_di_centramento(layer):
+    """Il layer e' uno di quelli su cui ha senso centrare il foglio?
+
+    Si guarda il nome RAW della tabella, non il titolo nel pannello: i layer
+    vengono rinominati per la leggibilita' e il titolo non e' un
+    identificatore."""
+    nome = _raw_table_name(layer).lower()
+    return any(nome.endswith(chiave) for chiave in LAYER_DI_CENTRAMENTO)
+
+
+def centro_planimetria(layers, centro_fissato=None, centro_vista=None):
+    """Centro del foglio, in ordine di precedenza: fondo scelto, vista
+    corrente, primo layer di centramento, unione dei layer di centramento.
+
+    La vista arriva come PARAMETRO invece di essere pescata da iface: cosi'
+    la funzione si prova senza QGIS aperto, e chi la chiama resta l'unico a
+    sapere che esiste un canvas.
+
+    NON si usa l'unione di TUTTI i layer, come faceva la prima versione:
+    basta un solo layer con geometrie anomale a portare il centro altrove.
+    Riscontrato sui dati reali di Chiasso - Geometria_AN (aree di numerazione,
+    29 oggetti) ha geometrie che si estendono da E2485409 a E2833842, cioe'
+    mezza Svizzera, e da sola spostava il centro di 100 km."""
+    if centro_fissato is not None:
+        return centro_fissato
+    if centro_vista is not None:
+        return centro_vista
+
+    spaziali = [l for l in (layers or []) if l and l.isSpatial()]
+    for chiave in LAYER_DI_CENTRAMENTO:
+        for lyr in spaziali:
+            if not _raw_table_name(lyr).lower().endswith(chiave):
+                continue
+            if lyr.featureCount() > 0:
+                reale = estensione_reale(lyr)
+                if not reale.isEmpty():
+                    return reale.center()
+
+    # Ripiego, ristretto ai SOLI layer di centramento. Unire tutto costerebbe
+    # 315 920 geometrie sul GeoPackage di Mendrisio (nessun layer ha
+    # un'estensione dichiarata credibile, vedi estensione_reale) e
+    # rimetterebbe in gioco proprio i layer anomali che il ciclo qui sopra
+    # evita apposta.
+    #
+    # Serve al caso in cui featureCount() torni -1: alcuni provider non
+    # sanno dire quanti oggetti hanno, il ciclo qui sopra li salta tutti, e
+    # senza questo ripiego un GeoPackage perfettamente valido resterebbe
+    # senza centro.
+    estensione = QgsRectangle()
+    estensione.setMinimal()
+    for lyr in spaziali:
+        if not _e_di_centramento(lyr):
+            continue
+        reale = estensione_reale(lyr)
+        if not reale.isEmpty():
+            estensione.combineExtentWith(reale)
+    return None if estensione.isEmpty() else estensione.center()
+
+
+def rotazione_che_salva_la_scala(punti, centro, scala, formato="A4 verticale"):
+    """Se girando il foglio l'oggetto ci sta alla scala voluta: su quale
+    formato e di quanto. (None, None) se non basta.
+
+    Si provano TUTTI i formati, nello stesso ordine di preferenza di
+    miglior_foglio. Fermarsi all'A4 sembrava prudente ed era invece inutile:
+    sui dati di Mendrisio, dei 1 248 fondi che a 1:500 non ci stanno dritti in
+    nessun formato, quelli recuperabili girando il foglio sono 214, e NESSUNO
+    di questi ci sta su un A4 - il rettangolo minimo e' piu' piccolo
+    dell'ingombro dritto, ma non tanto da rientrare nel foglio piccolo. Con la
+    sola coppia A4 la funzione non scattava mai.
+
+    Senza il contorno (WKB troncato, o ripiego su PosFondo) non si puo'
+    calcolare il rettangolo minimo e si risponde di no."""
+    if not punti or centro is None:
+        return None, None
+    candidati = [formato]
+    altro = _altro_orientamento(formato)
+    if altro:
+        candidati.append(altro)
+    for nome, _w, _h in FORMATI:
+        if nome not in candidati:
+            candidati.append(nome)
+    for nome in candidati:
+        giro = rotazione_che_contiene(punti, centro, scala, nome)
+        if giro is not None:
+            return nome, giro
+    return None, None
 
 
 def fattore_proporzionale(scala, prodotto="gb", lettera_norma=False):
