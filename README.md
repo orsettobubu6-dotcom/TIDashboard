@@ -50,18 +50,21 @@ passo.*
 
 Serve **QGIS 4.0** o superiore e **Java 8** o superiore installato a parte.
 
-Il modo più rapido è scaricare il pacchetto già pronto dai
-**[Releases](https://github.com/orsettobubu6-dotcom/TIDashboard/releases)** —
-`tidashboard_1.2.0.zip`, con accanto il file `.sha256` per verificarlo.
-
-> Non scaricare con *Code → Download ZIP*: quell'archivio ha una cartella in
-> più in cima e QGIS non riesce a caricarlo.
-
-In alternativa si costruisce in locale (lo ZIP finisce in `dist/`):
+Il pacchetto si costruisce in locale — serve un Python qualunque, non quello
+di QGIS, e lo ZIP finisce in `dist/` con accanto il suo `.sha256`:
 
 ```bash
 python crea_zip_plugin.py
 ```
+
+Quando una versione è pubblicata, lo stesso pacchetto si trova già pronto fra i
+**[Releases](https://github.com/orsettobubu6-dotcom/TIDashboard/releases)**.
+È lo ZIP costruito dalla CI dallo stesso script: essendo l'archivio
+riproducibile, l'impronta di quello scaricato e di quello costruito in casa
+coincidono.
+
+> Non scaricare con *Code → Download ZIP*: quell'archivio ha una cartella in
+> più in cima e QGIS non riesce a caricarlo.
 
 poi in QGIS: *Estensioni → Gestisci ed installa estensioni → Installa da ZIP*.
 Essendo marcato sperimentale, va prima attivata l'opzione *Mostra anche le
