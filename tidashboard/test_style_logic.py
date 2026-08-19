@@ -857,6 +857,181 @@ class TestLineeDellaCoperturaDelSuolo(unittest.TestCase):
                                        % (reg.label(), larg))
 
 
+class TestLineeDegliOggettiSingoli(unittest.TestCase):
+    """Le linee degli Oggetti singoli (cap. 3.4).
+
+    Il capitolo dice tre cose: 0.20 mm per tutti i generi tranne "sentiero"
+    che va a 0.30, il genere di linea per ciascun oggetto, e che il tratteggio
+    Interrotto1 NON deve essere utilizzato per questo tema - e' riservato alla
+    copertura del suolo.
+
+    Il metodo _gen_stile_elemento_lineare dichiara nella propria docstring il
+    principio che questo test verifica: nessun genere del dominio puo' restare
+    senza regola, perche' in un renderer a regole senza ripiego una feature che
+    non combacia non viene disegnata affatto.
+    """
+
+    # Il dominio Genere_OS di MD01MUTI7MN95 con il tipo di linea del cap. 3.4.
+    # None = genere che il capitolo non elenca (li tratta come simboli di
+    # punto, cap. 2.3) o estensione cantonale: deve comunque avere una regola.
+    DOMINIO = (
+        ("muro.muro", "continuo"),
+        ("muro.muro_di_sostegno", "continuo"),
+        # Circ202_Allegato2 (2012) porta il muro divisorio a interrotto2,
+        # sostituendo l'interrotto del 2007: 1 635 oggetti su Mendrisio.
+        ("muro.muro_divisorio", "interrotto2"),
+        ("edificio_sotterraneo.edificio_sotterraneo_indipendente", "punteggiato"),
+        ("edificio_sotterraneo.parte_sotterranea_di_edificio", "punteggiato"),
+        ("altra_parte_di_edificio.scala", "interrotto2"),
+        ("altra_parte_di_edificio.altra_parte_costruttiva", "interrotto2"),
+        ("acqua_sotterranea_canalizzata", "punteggiato"),
+        ("scala_importante", "continuo"),
+        ("tunnel_sottopassaggio_galleria", "punteggiato"),
+        ("ponte_passerella", "continuo"),
+        ("banchina", "continuo"),
+        ("fontana", "continuo"),
+        ("serbatoio", "punteggiato"),
+        ("pilastro", "continuo"),
+        ("riparo", "interrotto2"),
+        ("silo_torre_gasometro", "continuo"),
+        ("ciminiera", "continuo"),
+        ("monumento", "continuo"),
+        ("palo_antenna", "continuo"),
+        ("torre_panoramica", "continuo"),
+        ("arginatura", "continuo"),
+        ("briglia", "continuo"),
+        ("riparo_antivalanghe", "interrotto2"),
+        ("zoccolo_massiccio", "continuo"),
+        ("rovina_oggetto_archeologico", "continuo"),
+        ("debarcadero", "continuo"),
+        ("masso_erratico", "continuo"),
+        ("fascia_boscata", "interrotto2"),
+        ("ruscello", "continuo"),
+        ("sentiero", "interrotto2"),
+        ("linea_aerea_ad_alta_tensione", "misto1"),
+        ("condotta_forzata", "misto1"),
+        ("binari_ferrovia", "misto2"),
+        ("teleferica", "misto2"),
+        ("telecabina_seggiovia", "misto2"),
+        ("teleferica_per_il_materiale", "misto2"),
+        ("scilift", "misto2"),
+        ("traghetto", "misto2"),
+        ("grotta_entrata_di_caverna", "continuo"),
+        ("asse", "misto2"),
+        ("albero_importante", None),
+        ("cappella_statua_crocifisso", None),
+        ("sorgente", None),
+        ("punto_di_riferimento", None),
+        ("altro.concimaia", None),
+        ("altro.riparo_fonico", None),
+        ("altro.serra", None),
+        ("altro.accesso_lago", None),
+        ("altro.altro", None),
+    )
+
+    # I tratteggi della tabella 3.1, in millimetri.
+    PATTERN = {
+        "punteggiato": "0.50;0.50",
+        "interrotto": "2.50;0.70",
+        "interrotto1": "1.50;0.50",
+        "interrotto2": "1.00;0.70",
+        "interrotto3": "4.00;1.00",
+        "misto1": "6.50;1.00;1.00;1.00;1.00;1.00",
+        "misto2": "10.00;1.00;1.80;1.00",
+    }
+
+    def _renderer(self):
+        layer = QgsVectorLayer("LineString?crs=EPSG:2056&field=genere:string",
+                               "oggetti_singoli_elemento_lineare", "memory")
+        return make_dialog_stub()._get_renderer_for_table(
+            "Elemento_lineare", "oggetti_singoli_elemento_lineare", "gb",
+            "LINE", layer), layer
+
+    def _linea(self, sym, prof=0):
+        larg = tratto = None
+        if sym is None or prof > 4:
+            return larg, tratto
+        for i in range(sym.symbolLayerCount()):
+            sl = sym.symbolLayer(i)
+            if sl.layerType() == "SimpleLine":
+                if sl.width() and sl.width() > 0 and larg is None:
+                    larg = sl.width()
+                v = sl.customDashVector()
+                if sl.useCustomDashPattern() and v:
+                    tratto = ";".join("%.2f" % x for x in v)
+                elif tratto is None:
+                    tratto = "continuo"
+            sub = getattr(sl, "subSymbol", lambda: None)()
+            if sub is not None:
+                l2, t2 = self._linea(sub, prof + 1)
+                larg = larg if larg is not None else l2
+                tratto = tratto if tratto is not None else t2
+        return larg, tratto
+
+    def _regole_per(self, renderer, layer, genere):
+        from qgis.core import (QgsFeature, QgsExpression, QgsExpressionContext,
+                               QgsExpressionContextUtils)
+        f = QgsFeature(layer.fields())
+        f.setAttribute("genere", genere)
+        ctx = QgsExpressionContext()
+        ctx.appendScope(QgsExpressionContextUtils.globalScope())
+        ctx.setFeature(f)
+        prese = []
+        for reg in renderer.rootRule().children():
+            espressione = reg.filterExpression()
+            if not espressione or QgsExpression(espressione).evaluate(ctx):
+                prese.append(reg)
+        return prese
+
+    def test_ogni_genere_del_dominio_ha_una_regola(self):
+        renderer, layer = self._renderer()
+        senza = [g for g, _t in self.DOMINIO
+                 if not self._regole_per(renderer, layer, g)]
+        self.assertEqual(senza, [],
+                         "questi generi non li disegna nessuno: %s" % senza)
+
+    def test_nessun_genere_viene_disegnato_due_volte(self):
+        """In un renderer a regole NON esclusive ogni regola che combacia
+        disegna: due filtri che si sovrappongono raddoppiano il tratto."""
+        renderer, layer = self._renderer()
+        doppi = {g: [r.label() for r in self._regole_per(renderer, layer, g)]
+                 for g, _t in self.DOMINIO
+                 if len(self._regole_per(renderer, layer, g)) > 1}
+        self.assertEqual(doppi, {}, "generi presi da piu' regole: %s" % doppi)
+
+    def test_il_genere_di_linea_segue_la_tabella(self):
+        renderer, layer = self._renderer()
+        for genere, atteso in self.DOMINIO:
+            if atteso is None:
+                continue
+            regole = self._regole_per(renderer, layer, genere)
+            self.assertTrue(regole, genere)
+            _l, tratto = self._linea(regole[0].symbol())
+            nostro = "continuo" if tratto == "continuo" else next(
+                (k for k, v in self.PATTERN.items() if v == tratto), str(tratto))
+            self.assertEqual(nostro, atteso,
+                             "%s: il cap.3.4 lo vuole %s, la regola %r da' %s"
+                             % (genere, atteso, regole[0].label(), nostro))
+
+    def test_020_ovunque_tranne_il_sentiero(self):
+        renderer, layer = self._renderer()
+        for genere, _t in self.DOMINIO:
+            regole = self._regole_per(renderer, layer, genere)
+            self.assertTrue(regole, genere)
+            larg, _tr = self._linea(regole[0].symbol())
+            atteso = 0.30 if genere == "sentiero" else 0.20
+            self.assertAlmostEqual(larg, atteso, places=3,
+                                   msg="%s: spessore %s invece di %.2f"
+                                       % (genere, larg, atteso))
+
+    def test_l_interrotto1_non_si_usa_in_questo_tema(self):
+        """Il cap. 3.4 lo vieta: l'interrotto1 e' della copertura del suolo."""
+        renderer, _layer = self._renderer()
+        con_interrotto1 = [r.label() for r in renderer.rootRule().children()
+                           if self._linea(r.symbol())[1] == self.PATTERN["interrotto1"]]
+        self.assertEqual(con_interrotto1, [])
+
+
 class TestTrameDelCapitolo4(unittest.TestCase):
     """Le trame delle superfici contro la tabella del cap. 4.
 

@@ -590,12 +590,25 @@ class StiliMixin:
         # dominio di Elemento_lineare secondo circ154_allegato2, senza i quali la
         # feature resterebbe invisibile se mai rappresentata come linea; include anche
         # concimaia/riparo_fonico/serra, "continua" da circ154_allegato4.pdf cap. 3.3)
+        #
+        # AGGIUNTI albero_importante, cappella_statua_crocifisso, sorgente,
+        # punto_di_riferimento e il generico 'altro': stanno nel dominio
+        # Genere_OS e non avevano regola, cioe' ricadevano nel difetto che la
+        # docstring di questo metodo dichiara di evitare. Sui dati di Mendrisio
+        # nessuno di loro compare come linea - sono generi puntiformi - ma
+        # "non capita oggi" non e' una difesa: bastava spartitraffico, nella
+        # copertura del suolo, per far sparire 132 poligoni in silenzio.
+        # Il cap. 3.4 non li elenca (li tratta come simboli di punto, cap. 2.3),
+        # quindi prendono il continuo 0.20 come gli altri generi puntiformi
+        # gia' presenti qui sopra.
         apply_rule(root, build_sym('line', [make_line(C_NERO, 0.20)]),
                    genere_in(['muro', 'arginatura', 'ruscello', 'fontana', 'ponte_passerella',
                               'banchina', 'rovina_oggetto_archeologico', 'briglia', 'silo_torre_gasometro',
                               'zoccolo_massiccio', 'ciminiera', 'pilastro', 'debarcadero', 'scala_importante',
                               'grotta_entrata_di_caverna', 'masso_erratico', 'monumento', 'palo_antenna',
-                              'torre_panoramica', 'concimaia', 'riparo_fonico', 'serra']),
+                              'torre_panoramica', 'concimaia', 'riparo_fonico', 'serra',
+                              'albero_importante', 'cappella_statua_crocifisso', 'sorgente',
+                              'punto_di_riferimento', 'altro']),
                    "Muro / Arginatura / Ruscello")
 
         # Accesso_lago come oggetto lineare: interrotto1 1.5/0.5, spessore 0.20mm
