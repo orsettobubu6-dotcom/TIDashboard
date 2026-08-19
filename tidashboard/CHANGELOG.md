@@ -1,6 +1,6 @@
 # Diario delle versioni
 
-## 1.2.0 — sperimentale
+## 1.2.0 — 19 agosto 2026 — sperimentale
 
 ### Dati ufficiali scaricabili dal plugin
 
@@ -101,7 +101,7 @@ contorno. I due lettori non si sostituiscono a vicenda.
 - Chiudere la finestra mentre una conversione era in corso poteva sollevare
   «wrapped C/C++ object of type JavaWorker has been deleted».
 
-## 1.1.1 — sperimentale
+## 1.1.1 — 7 agosto 2026 — sperimentale
 
 Prima versione preparata per la pubblicazione. Rinominata da «Cadastra
 Dashboard» a **TIDashboard**.

@@ -23,6 +23,13 @@
 # "git status" pulito sembrava una conferma.
 !/.github/
 
+# I tre file che GitHub si aspetta in RADICE e non dentro tidashboard/: senza
+# LICENSE qui l'API del repository riporta "license: null" e la pagina non
+# mostra la licenza, per quanto il testo sia distribuito nel pacchetto.
+!/LICENSE
+!/CHANGELOG.md
+!/docs/
+
 # Il sorgente Java del traduttore DXF va distribuito (LGPL 2.1), ma i prodotti
 # della compilazione no: i .class ricompilati, la cartella di assemblaggio del
 # jar, il jar stesso e il log degli errori di compilazione.
