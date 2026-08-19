@@ -722,6 +722,123 @@ class TestGrandezzeDelCapitolo5(unittest.TestCase):
                     msg="%s ha la grandezza delle condotte" % chiave)
 
 
+class TestTrameDelCapitolo4(unittest.TestCase):
+    """Le trame delle superfici contro la tabella del cap. 4.
+
+    I valori qui sotto sono TRASCRITTI dall'istruzione (stato 1.2.2014), non
+    ricopiati dal codice. La tabella dice, per ogni superficie, la grandezza
+    di riferimento a 1:1000 e la distanza fra i simboli.
+
+    Il colore: "tutte le trame composte di simboli sono rappresentate in
+    grigio (valore indicativo ca. 50%) AD ECCEZIONE delle trame punteggiate
+    (bosco, superficie boscata e pascolo)" - che restano nere.
+    """
+
+    # (descrizione, dimensione mm, distanza mm)
+    NORMA = (
+        ("Bosco fitto",           0.3, 2.0),
+        ("Altro bosco",           0.3, 4.0),
+        ("Pascolo boscato fitto", 0.3, 8.0),
+        ("Pascolo boscato rado",  0.3, 16.0),
+        ("Vigne",                 3.0, 10.0),
+        ("Torbiera",              3.5, 10.0),
+        ("Canneto",               3.0, 10.0),
+    )
+
+    def test_i_passi_delle_trame_punteggiate(self):
+        """2, 4, 8, 16: raddoppiano a ogni classe, dal bosco piu' fitto al
+        pascolo piu' rado. Un valore fuori posto inverte la gerarchia visiva
+        fra due coperture del suolo diverse."""
+        passi = [d for _n, _s, d in self.NORMA[:4]]
+        self.assertEqual(passi, [2.0, 4.0, 8.0, 16.0])
+
+    def test_i_colori_delle_trame(self):
+        """I grigi sono dati in RGB dalla norma: 130 per le trame a simboli,
+        178 per l'edificio, 225 per l'edificio sotterraneo."""
+        from colori import C_TRAMA_50, C_TRAMA_30, C_TRAMA_10
+        self.assertEqual((C_TRAMA_50.red(), C_TRAMA_50.green(), C_TRAMA_50.blue()),
+                         (130, 130, 130))
+        self.assertEqual((C_TRAMA_30.red(), C_TRAMA_30.green(), C_TRAMA_30.blue()),
+                         (178, 178, 178))
+        self.assertEqual((C_TRAMA_10.red(), C_TRAMA_10.green(), C_TRAMA_10.blue()),
+                         (225, 225, 225))
+
+    def test_le_trame_punteggiate_restano_nere(self):
+        """L'eccezione dichiarata dal cap. 4: bosco, superficie boscata e
+        pascolo non vanno in grigio."""
+        from colori import C_NERO, C_TRAMA_50
+        from simbologia import make_point_pattern
+        livello = make_point_pattern(C_NERO, d=2.0, size=0.3)
+        sub = livello.subSymbol()
+        colore = sub.symbolLayer(0).color()
+        self.assertEqual((colore.red(), colore.green(), colore.blue()), (0, 0, 0))
+        self.assertNotEqual(colore.name(), C_TRAMA_50.name())
+
+    def test_il_passo_disegnato_e_quello_chiesto(self):
+        """MISURATO SUL DISEGNO, non sulle costanti: si riempie un poligono e
+        si contano le macchie di inchiostro.
+
+        La taratura sul bosco fitto (passo 2 mm) viene prima: se lo strumento
+        sbagliasse li', la misura sulle altre trame non proverebbe niente. E'
+        gia' successo due volte scrivendo questo controllo - un primo metodo
+        contava i tratti dentro un glifo invece dei simboli, un secondo
+        trovava i multipli del passo invece del passo."""
+        import math
+        from qgis.core import (QgsFillSymbol, QgsRenderContext, QgsGeometry,
+                               QgsPointXY)
+        from qgis.PyQt.QtGui import QImage, QPainter, QColor
+        from colori import C_NERO
+        from simbologia import make_point_pattern
+
+        dpi, lato = 300.0, 600
+        for passo_voluto in (2.0, 8.0):
+            sym = QgsFillSymbol([make_point_pattern(C_NERO, d=passo_voluto, size=0.3)])
+            img = QImage(lato, lato, QImage.Format.Format_ARGB32)
+            ppm = int(dpi / 25.4 * 1000)
+            img.setDotsPerMeterX(ppm)
+            img.setDotsPerMeterY(ppm)
+            img.fill(QColor(255, 255, 255))
+            pittore = QPainter(img)
+            ctx = QgsRenderContext.fromQPainter(pittore)
+            sym.startRender(ctx)
+            poly = QgsGeometry.fromPolygonXY([[
+                QgsPointXY(0, 0), QgsPointXY(lato, 0), QgsPointXY(lato, lato),
+                QgsPointXY(0, lato), QgsPointXY(0, 0)]])
+            sym.renderPolygon(poly.asQPolygonF(), None, None, ctx)
+            sym.stopRender(ctx)
+            pittore.end()
+            scuri = set()
+            for y in range(lato):
+                for x in range(lato):
+                    if img.pixelColor(x, y).red() < 240:
+                        scuri.add((x, y))
+            centri, visti = [], set()
+            for p0 in scuri:
+                if p0 in visti:
+                    continue
+                coda, gruppo = [p0], []
+                visti.add(p0)
+                while coda:
+                    x, y = coda.pop()
+                    gruppo.append((x, y))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        q = (x + dx, y + dy)
+                        if q in scuri and q not in visti:
+                            visti.add(q)
+                            coda.append(q)
+                centri.append((sum(a for a, _ in gruppo) / len(gruppo),
+                               sum(b for _, b in gruppo) / len(gruppo)))
+            self.assertGreater(len(centri), 3,
+                               "la trama non ha disegnato abbastanza punti")
+            vicini = sorted(
+                min(math.dist(c1, c2) for j, c2 in enumerate(centri) if i != j)
+                for i, c1 in enumerate(centri))
+            misurato = vicini[len(vicini) // 2] / ctx.scaleFactor()
+            self.assertAlmostEqual(
+                misurato / passo_voluto, 1.0, delta=0.05,
+                msg="passo chiesto %.1f mm, disegnato %.3f" % (passo_voluto, misurato))
+
+
 if __name__ == "__main__":
     result = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()
