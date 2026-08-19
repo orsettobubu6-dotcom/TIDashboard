@@ -1,0 +1,115 @@
+# CI del plugin QGIS TIDashboard.
+#
+# Tre job separati di proposito:
+#   python-puro  - 10 secondi, niente QGIS, niente rete
+#   pacchetto    - zip in dist/ + SHA256 + metadata
+#   qgis         - Docker ufficiale QGIS 4.2, test di simbologia e planimetria
+#
+# Un tag vX.Y.Z pubblica GitHub Release con lo zip della CI, non uno
+# costruito a mano. version= in metadata.txt deve coincidere col tag.
+#
+# PERCHE' IL PACCHETTO SI COSTRUISCE QUI E NON A MANO: chi scarica da GitHub
+# con "Code -> Download ZIP" ottiene TIDashboard-main.zip, che ha una cartella
+# in piu' in cima. QGIS ci trova il metadata.txt un livello troppo in basso,
+# registra il plugin come "TIDashboard-main/tidashboard" - un nome con una
+# barra dentro, che come modulo Python non esiste - e il caricamento fallisce
+# con ModuleNotFoundError. Non e' un caso limite: e' successo davvero.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-puro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test senza QGIS
+        run: |
+          set -e
+          python tidashboard/test_modello.py
+          python tidashboard/test_dati_comune.py
+          python tidashboard/test_cerca_fondo.py
+          python tidashboard/test_scarica_mu.py
+          python tidashboard/test_java_env.py
+
+      - name: ruff sui moduli piccoli
+        run: |
+          pip install ruff
+          ruff check crea_zip_plugin.py tidashboard/java_env.py tidashboard/test_java_env.py
+
+      - name: metadata
+        run: python crea_zip_plugin.py --solo-check-metadata
+
+  pacchetto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Costruisci e verifica lo zip
+        run: python crea_zip_plugin.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-zip
+          path: dist/
+          if-no-files-found: error
+
+  qgis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test con QGIS 4.2 headless
+        run: |
+          docker run --rm \
+            --entrypoint bash \
+            -v "$PWD":/src \
+            -w /src \
+            -e QT_QPA_PLATFORM=offscreen \
+            qgis/qgis:4.2-trixie \
+            -lc 'python3 tidashboard/test_style_logic.py && python3 tidashboard/test_planimetria.py && python3 tidashboard/test_verifica_dxf.py'
+        # test_dialog_ui.py alza una GUI vera: va con xvfb in un secondo
+        # tempo, non in questo job. Un rosso per un QMessageBox non deve
+        # mascherare un regressione sui simboli a 600 dpi.
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python-puro, pacchetto, qgis]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-zip
+          path: dist
+
+      - name: Il tag deve coincidere con metadata.txt
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          META=$(sed -n 's/^version=//p' tidashboard/metadata.txt | tr -d '[:space:]')
+          echo "tag=$TAG metadata=$META"
+          test "$TAG" = "$META"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

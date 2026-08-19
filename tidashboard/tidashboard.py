@@ -51,6 +51,7 @@ try:
     from . import scarica_mu as _scarica_mu
     from . import modello as _modello
     from . import verifica_dxf as _verifica_dxf
+    from . import java_env as _java_env
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -78,6 +79,7 @@ except ImportError:
     import scarica_mu as _scarica_mu
     import modello as _modello
     import verifica_dxf as _verifica_dxf
+    import java_env as _java_env
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -2330,128 +2332,36 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
     def find_java(self):
         """Trova un java funzionante sulla macchina, senza assumere una
-        versione specifica installata: raccoglie tutti i candidati plausibili
-        (PATH, JAVA_HOME, le cartelle di installazione dei vendor JDK/JRE piu'
-        comuni su Windows), verifica DAVVERO ciascuno eseguendo 'java
-        -version' (un file java puo' esistere ma essere rotto, di
-        un'architettura sbagliata, o un semplice stub) e sceglie quello con
-        la versione piu' alta tra i funzionanti - il jar av2geobau_ti.jar e'
-        compilato con '--release 8' apposta per girare su qualunque JRE 8+,
-        quindi qualunque candidato funzionante va bene, ma preferire il piu'
-        recente e' comunque la scelta piu' sicura in generale. Il risultato
-        e' cachato sull'istanza (non tra riavvii di QGIS) per non ripetere
-        la scansione a ogni singola conversione nella stessa sessione."""
+        versione specifica installata.
+
+        La ricerca vera sta in java_env.trova_java: scansione dei dischi,
+        esecuzione di 'java -version' e scelta della versione piu' alta fra
+        quelle che partono davvero (un file java puo' esistere ed essere uno
+        stub rotto o di un'architettura sbagliata). Qui restano le due cose
+        che appartengono alla finestra: la CACHE sull'istanza - per non
+        rifare la scansione a ogni conversione della stessa sessione - e i
+        MESSAGGI nella console.
+
+        Il jar av2geobau_ti.jar e' compilato con --release 8, quindi
+        qualunque JRE 8+ va bene; preferire il piu' recente resta la scelta
+        piu' sicura."""
         if self._java_path_cache is not None:
             return self._java_path_cache or None  # "" cachato = "cercato, non trovato"
 
-        exe_name = "java.exe" if os.name == "nt" else "java"
-        candidates = []
+        esito = _java_env.trova_java(
+            log=lambda msg: self.log(msg, Qgis.Warning))
+        if esito.percorso:
+            self.log("   ☕ Java trovato e verificato funzionante: %s "
+                     "(versione %d.%d, %d candidati esaminati)"
+                     % (esito.percorso, esito.versione[0], esito.versione[1],
+                        esito.n_candidati))
+        elif esito.candidati:
+            self.log("   ⚠️ %d eseguibili java trovati ma nessuno risulta "
+                     "funzionante (eseguibile rotto o incompatibile?)"
+                     % esito.n_candidati, Qgis.Warning)
 
-        # (a) PATH: la fonte piu' portabile e affidabile. Viene comunque
-        # verificato con 'java -version' piu' sotto (sul PATH puo' esserci
-        # uno stub rotto, es. il finto java.exe di WindowsApps).
-        which_java = shutil.which("java")
-        if which_java:
-            candidates.append(which_java)
-
-        # (b) JAVA_HOME, se esportata.
-        java_home = os.environ.get("JAVA_HOME")
-        if java_home:
-            candidate = Path(java_home) / "bin" / exe_name
-            if candidate.is_file():
-                candidates.append(str(candidate))
-
-        # (c) Solo su Windows, come ultima risorsa: scansione delle sole
-        # sottocartelle vendor note sotto Program Files, con profondita'
-        # LIMITATA a 3 livelli sotto la cartella vendor (tagliando 'dirs' in
-        # os.walk) - basta per ".../<vendor>/jdk-17/bin/java.exe" (2 livelli).
-        # Per "Microsoft" si entra SOLO nelle sottocartelle che iniziano per
-        # "jdk": sotto Program Files\Microsoft convivono decine di prodotti
-        # non-Java, e la versione precedente camminava l'INTERO albero di ogni
-        # cartella vendor (decine di migliaia di file), congelando la UI di
-        # QGIS per svariati secondi a ogni prima ricerca.
-        if os.name == "nt":
-            program_files_dirs = [
-                os.environ.get("PROGRAMFILES", "C:\\Program Files"),
-                os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
-            ]
-            # Cartelle dei vendor JDK/JRE piu' diffusi su Windows: coprire
-            # questi nomi significa non dipendere da quale distribuzione
-            # l'utente ha installato (Oracle va sotto "Java").
-            vendor_subdirs = ["Java", "Eclipse Adoptium", "Eclipse Foundation",
-                              "Microsoft", "Amazon Corretto", "Zulu",
-                              "BellSoft", "Semeru"]
-            for pf in program_files_dirs:
-                for vendor in vendor_subdirs:
-                    base_path = Path(pf) / vendor
-                    if not base_path.is_dir():
-                        continue
-                    base_depth = len(base_path.parts)
-                    for root, dirs, files in os.walk(base_path):
-                        depth = len(Path(root).parts) - base_depth
-                        if depth >= 3:
-                            # Non scendere oltre: java.exe non sta mai cosi'
-                            # in fondo in una distribuzione JDK/JRE standard.
-                            dirs[:] = []
-                        elif vendor == "Microsoft" and depth == 0:
-                            dirs[:] = [d for d in dirs if d.lower().startswith("jdk")]
-                        if exe_name in files:
-                            candidates.append(str(Path(root) / exe_name))
-
-        seen = set()
-        unique_candidates = []
-        for c in candidates:
-            key = os.path.normcase(os.path.normpath(c))
-            if key not in seen:
-                seen.add(key)
-                unique_candidates.append(c)
-
-        best_path = None
-        best_version = (-1, -1)
-        for c in unique_candidates:
-            version = self._probe_java_version(c)
-            if version is not None and version > best_version:
-                best_version = version
-                best_path = c
-
-        if best_path:
-            self.log(f"   ☕ Java trovato e verificato funzionante: {best_path} "
-                      f"(versione {best_version[0]}.{best_version[1]}, "
-                      f"{len(unique_candidates)} candidati esaminati)")
-        elif unique_candidates:
-            self.log(f"   ⚠️ {len(unique_candidates)} {exe_name} trovati ma nessuno "
-                      f"risulta funzionante (eseguibile rotto o incompatibile?)", Qgis.Warning)
-
-        self._java_path_cache = best_path or ""
-        return best_path
-
-    def _probe_java_version(self, java_exe):
-        """Esegue 'java -version' per verificare che l'eseguibile funzioni
-        davvero (non solo che il file esista sul disco) e per leggerne la
-        versione reale, usata per scegliere la migliore tra piu'
-        installazioni trovate sulla macchina. Ritorna None se l'eseguibile
-        non parte o la versione non e' interpretabile."""
-        try:
-            result = subprocess.run(
-                [java_exe, "-version"], capture_output=True, text=True, timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except Exception as e:
-            self.log(f"   ⚠️ Verifica 'java -version' fallita per {java_exe}: {e}",
-                     Qgis.Warning)
-            return None
-        output = (result.stdout or "") + (result.stderr or "")
-        m = re.search(r'version "(\d+)(?:\.(\d+))?', output)
-        if not m:
-            self.log(f"   ⚠️ Output 'java -version' non interpretabile per {java_exe}: "
-                     f"{output.strip()[:200]}", Qgis.Warning)
-            return None
-        major = int(m.group(1))
-        minor = int(m.group(2)) if m.group(2) else 0
-        # Versioni vecchio stile ("1.8.0_401" = Java 8, "1.7.0_80" = Java 7):
-        # il numero di major version reale e' il secondo gruppo, non "1".
-        if major == 1 and minor:
-            major, minor = minor, 0
-        return (major, minor)
+        self._java_path_cache = esito.percorso or ""
+        return esito.percorso
 
     def get_ili_class(self, gpkg_path, table_name):
         """Legge la classe ILI dai metadati di ili2db."""

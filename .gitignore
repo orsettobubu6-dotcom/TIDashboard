@@ -15,6 +15,14 @@
 !/av2geobau_src/
 !/crea_zip_plugin.py
 
+# Le automazioni. SENZA QUESTA RIGA il "/*" qui sopra le escludeva in
+# silenzio: il commit 11cdd8f, intitolato "Il pacchetto del plugin si
+# pubblica da se' fra i Releases", conteneva in realta' il solo
+# crea_zip_plugin.py - il workflow non e' mai entrato nel repository e su
+# GitHub non e' mai esistito. git add non protesta per un file ignorato, e
+# "git status" pulito sembrava una conferma.
+!/.github/
+
 # Il sorgente Java del traduttore DXF va distribuito (LGPL 2.1), ma i prodotti
 # della compilazione no: i .class ricompilati, la cartella di assemblaggio del
 # jar, il jar stesso e il log degli errori di compilazione.

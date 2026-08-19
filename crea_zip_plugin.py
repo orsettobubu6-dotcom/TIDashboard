@@ -9,6 +9,7 @@ metadata.txt, cosi' il nome del file non puo' divergere dal contenuto.
 """
 import hashlib
 import os
+import stat
 import sys
 import zipfile
 
@@ -26,8 +27,48 @@ with open(os.path.join(SRC, "metadata.txt"), encoding="utf-8") as f:
     for riga in f:
         if riga.startswith("version="):
             versione = riga.split("=", 1)[1].strip()
-ZIP = os.path.join(QUI, "%s_%s.zip" % (NOME, versione))
+# I pacchetti stanno in dist/, non sparsi nella radice del repository: e' la
+# cartella che la CI carica come artefatto.
+DIST = os.path.join(QUI, "dist")
+ZIP = os.path.join(DIST, "%s_%s.zip" % (NOME, versione))
 
+# Data fissa delle voci dello zip: vedi la nota sulla riproducibilita' in
+# testa al file. Il 1980 e' il minimo che il formato ZIP sappia scrivere.
+DATA_FISSA = (1980, 1, 1, 0, 0, 0)
+
+# plugins.qgis.org rifiuta il caricamento se manca uno di questi campi: senza
+# questo controllo lo si scopre solo al momento della pubblicazione.
+OBBLIGATORI = ("name", "qgisMinimumVersion", "description", "about", "version",
+               "author", "email", "repository", "tracker")
+
+
+def controlla_metadata():
+    """I campi che plugins.qgis.org pretende. Ritorna True se ci sono tutti."""
+    campi = {}
+    with open(os.path.join(SRC, "metadata.txt"), encoding="utf-8") as f:
+        for riga in f:
+            if "=" in riga and not riga.startswith("["):
+                chiave, valore = riga.split("=", 1)
+                campi[chiave.strip()] = valore.strip()
+    ok = True
+    print("campi obbligatori metadata.txt:")
+    for c in OBBLIGATORI:
+        v = campi.get(c, "")
+        stato = "ASSENTE <--" if not v else (
+            "DA COMPILARE <--" if "DA-COMPILARE" in v else "ok")
+        if stato != "ok":
+            ok = False
+        print("  %-20s %s" % (c, stato))
+    print("  %-20s %s" % ("experimental", campi.get("experimental", "?")))
+    return ok
+
+
+# --solo-check-metadata: il controllo piu' veloce che ci sia, senza costruire
+# niente. La CI lo usa nel job che non ha QGIS.
+if "--solo-check-metadata" in sys.argv:
+    sys.exit(0 if controlla_metadata() else 1)
+
+os.makedirs(DIST, exist_ok=True)
 if os.path.exists(ZIP):
     os.remove(ZIP)
 
@@ -39,10 +80,23 @@ with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             if os.path.splitext(nome_file)[1].lower() in ESCLUDI_EST:
                 continue
             assoluto = os.path.join(radice, nome_file)
-            z.write(assoluto, os.path.join(NOME, os.path.relpath(assoluto, SRC)))
+            interno = os.path.join(NOME, os.path.relpath(assoluto, SRC))
+            info = zipfile.ZipInfo(interno.replace(os.sep, "/"), DATA_FISSA)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            # Permessi fissi (rw-r--r--): quelli veri del filesystem
+            # cambierebbero l'impronta fra Windows e Linux.
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            with open(assoluto, "rb") as sorgente:
+                z.writestr(info, sorgente.read())
             n_file += 1
 
+with open(ZIP, "rb") as f:
+    impronta = hashlib.sha256(f.read()).hexdigest()
+with open(ZIP + ".sha256", "w", encoding="utf-8") as f:
+    f.write("%s  %s\n" % (impronta, os.path.basename(ZIP)))
+
 print("creato: %s" % ZIP)
+print("SHA256: %s" % impronta)
 print("file inclusi: %d   dimensione: %.2f MB" % (n_file, os.path.getsize(ZIP) / 1048576.0))
 
 esito = True
@@ -85,29 +139,13 @@ with zipfile.ZipFile(ZIP) as z:
              len([n for n in nomi if "/fonts/" in n]),
              len([n for n in nomi if "/symbols/" in n])))
 
-# plugins.qgis.org rifiuta il caricamento se manca uno di questi campi: senza
-# questo controllo lo si scopre solo al momento della pubblicazione.
-OBBLIGATORI = ("name", "qgisMinimumVersion", "description", "about", "version",
-               "author", "email", "repository", "tracker")
-campi = {}
-with open(os.path.join(SRC, "metadata.txt"), encoding="utf-8") as f:
-    for riga in f:
-        if "=" in riga and not riga.startswith("["):
-            chiave, valore = riga.split("=", 1)
-            campi[chiave.strip()] = valore.strip()
-print("\ncampi obbligatori metadata.txt:")
-for c in OBBLIGATORI:
-    v = campi.get(c, "")
-    stato = "ASSENTE <--" if not v else ("DA COMPILARE <--" if "DA-COMPILARE" in v else "ok")
-    if stato != "ok":
-        esito = False
-    print("  %-20s %s" % (c, stato))
-print("  %-20s %s" % ("experimental", campi.get("experimental", "?")))
+print("")
+esito = controlla_metadata() and esito
 
 print("\nESITO:", "PACCHETTO VALIDO" if esito else "ANOMALIE PRESENTI")
 
 # Il codice di uscita, non solo la riga stampata: lanciato da un'automazione
-# (vedi .github/workflows/rilascio.yml) un pacchetto con anomalie verrebbe
+# (vedi .github/workflows/ci.yml) un pacchetto con anomalie verrebbe
 # altrimenti pubblicato lo stesso, e nessuno legge il registro di una cosa
 # che dice di essere andata bene.
 sys.exit(0 if esito else 1)
