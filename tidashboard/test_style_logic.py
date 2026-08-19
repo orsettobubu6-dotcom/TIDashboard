@@ -722,6 +722,141 @@ class TestGrandezzeDelCapitolo5(unittest.TestCase):
                     msg="%s ha la grandezza delle condotte" % chiave)
 
 
+class TestLineeDellaCoperturaDelSuolo(unittest.TestCase):
+    """Le linee perimetrali della Copertura del suolo (cap. 3.3).
+
+    Il capitolo dice tre cose: lo spessore e' 0.20 mm per TUTTO il tema, il
+    contorno e' "continuo o interrotto1" a seconda del genere, e l'interrotto1
+    (1.5 / 0.5) si usa SOLO qui.
+
+    IL DIFETTO CHE QUESTO TEST PRESIDIA: in un QgsRuleBasedRenderer senza
+    regola di ripiego, una feature che non combacia con nessun filtro non
+    viene disegnata affatto. "spartitraffico" non aveva alcuna regola e i suoi
+    132 poligoni sparivano dal piano di Mendrisio in silenzio - nessun errore,
+    nessun avviso, semplicemente non c'erano. Non lo si trova guardando le
+    regole che ci sono: lo si trova passando tutto il dominio."""
+
+    # I valori VERI del dominio Genere_CS di MD01MUTI7MN95, con il tipo di
+    # linea prescritto dal cap. 3.3.
+    DOMINIO = (
+        ("edificio", "continuo"),
+        ("rivestimento_duro.strada_sentiero.nazionale", "continuo"),
+        ("rivestimento_duro.strada_sentiero.cantonale", "continuo"),
+        ("rivestimento_duro.strada_sentiero.comunale", "continuo"),
+        ("rivestimento_duro.strada_sentiero.altra_strada", "continuo"),
+        # sotto-genere con linea propria per circ154_allegato4
+        ("rivestimento_duro.strada_sentiero.sentiero", "interrotto1"),
+        ("rivestimento_duro.marciapiede", "continuo"),
+        ("rivestimento_duro.spartitraffico", "continuo"),
+        ("rivestimento_duro.ferrovia", "interrotto1"),
+        ("rivestimento_duro.aeroporto", "continuo"),
+        ("rivestimento_duro.bacino_idrico.piscina", "continuo"),
+        ("rivestimento_duro.bacino_idrico.altro_bacino_idrico", "continuo"),
+        ("rivestimento_duro.altro_rivestimento_duro", "interrotto1"),
+        ("humus.campo_prato_pascolo", "interrotto1"),
+        ("humus.coltura_intensiva.vigna", "interrotto1"),
+        ("humus.coltura_intensiva.altra_coltura_intensiva", "interrotto1"),
+        ("humus.giardino", "interrotto1"),
+        ("humus.torbiera", "interrotto1"),
+        ("humus.altro_humus", "interrotto1"),
+        ("acque.specchio_acqua", "continuo"),
+        ("acque.corso_acqua.fiume", "continuo"),
+        ("acque.corso_acqua.torrente", "continuo"),
+        ("acque.corso_acqua.canale", "continuo"),
+        ("acque.canneti", "interrotto1"),
+        ("bosco.bosco_fitto", "interrotto1"),
+        ("bosco.pascolo_boscato.pascolo_boscato_fitto", "interrotto1"),
+        ("bosco.pascolo_boscato.pascolo_boscato_rado", "interrotto1"),
+        ("bosco.altro_bosco", "interrotto1"),
+        ("senza_vegetazione.roccia", "interrotto1"),
+        ("senza_vegetazione.ghiacciaio_nevaio", "interrotto1"),
+        ("senza_vegetazione.pietraia_sabbia", "interrotto1"),
+        ("senza_vegetazione.cava_di_ghiaia_discarica", "interrotto1"),
+        ("senza_vegetazione.altra_senza_vegetazione", "interrotto1"),
+    )
+
+    def _renderer(self):
+        layer = QgsVectorLayer(
+            "Polygon?crs=EPSG:2056&field=genere:string",
+            "copertura_dl_solo_superficiecs", "memory")
+        return make_dialog_stub()._get_renderer_for_table(
+            "SuperficieCS", "copertura_dl_solo_superficiecs", "gb",
+            "POLYGON", layer), layer
+
+    def _contorno(self, sym, prof=0):
+        """(spessore, tratteggio) del contorno, scendendo nei sotto-simboli:
+        con il bordo tratteggiato il contorno e' una linea vera DENTRO il
+        simbolo di riempimento, non la cornice del riempimento."""
+        larg = tratto = None
+        if sym is None or prof > 4:
+            return larg, tratto
+        for i in range(sym.symbolLayerCount()):
+            sl = sym.symbolLayer(i)
+            tipo = sl.layerType()
+            if tipo == "SimpleLine":
+                if sl.width() and sl.width() > 0 and larg is None:
+                    larg = sl.width()
+                v = sl.customDashVector()
+                if sl.useCustomDashPattern() and v:
+                    tratto = ";".join("%.2f" % x for x in v)
+                elif tratto is None:
+                    tratto = "continuo"
+            elif tipo == "SimpleFill":
+                if sl.strokeWidth() and sl.strokeWidth() > 0 and larg is None:
+                    larg = sl.strokeWidth()
+                    tratto = tratto or "continuo"
+            sub = getattr(sl, "subSymbol", lambda: None)()
+            if sub is not None:
+                l2, t2 = self._contorno(sub, prof + 1)
+                larg = larg if larg is not None else l2
+                tratto = tratto if tratto is not None else t2
+        return larg, tratto
+
+    def _regola_per(self, renderer, layer, genere):
+        from qgis.core import (QgsFeature, QgsExpression, QgsExpressionContext,
+                               QgsExpressionContextUtils)
+        f = QgsFeature(layer.fields())
+        f.setAttribute("genere", genere)
+        ctx = QgsExpressionContext()
+        ctx.appendScope(QgsExpressionContextUtils.globalScope())
+        ctx.setFeature(f)
+        for reg in renderer.rootRule().children():
+            espressione = reg.filterExpression()
+            if not espressione:
+                return reg            # ripiego: prende tutto
+            if QgsExpression(espressione).evaluate(ctx):
+                return reg
+        return None
+
+    def test_ogni_genere_del_dominio_ha_una_regola(self):
+        renderer, layer = self._renderer()
+        senza = [g for g, _t in self.DOMINIO
+                 if self._regola_per(renderer, layer, g) is None]
+        self.assertEqual(senza, [],
+                         "questi generi non li disegna nessuno: %s" % senza)
+
+    def test_continuo_o_interrotto1_secondo_la_tabella(self):
+        renderer, layer = self._renderer()
+        for genere, atteso in self.DOMINIO:
+            reg = self._regola_per(renderer, layer, genere)
+            self.assertIsNotNone(reg, genere)
+            _larg, tratto = self._contorno(reg.symbol())
+            nostro = "interrotto1" if tratto == "1.50;0.50" else tratto
+            self.assertEqual(nostro, atteso,
+                             "%s: il cap.3.3 lo vuole %s, la regola %r da' %s"
+                             % (genere, atteso, reg.label(), nostro))
+
+    def test_tutto_il_tema_a_020_mm(self):
+        """Lo spessore e' unico per tutta la copertura del suolo."""
+        renderer, _layer = self._renderer()
+        for reg in renderer.rootRule().children():
+            larg, _t = self._contorno(reg.symbol())
+            self.assertIsNotNone(larg, "regola senza contorno: %s" % reg.label())
+            self.assertAlmostEqual(larg, 0.20, places=3,
+                                   msg="%s: spessore %.3f invece di 0.20"
+                                       % (reg.label(), larg))
+
+
 class TestTrameDelCapitolo4(unittest.TestCase):
     """Le trame delle superfici contro la tabella del cap. 4.
 

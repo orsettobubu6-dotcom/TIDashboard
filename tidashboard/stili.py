@@ -437,10 +437,21 @@ class StiliMixin:
                    genere_in(['strada_sentiero', 'nazionale', 'cantonale', 'comunale',
                               'altra_strada']), "Strada-sentiero")
 
-        # Marciapiede / Aeroporto: senza riempimento (solo bordo), su richiesta utente -
-        # rimosso il grigio CMYK(0,0,0,12) precedentemente usato
+        # Marciapiede / Spartitraffico / Aeroporto: senza riempimento (solo
+        # bordo), su richiesta utente - rimosso il grigio CMYK(0,0,0,12)
+        # precedentemente usato. Tutti e tre sono "rivestimento duro" e il
+        # cap.3.3 li da' continui.
+        #
+        # SPARTITRAFFICO MANCAVA DEL TUTTO, e non era un dettaglio: in un
+        # QgsRuleBasedRenderer senza regola di ripiego una feature che non
+        # combacia con nessun filtro NON VIENE DISEGNATA. Sui dati di
+        # Mendrisio sono 132 poligoni che sparivano dal piano in silenzio.
+        # Trovato passando tutti e 33 i valori del dominio Genere_CS del
+        # modello ticinese attraverso il renderer e guardando quale regola li
+        # prendesse: e' l'unico che non ne aveva nessuna.
         apply_rule(root, build_sym('fill', [make_fill(None, C_NERO, 0.20)]),
-                   genere_in(['marciapiede', 'aeroporto']), "Marciapiede / Aeroporto")
+                   genere_in(['marciapiede', 'spartitraffico', 'aeroporto']),
+                   "Marciapiede / Spartitraffico / Aeroporto")
 
         # Ferrovia: bianco con bordo nero tratteggiato. circ154_allegato2
         # cap.3.4 la elenca fra i generi "interrotto1" (non continuo).
