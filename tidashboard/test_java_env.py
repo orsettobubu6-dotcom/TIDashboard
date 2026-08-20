@@ -135,7 +135,22 @@ class TestSondaVersione(unittest.TestCase):
 
 
 class TestElencaCandidatiWindows(unittest.TestCase):
-    PF = r"C:\Program Files"
+    r"""La scansione delle cartelle vendor di Windows.
+
+    I PERCORSI SI COMPONGONO CON os.path.join, non concatenando backslash.
+    Sembra un dettaglio di stile e non lo e': su Linux il backslash NON e' un
+    separatore, quindi os.path.dirname di "C:\Program Files\Java\bin\java.exe"
+    torna stringa vuota, il finto albero resta senza cartelle e la scansione
+    non trova niente. Questi test passavano su Windows e fallivano in CI - e'
+    successo davvero, alla prima corsa del workflow.
+
+    Componendoli con os.path.join si prova la LOGICA (elenco dei vendor,
+    potatura sotto Microsoft, limite di profondita') su qualunque sistema, che
+    e' la parte che puo' rompersi. Quello che resta specifico di Windows e'
+    segnato con skipUnless.
+    """
+
+    PF = os.path.join("C:" + os.sep, "Program Files")
 
     def _elenca(self, files, environ=None, which=None):
         f, d, w = _albero(files)
@@ -146,45 +161,62 @@ class TestElencaCandidatiWindows(unittest.TestCase):
             esiste_file=f, esiste_dir=d, cammina=w)
 
     def test_path_viene_per_primo(self):
-        c = self._elenca([], which=lambda _n: r"C:\Windows\System32\java.exe")
-        self.assertEqual(c, [r"C:\Windows\System32\java.exe"])
+        atteso = _p(self.PF, "java.exe")
+        c = self._elenca([], which=lambda _n: atteso)
+        self.assertEqual(c, [atteso])
 
     def test_java_home(self):
-        home = r"C:\jdk17"
-        c = self._elenca([home + r"\bin\java.exe"],
-                         environ={"PROGRAMFILES": self.PF, "JAVA_HOME": home})
-        self.assertIn(home + r"\bin\java.exe", c)
+        home = _p("C:" + os.sep, "jdk17")
+        exe = _p(home, "bin", "java.exe")
+        c = self._elenca([exe], environ={"PROGRAMFILES": self.PF,
+                                         "JAVA_HOME": home})
+        self.assertIn(exe, [_p(x) for x in c])
 
     def test_java_home_che_punta_a_niente_non_entra(self):
         c = self._elenca([], environ={"PROGRAMFILES": self.PF,
-                                      "JAVA_HOME": r"C:\non\esiste"})
+                                      "JAVA_HOME": _p("C:" + os.sep, "non", "esiste")})
         self.assertEqual(c, [])
 
     def test_trova_i_vendor(self):
         c = self._elenca([
-            self.PF + r"\Eclipse Adoptium\jdk-17.0.9\bin\java.exe",
-            self.PF + r"\Java\jre1.8.0_401\bin\java.exe",
+            _p(self.PF, "Eclipse Adoptium", "jdk-17.0.9", "bin", "java.exe"),
+            _p(self.PF, "Java", "jre1.8.0_401", "bin", "java.exe"),
         ])
         self.assertEqual(len(c), 2)
 
     def test_sotto_microsoft_si_entra_solo_nelle_jdk(self):
-        """Sotto Program Files\\Microsoft convivono decine di prodotti non
-        Java: camminarli tutti congelava la finestra per secondi."""
+        """Sotto la cartella Microsoft convivono decine di prodotti non Java:
+        camminarli tutti congelava la finestra per secondi."""
         c = self._elenca([
-            self.PF + r"\Microsoft\jdk-17.0.9\bin\java.exe",
-            self.PF + r"\Microsoft\Office\root\java.exe",
+            _p(self.PF, "Microsoft", "jdk-17.0.9", "bin", "java.exe"),
+            _p(self.PF, "Microsoft", "Office", "root", "java.exe"),
         ])
         self.assertEqual(len(c), 1)
         self.assertIn("jdk-17.0.9", c[0])
 
+    def test_oltre_la_profondita_massima_non_si_scende(self):
+        """java.exe non sta mai cosi' in fondo in una distribuzione standard,
+        e camminare l'albero intero era il difetto da cui e' nata la
+        potatura."""
+        c = self._elenca([
+            _p(self.PF, "Java", "a", "b", "c", "d", "bin", "java.exe"),
+        ])
+        self.assertEqual(c, [])
+
+    @unittest.skipUnless(os.name == "nt",
+                         "normcase piega le maiuscole solo su Windows: "
+                         "altrove i due percorsi restano diversi e non c'e' "
+                         "nessun duplicato da fondere")
     def test_i_duplicati_si_contano_una_volta_sola(self):
         """PATH e JAVA_HOME indicano spesso lo stesso eseguibile, scritto in
         due modi: sonderemmo due volte lo stesso file."""
-        home = r"C:\jdk17"
-        exe = home + r"\bin\java.exe"
+        home = _p("C:" + os.sep, "jdk17")
+        exe = _p(home, "bin", "java.exe")
+        maiuscolo = exe.replace("jdk17", "JDK17")
+        self.assertNotEqual(maiuscolo, exe, "il caso di prova deve differire")
         c = self._elenca([exe],
                          environ={"PROGRAMFILES": self.PF, "JAVA_HOME": home},
-                         which=lambda _n: exe.replace("\\jdk17\\", "\\JDK17\\"))
+                         which=lambda _n: maiuscolo)
         self.assertEqual(len(c), 1)
 
 
