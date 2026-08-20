@@ -189,6 +189,15 @@ def gon_a_gradi(gon):
     return (float(gon) % 400.0) * 0.9
 
 
+def gradi_a_gon(gradi):
+    """L'inverso: gradi sessagesimali -> gon, riportati in [0, 400).
+
+    Serve a tradurre in gon un angolo misurato sul canvas, dove tutto e' in
+    gradi: l'utente ruota il foglio col mouse e deve rileggere il valore
+    nell'unita' della misurazione ufficiale."""
+    return (float(gradi) / 0.9) % 400.0
+
+
 def _formato(nome):
     for n, w, h in FORMATI:
         if n == nome:
@@ -804,6 +813,40 @@ def impronta_foglio(centro, scala, formato="A4 verticale", rotazione_gon=0.0):
             for dx, dy in ((-mezzo_x, -mezzo_y), (mezzo_x, -mezzo_y),
                            (mezzo_x, mezzo_y), (-mezzo_x, mezzo_y),
                            (-mezzo_x, -mezzo_y))]
+
+
+def maniglia_rotazione(centro, scala, formato="A4 verticale", rotazione_gon=0.0):
+    """Il punto per cui si afferra il foglio per ruotarlo: meta' del lato
+    SUPERIORE dell'impronta.
+
+    Il lato superiore e non un vertice: a rotazione zero sta a nord del
+    centro, quindi la maniglia indica anche da che parte guarda il foglio -
+    un vertice sarebbe ambiguo fra quattro."""
+    punti = impronta_foglio(centro, scala, formato, rotazione_gon)
+    # impronta_foglio produce i vertici in ordine: (-x,-y), (+x,-y), (+x,+y),
+    # (-x,+y) e la chiusura. I due superiori sono quindi il terzo e il quarto.
+    alto_destra, alto_sinistra = punti[2], punti[3]
+    return QgsPointXY((alto_destra.x() + alto_sinistra.x()) / 2.0,
+                      (alto_destra.y() + alto_sinistra.y()) / 2.0)
+
+
+def rotazione_verso(centro, punto):
+    """La rotazione in gon che porta la maniglia sotto 'punto'. None se il
+    punto coincide col centro, dove un angolo non esiste.
+
+    IL VERSO NON E' DEDOTTO A OCCHIO. impronta_foglio ruota l'impronta in
+    senso ANTIORARIO (vedi la sua docstring: QGIS gira il contenuto in senso
+    orario dentro una cornice ferma), quindi a rotazione r la maniglia sta a
+    r gon in senso antiorario da nord. Qui si inverte quella relazione, e un
+    test la percorre in tutti e due i sensi su tutto il giro: e' l'unico modo
+    di non sbagliare un segno che a occhio sembra sempre giusto."""
+    dx = punto.x() - centro.x()
+    dy = punto.y() - centro.y()
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return None
+    # atan2 misura da EST in senso antiorario; la maniglia a rotazione zero
+    # sta a NORD, cioe' 90 gradi piu' avanti.
+    return gradi_a_gon(math.degrees(math.atan2(dy, dx)) - 90.0)
 
 
 def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",

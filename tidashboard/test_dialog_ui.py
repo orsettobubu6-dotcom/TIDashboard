@@ -1603,6 +1603,110 @@ class TestRisultatiSullaMappa(unittest.TestCase):
         self.assertEqual(dlg._bande_risultati, [])
 
 
+class TestManigliaSulCanvas(unittest.TestCase):
+    """I tre gesti dello strumento: sposta, ruota, doppio clic.
+
+    Il trascinamento c'era gia'; qui si provano la maniglia di rotazione e lo
+    zoom, e soprattutto che i tre gesti non si rubino il posto a vicenda.
+    """
+
+    def _strumento(self, formato="A4 verticale", scala=1000, gon=0.0):
+        from tidashboard.tidashboard import StrumentoSpostaFoglio
+        iface = _IfaceFinto()
+        dlg = TIDashboardDialog(iface=iface)
+        dlg.combo_formato.setCurrentText(formato)
+        dlg.combo_scala.setCurrentText("1:%d" % scala)
+        dlg.spin_rotazione.setValue(gon)
+        dlg._centro_da_fondo = QgsPointXY(CX, CY)
+        canvas = iface.mapCanvas()
+        # Una vista larga abbastanza da contenere il foglio: la presa della
+        # maniglia si misura in pixel, quindi dipende dallo zoom.
+        canvas.setExtent(QgsRectangle(CX - 400, CY - 400, CX + 400, CY + 400))
+        canvas.resize(600, 600)
+        return dlg, StrumentoSpostaFoglio(canvas, dlg), canvas
+
+    def test_la_maniglia_si_afferra_e_ruota(self):
+        dlg, tool, _c = self._strumento()
+        maniglia = P.maniglia_rotazione(
+            QgsPointXY(CX, CY), 1000, "A4 verticale", 0.0)
+        tool.canvasPressEvent(_EventoFinto(maniglia.x(), maniglia.y()))
+        # trascinata a ovest = un quarto di giro antiorario = 100 gon
+        tool.canvasMoveEvent(_EventoFinto(CX - 200, CY))
+        self.assertAlmostEqual(dlg.spin_rotazione.value(), 100.0, delta=0.2)
+
+    def test_la_rotazione_finisce_nella_casella_e_non_altrove(self):
+        """La casella resta l'unica fonte: cosi' il valore si legge in gon
+        mentre si trascina e l'anteprima si aggiorna da sola."""
+        dlg, tool, _c = self._strumento()
+        maniglia = P.maniglia_rotazione(
+            QgsPointXY(CX, CY), 1000, "A4 verticale", 0.0)
+        tool.canvasPressEvent(_EventoFinto(maniglia.x(), maniglia.y()))
+        tool.canvasReleaseEvent(_EventoFinto(CX, CY - 200))
+        self.assertAlmostEqual(dlg.spin_rotazione.value(), 200.0, delta=0.2)
+
+    def test_la_maniglia_ha_la_precedenza_sul_trascinamento(self):
+        """Sta sul bordo, quindi cade DENTRO l'impronta: se si controllasse
+        prima il rettangolo non si riuscirebbe mai ad afferrarla."""
+        dlg, tool, _c = self._strumento()
+        prima = dlg.spin_rotazione.value()
+        maniglia = P.maniglia_rotazione(
+            QgsPointXY(CX, CY), 1000, "A4 verticale", 0.0)
+        tool.canvasPressEvent(_EventoFinto(maniglia.x(), maniglia.y()))
+        tool.canvasMoveEvent(_EventoFinto(CX - 200, CY))
+        self.assertNotAlmostEqual(dlg.spin_rotazione.value(), prima, places=1)
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6,
+                               msg="ruotando il centro non si deve muovere")
+
+    def test_dentro_il_foglio_ma_lontano_dalla_maniglia_si_sposta(self):
+        dlg, tool, _c = self._strumento()
+        prima = dlg.spin_rotazione.value()
+        tool.canvasPressEvent(_EventoFinto(CX, CY))
+        tool.canvasMoveEvent(_EventoFinto(CX + 30, CY + 10))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX + 30, places=6)
+        self.assertAlmostEqual(dlg.spin_rotazione.value(), prima, places=6,
+                               msg="spostando la rotazione non deve cambiare")
+
+    def test_fuori_dal_foglio_non_succede_niente(self):
+        dlg, tool, _c = self._strumento()
+        tool.canvasPressEvent(_EventoFinto(CX + 100000, CY))
+        tool.canvasMoveEvent(_EventoFinto(CX + 100030, CY))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6)
+
+    def test_il_doppio_clic_inquadra_il_foglio(self):
+        dlg, tool, canvas = self._strumento()
+        canvas.setExtent(QgsRectangle(CX - 5000, CY - 5000, CX + 5000, CY + 5000))
+        tool.canvasDoubleClickEvent(_EventoFinto(CX, CY))
+        vista = canvas.extent()
+        impronta = QgsGeometry.fromPolygonXY([P.impronta_foglio(
+            QgsPointXY(CX, CY), 1000, "A4 verticale", 0.0)]).boundingBox()
+        self.assertTrue(vista.contains(impronta), "il foglio deve starci tutto")
+        self.assertLess(vista.width(), 5000.0, "e la vista deve essersi stretta")
+
+    def test_il_doppio_clic_non_sposta_il_foglio(self):
+        """Muove la VISTA, non il foglio: sono due cose diverse e confonderle
+        sposterebbe cio' che si stampa mentre si voleva solo guardarlo."""
+        dlg, tool, _c = self._strumento()
+        tool.canvasDoubleClickEvent(_EventoFinto(CX, CY))
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), CX, places=6)
+        self.assertAlmostEqual(dlg._centro_da_fondo.y(), CY, places=6)
+
+    def test_il_doppio_clic_fuori_dal_foglio_non_fa_niente(self):
+        dlg, tool, canvas = self._strumento()
+        prima = canvas.extent()
+        tool.canvasDoubleClickEvent(_EventoFinto(CX + 100000, CY))
+        self.assertEqual(canvas.extent(), prima)
+
+    def test_ruotare_col_puntatore_sul_centro_non_fa_saltare_niente(self):
+        """Sul centro un angolo non esiste: deve restare com'era, non
+        azzerarsi."""
+        dlg, tool, _c = self._strumento(gon=137.5)
+        maniglia = P.maniglia_rotazione(
+            QgsPointXY(CX, CY), 1000, "A4 verticale", 137.5)
+        tool.canvasPressEvent(_EventoFinto(maniglia.x(), maniglia.y()))
+        tool.canvasMoveEvent(_EventoFinto(CX, CY))
+        self.assertAlmostEqual(dlg.spin_rotazione.value(), 137.5, places=1)
+
+
 class TestCartellaDiLavoro(unittest.TestCase):
     def test_propone_la_cartella_dell_itf_in_uso(self):
         dlg = TIDashboardDialog()

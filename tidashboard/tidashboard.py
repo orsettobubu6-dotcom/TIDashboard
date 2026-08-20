@@ -571,7 +571,7 @@ class DialogScaricaMU(QDialog):
 
 
 class StrumentoSpostaFoglio(QgsMapTool):
-    """Prende il rettangolo del foglio e lo porta dove serve.
+    """Prende il rettangolo del foglio e lo porta dove serve, o lo gira.
 
     Prima il foglio si inquadrava indirettamente: si spostava la MAPPA finche'
     il centro della vista non capitava dove serviva, e il rettangolo seguiva.
@@ -579,15 +579,25 @@ class StrumentoSpostaFoglio(QgsMapTool):
     una cosa - e alle scale piccole basta un pixel di troppo per perdere
     l'inquadratura. Qui si afferra direttamente il rettangolo.
 
-    Si trascina SOLO afferrandolo da dentro: fuori dal rettangolo il tasto
-    sinistro resta libero per la navigazione normale, cosi' lo strumento acceso
-    non sequestra il canvas.
+    TRE GESTI, e ciascuno risponde solo dove ha senso:
+      - dentro il rettangolo, trascina: sposta il centro;
+      - sulla MANIGLIA (meta' del lato superiore), trascina: ruota;
+      - doppio clic dentro: la vista si porta sul foglio.
+
+    Fuori dal rettangolo il tasto sinistro resta libero per la navigazione
+    normale, cosi' lo strumento acceso non sequestra il canvas.
     """
+
+    # Raggio di presa della maniglia, in PIXEL: la tolleranza deve essere
+    # quella del dito sullo schermo, non una distanza sul terreno - a 1:10000
+    # dieci metri sono un pixel, a 1:200 mezzo schermo.
+    PRESA_PX = 14
 
     def __init__(self, canvas, dialogo):
         super().__init__(canvas)
         self._dialogo = dialogo
         self._scarto = None                  # click meno centro, per non far saltare il foglio
+        self._ruotando = False
         self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
 
     def _centro_corrente(self):
@@ -595,16 +605,40 @@ class StrumentoSpostaFoglio(QgsMapTool):
         return (getattr(self._dialogo, "_centro_da_fondo", None)
                 or canvas.extent().center())
 
+    def _parametri(self):
+        return self._dialogo._parametri_planimetria()
+
     def _impronta(self, centro):
-        formato, scala, rotazione, _c, _d = self._dialogo._parametri_planimetria()
+        formato, scala, rotazione, _c, _d = self._parametri()
         return QgsGeometry.fromPolygonXY(
             [_planimetria.impronta_foglio(centro, scala, formato, rotazione)])
+
+    def _maniglia(self, centro):
+        formato, scala, rotazione, _c, _d = self._parametri()
+        return _planimetria.maniglia_rotazione(centro, scala, formato, rotazione)
+
+    def _sulla_maniglia(self, punto, centro):
+        """La presa si misura in pixel e si converte in unita' di mappa: e'
+        la tolleranza del dito, non una distanza sul terreno."""
+        try:
+            per_pixel = self.canvas().mapUnitsPerPixel()
+        except Exception:
+            return False
+        maniglia = self._maniglia(centro)
+        return (punto.distance(maniglia) <= self.PRESA_PX * per_pixel)
 
     def canvasPressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
             return
         punto = e.mapPoint()
         centro = self._centro_corrente()
+        # La maniglia si prova PRIMA del rettangolo: sta sul bordo, e con un
+        # foglio grande cade dentro l'impronta - controllando il rettangolo
+        # per primo non si riuscirebbe mai ad afferrarla.
+        if self._sulla_maniglia(punto, centro):
+            self._ruotando = True
+            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+            return
         if not self._impronta(centro).contains(QgsGeometry.fromPointXY(punto)):
             return                            # fuori dal foglio: non e' roba nostra
         # Si tiene lo scarto fra dove hai cliccato e il centro: senza, al primo
@@ -613,23 +647,50 @@ class StrumentoSpostaFoglio(QgsMapTool):
         self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
 
     def canvasMoveEvent(self, e):
+        punto = e.mapPoint()
+        if self._ruotando:
+            self._dialogo.ruota_foglio_verso(punto, self._centro_corrente())
+            return
         if self._scarto is None:
             return
-        punto = e.mapPoint()
         self._dialogo.sposta_foglio_a(
             QgsPointXY(punto.x() - self._scarto[0], punto.y() - self._scarto[1]))
 
     def canvasReleaseEvent(self, e):
+        punto = e.mapPoint()
+        if self._ruotando:
+            self._ruotando = False
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+            self._dialogo.ruota_foglio_verso(punto, self._centro_corrente(),
+                                             definitivo=True)
+            return
         if self._scarto is None:
             return
-        punto = e.mapPoint()
         nuovo = QgsPointXY(punto.x() - self._scarto[0], punto.y() - self._scarto[1])
         self._scarto = None
         self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self._dialogo.sposta_foglio_a(nuovo, definitivo=True)
 
+    def canvasDoubleClickEvent(self, e):
+        """Doppio clic dentro il foglio: la vista si porta sull'impronta.
+
+        Serve a controllare cosa verra' stampato senza cercare a mano lo zoom
+        giusto. Non tocca il CENTRO del foglio: sposta la vista, non il
+        foglio."""
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        centro = self._centro_corrente()
+        impronta = self._impronta(centro)
+        if not impronta.contains(QgsGeometry.fromPointXY(e.mapPoint())):
+            return
+        riquadro = impronta.boundingBox()
+        riquadro.grow(max(riquadro.width(), riquadro.height()) * 0.05)
+        self.canvas().setExtent(riquadro)
+        self.canvas().refresh()
+
     def deactivate(self):
         self._scarto = None
+        self._ruotando = False
         super().deactivate()
 
 
@@ -2212,6 +2273,21 @@ class TIDashboardDialog(StiliMixin, QDialog):
                  % (centro.x(), centro.y(), nota),
                  Qgis.Warning if stato == "fuori" else Qgis.Info)
 
+    def ruota_foglio_verso(self, punto, centro, definitivo=False):
+        """Gira il foglio finche' la maniglia non guarda 'punto'.
+
+        Scrive nella casella della rotazione invece di tenersi un valore
+        suo: la casella resta l'unica fonte, il valore e' leggibile in gon
+        mentre si trascina, e l'anteprima si aggiorna da sola perche' e' gia'
+        agganciata al cambiamento di quella casella."""
+        gon = _planimetria.rotazione_verso(centro, punto)
+        if gon is None:
+            return          # puntatore sul centro: li' un angolo non esiste
+        self.spin_rotazione.setValue(round(gon, 1))
+        if definitivo:
+            self.log("   🔄 Foglio ruotato a %.1f gon (%.1f°)"
+                     % (gon, _planimetria.gon_a_gradi(gon)))
+
     def _attiva_trascinamento(self, attivo):
         """Accende o spegne lo strumento di trascinamento sul canvas."""
         iface = getattr(self, "_iface", None)
@@ -2234,6 +2310,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
             if precedente is not None:
                 canvas.setMapTool(precedente)
         self._strumento_foglio = None
+        # Spenta la presa, via anche la maniglia: promette un gesto che da
+        # quel momento non funziona piu'.
+        self._aggiorna_ingombro()
 
     # --- ANTEPRIMA DELL'INGOMBRO DEL FOGLIO ---------------------------------
     def _aggiorna_ingombro(self, *_args):
@@ -2265,6 +2344,31 @@ class TIDashboardDialog(StiliMixin, QDialog):
         colore = self._colore_ingombro(self._stato_fondo_nel_foglio(centro))
         banda.setStrokeColor(colore)
         banda.setColor(QColor(colore.red(), colore.green(), colore.blue(), 60))
+        self._disegna_maniglia(canvas, centro, scala, formato, rotazione, colore)
+
+    def _disegna_maniglia(self, canvas, centro, scala, formato, rotazione, colore):
+        """Il pallino per cui si afferra il foglio per ruotarlo.
+
+        Si disegna SOLO con lo strumento di trascinamento acceso: una
+        maniglia che non risponde al mouse e' peggio di nessuna maniglia -
+        promette un gesto che non funziona."""
+        maniglia = getattr(self, "_banda_maniglia", None)
+        attivo = getattr(self, "_strumento_foglio", None) is not None
+        if not attivo:
+            if maniglia is not None:
+                maniglia.reset(QgsWkbTypes.PointGeometry)
+            return
+        if maniglia is None:
+            from qgis.gui import QgsRubberBand
+            maniglia = QgsRubberBand(canvas, QgsWkbTypes.PointGeometry)
+            maniglia.setIcon(QgsRubberBand.ICON_CIRCLE)
+            maniglia.setIconSize(11)
+            maniglia.setWidth(2)
+            self._banda_maniglia = maniglia
+        punto = _planimetria.maniglia_rotazione(centro, scala, formato, rotazione)
+        maniglia.setToGeometry(QgsGeometry.fromPointXY(punto), None)
+        maniglia.setStrokeColor(colore)
+        maniglia.setColor(QColor(255, 255, 255, 220))
 
     def browse_open_file(self, line_edit, filter_str):
         path, _ = QFileDialog.getOpenFileName(self, "Seleziona File", "", filter_str)
@@ -2431,6 +2535,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
         banda = getattr(self, "_banda_ingombro", None)
         if banda is not None:
             banda.reset(QgsWkbTypes.PolygonGeometry)
+        maniglia = getattr(self, "_banda_maniglia", None)
+        if maniglia is not None:
+            maniglia.reset(QgsWkbTypes.PointGeometry)
         # Stesso motivo per i risultati della ricerca: restano accesi sulla
         # mappa di QGIS finche' qualcuno non li spegne, e chiusa la finestra
         # non c'e' piu' nessuno che possa farlo.

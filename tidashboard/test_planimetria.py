@@ -909,6 +909,81 @@ class TestRotazioneCheContiene(unittest.TestCase):
         self.assertIsNone(P.rotazione_che_contiene([(0, 0)], None, 500))
 
 
+class TestManigliaDiRotazione(unittest.TestCase):
+    """La maniglia per ruotare il foglio col mouse.
+
+    Il giro completo - da rotazione a maniglia e ritorno - e' il punto di
+    questi test: un segno sbagliato in atan2 da' un foglio che gira al
+    contrario, e a occhio sembra sempre giusto finche' non lo si prova su
+    tutto il cerchio.
+    """
+
+    CENTRO = QgsPointXY(CX, CY)
+
+    def test_a_rotazione_zero_la_maniglia_e_a_nord(self):
+        m = P.maniglia_rotazione(self.CENTRO, 1000, "A4 verticale", 0.0)
+        self.assertAlmostEqual(m.x(), CX, places=6)
+        self.assertGreater(m.y(), CY, "il lato superiore sta a nord del centro")
+
+    def test_andata_e_ritorno_su_tutto_il_giro(self):
+        """Per ogni rotazione: si calcola dove finisce la maniglia e si
+        chiede quale rotazione produrrebbe quel punto. Deve tornare la
+        stessa."""
+        for gon in range(0, 400, 7):
+            m = P.maniglia_rotazione(self.CENTRO, 1000, "A4 verticale", gon)
+            letta = P.rotazione_verso(self.CENTRO, m)
+            self.assertAlmostEqual(letta, gon, places=4,
+                                   msg="a %d gon la maniglia torna indietro come %s"
+                                       % (gon, letta))
+
+    def test_il_verso_e_lo_stesso_dell_impronta(self):
+        """A 100 gon l'impronta gira di un quarto in senso ANTIORARIO (vedi
+        impronta_foglio): la maniglia deve finire a OVEST, non a est."""
+        m = P.maniglia_rotazione(self.CENTRO, 1000, "A4 verticale", 100.0)
+        self.assertLess(m.x(), CX, "a 100 gon la maniglia va a ovest")
+        self.assertAlmostEqual(m.y(), CY, delta=1.0)
+
+    def test_funziona_per_ogni_formato(self):
+        for formato, _w, _h in P.FORMATI:
+            for gon in (0.0, 37.5, 250.0):
+                m = P.maniglia_rotazione(self.CENTRO, 500, formato, gon)
+                self.assertAlmostEqual(P.rotazione_verso(self.CENTRO, m), gon,
+                                       places=4, msg="%s a %s gon" % (formato, gon))
+
+    def test_la_maniglia_sta_sul_bordo_del_foglio(self):
+        """Deve cadere sul lato superiore, non dentro o fuori: e' li' che
+        l'utente si aspetta di poterla afferrare."""
+        for gon in (0.0, 50.0, 150.0, 300.0):
+            impronta = P.impronta_foglio(self.CENTRO, 1000, "A3 orizzontale", gon)
+            m = P.maniglia_rotazione(self.CENTRO, 1000, "A3 orizzontale", gon)
+            alto = QgsGeometry.fromPolylineXY([impronta[2], impronta[3]])
+            self.assertLess(alto.distance(QgsGeometry.fromPointXY(m)), 0.001,
+                            "a %s gon la maniglia non e' sul lato superiore" % gon)
+
+    def test_il_centro_non_ha_un_angolo(self):
+        self.assertIsNone(P.rotazione_verso(self.CENTRO, QgsPointXY(CX, CY)))
+
+    def test_la_distanza_non_conta_solo_la_direzione(self):
+        """Trascinando, il puntatore si allontana dal centro: la rotazione
+        deve dipendere solo da dove punta."""
+        vicino = QgsPointXY(CX, CY + 10)
+        lontano = QgsPointXY(CX, CY + 5000)
+        self.assertAlmostEqual(P.rotazione_verso(self.CENTRO, vicino),
+                               P.rotazione_verso(self.CENTRO, lontano), places=6)
+
+
+class TestGradiEGon(unittest.TestCase):
+    def test_andata_e_ritorno(self):
+        for gon in (0.0, 50.0, 100.0, 137.5, 399.9):
+            self.assertAlmostEqual(P.gradi_a_gon(P.gon_a_gradi(gon)), gon, places=9)
+
+    def test_valori_noti(self):
+        self.assertAlmostEqual(P.gradi_a_gon(90.0), 100.0)
+        self.assertAlmostEqual(P.gradi_a_gon(360.0), 0.0)
+        self.assertAlmostEqual(P.gradi_a_gon(-90.0), 300.0,
+                               msg="gli angoli negativi tornano nel giro")
+
+
 class TestCentroPlanimetria(unittest.TestCase):
     """Il centro del foglio, provato SENZA canvas.
 
