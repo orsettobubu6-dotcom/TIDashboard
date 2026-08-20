@@ -770,7 +770,7 @@ class TestNotaFattore(unittest.TestCase):
         dlg = TIDashboardDialog()
         self.assertTrue(self._scegli_scala(dlg, 5000))
         testo = dlg.lbl_fattore.text()
-        self.assertIn("0.80", testo)
+        self.assertIn("0.67", testo)
         self.assertIn("cartiglio", testo)
 
     def test_conferma_quando_il_fattore_e_quello_della_norma(self):
@@ -783,7 +783,7 @@ class TestNotaFattore(unittest.TestCase):
         self.assertTrue(self._scegli_scala(dlg, 10000))
         dlg.chk_lettera_norma.setChecked(True)
         testo = dlg.lbl_fattore.text()
-        self.assertIn("0.15 mm", testo)
+        self.assertIn("0.18 mm", testo)
         self.assertIn("soglia di stampa", testo)
 
     def test_cambiando_prodotto_cambia_il_riferimento(self):

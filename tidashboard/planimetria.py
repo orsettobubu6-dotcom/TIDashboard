@@ -254,10 +254,22 @@ def _giu_serie_125(valore):
 # cinque volte in PB-MU.
 SCALA_RIFERIMENTO = {"gb": 1000, "bp": 5000}
 
-# La scrittura piu' piccola prescritta dal cap.5 (numero di edificio, 1.5 mm di
-# altezza-maiuscola) e l'altezza sotto la quale in stampa non si legge piu'.
-# Il secondo valore e' una scelta nostra: la norma non fissa un minimo.
-CAP_HEIGHT_MINIMA_NORMA = 1.5
+# La scrittura piu' piccola prescritta dal cap.5 e l'altezza sotto la quale in
+# stampa non si legge piu'. Il secondo valore e' una scelta nostra: la norma
+# non fissa un minimo.
+#
+# ERA 1.5, ED ERA SBAGLIATA. Il valore citava "il numero di edificio, 1.5 mm",
+# che e' la stessa lettura errata del cap. 5.5 corretta in etichette.py: la
+# tabella prescrive 1.8. La scrittura piu' piccola effettivamente in uso e'
+# appunto 1.8 (numero di edificio, numero civico, numero di oggetto).
+#
+# Non e' un dettaglio di documentazione: da questi due numeri si ricava il
+# LIMITE INFERIORE del fattore di proporzionalita' (vedi
+# fattore_proporzionale), che valeva 1.2/1.5 = 0.80 e vale ora 1.2/1.8 = 0.67.
+# Con il valore vecchio si disegnava il 20% piu' grande di quanto la ragione
+# stessa del limite richiedesse, cioe' ci si allontanava dalla proporzione
+# del cap. 1.5.2 piu' del necessario.
+CAP_HEIGHT_MINIMA_NORMA = 1.8
 CAP_HEIGHT_MINIMA_STAMPA = 1.2
 
 
@@ -615,7 +627,7 @@ def fattore_proporzionale(scala, prodotto="gb", lettera_norma=False):
 
     INGRANDIMENTI (scale piu' dettagliate dell'1:1000): fattore pieno, 1000/scala.
     RIDUZIONI: il fattore pieno e' inapplicabile alla lettera - a 1:10000
-    varrebbe 0.1 e la scrittura piu' piccola (1.5 mm) scenderebbe a 0.15 mm,
+    varrebbe 0.1 e la scrittura piu' piccola (1.8 mm) scenderebbe a 0.18 mm,
     cioe' non stampabile. Si applica quindi un limite inferiore, calcolato
     perche' quella scrittura non scenda mai sotto CAP_HEIGHT_MINIMA_STAMPA.
     E' uno scostamento dichiarato dalla lettera della norma, non una svista:
@@ -624,9 +636,9 @@ def fattore_proporzionale(scala, prodotto="gb", lettera_norma=False):
 
     Il limite NON e' un caso raro: morde su 4 delle 8 scale ufficiali del piano
     RF (1:2000, 1:2500, 1:5000, 1:10000, dove il fattore vero sarebbe 0.50,
-    0.40, 0.20 e 0.10 e viene invece portato a 0.80) e su una del piano di base
-    (1:10000, 0.50 -> 0.80). A 1:10000 il piano RF disegna quindi otto volte
-    piu' grande della lettera della norma. Per questo il fattore applicato
+    0.40, 0.20 e 0.10 e viene invece portato a 0.67) e su una del piano di base
+    (1:10000, 0.50 -> 0.67). A 1:10000 il piano RF disegna quindi quasi sette
+    volte piu' grande della lettera della norma. Per questo il fattore applicato
     viene ora scritto nel cartiglio quando differisce.
 
     'lettera_norma' applica il fattore pieno senza limite inferiore. Serve a

@@ -228,14 +228,15 @@ class TestFattoreProporzionalita(unittest.TestCase):
         # a 1:5000 il piano di base e' alla sua scala di riferimento: fattore 1
         self.assertAlmostEqual(P.fattore_proporzionale(5000, "bp"), 1.0, places=6)
         # ...mentre il piano RF li' e' ridotto al limite di leggibilita'
-        self.assertAlmostEqual(P.fattore_proporzionale(5000, "gb"), 0.8, places=6)
+        self.assertAlmostEqual(P.fattore_proporzionale(5000, "gb"),
+                               1.2 / 1.8, places=6)
         # a 1:1000 vale l'opposto
         self.assertAlmostEqual(P.fattore_proporzionale(1000, "gb"), 1.0, places=6)
         self.assertAlmostEqual(P.fattore_proporzionale(1000, "bp"), 5.0, places=6)
 
     def test_riduzioni_limitate_dalla_leggibilita(self):
         """Il fattore pieno a 1:10000 varrebbe 0.1: la scrittura piu' piccola
-        (1.5 mm) scenderebbe a 0.15 mm, non stampabile."""
+        (1.8 mm, cap. 5.5) scenderebbe a 0.18 mm, non stampabile."""
         minimo = P.CAP_HEIGHT_MINIMA_STAMPA / P.CAP_HEIGHT_MINIMA_NORMA
         for scala in (2000, 2500, 5000, 10000):
             f = P.fattore_proporzionale(scala)
@@ -565,7 +566,7 @@ class TestDichiarazioneFattore(unittest.TestCase):
                  if i.__class__.__name__ == "QgsLayoutItemLabel"]
         riga = [t for t in testi if "Scala 1:5000" in t]
         self.assertTrue(riga, "manca la riga della scala nel cartiglio")
-        self.assertIn("×0.80", riga[0])
+        self.assertIn("×0.67", riga[0])
         self.assertIn("×0.20", riga[0])
         self.assertIn("anziché", riga[0],
                       "il cartiglio va stampato con gli accenti veri")
@@ -602,7 +603,7 @@ class TestDichiarazioneFattore(unittest.TestCase):
             self.assertLessEqual(fondo, limite + 0.01)
 
     def test_lettera_norma_toglie_il_limite(self):
-        self.assertAlmostEqual(P.fattore_proporzionale(10000, "gb"), 0.8)
+        self.assertAlmostEqual(P.fattore_proporzionale(10000, "gb"), 1.2 / 1.8)
         self.assertAlmostEqual(
             P.fattore_proporzionale(10000, "gb", lettera_norma=True), 0.1)
         self.assertEqual(P.nota_fattore(10000, "gb", lettera_norma=True), "")
@@ -610,7 +611,7 @@ class TestDichiarazioneFattore(unittest.TestCase):
     def test_lettera_norma_avvisa_che_non_si_stampa(self):
         altezza, illeggibile = P.fattore_illeggibile(
             P.fattore_proporzionale(10000, "gb", lettera_norma=True))
-        self.assertAlmostEqual(altezza, 0.15)
+        self.assertAlmostEqual(altezza, 0.18)
         self.assertTrue(illeggibile)
         # col limite attivo invece resta stampabile
         _, illeggibile = P.fattore_illeggibile(
