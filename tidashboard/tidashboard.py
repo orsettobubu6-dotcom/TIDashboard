@@ -31,7 +31,8 @@ from qgis.gui import QgsMapTool
 # stili.py insieme al codice che le usa.
 from qgis.core import (
     QgsProject, QgsVectorLayer, QgsMessageLog, Qgis, QgsDataSourceUri, QgsFeature,
-    QgsCoordinateReferenceSystem, QgsRelation, QgsVectorLayerJoinInfo,
+    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsRelation,
+    QgsVectorLayerJoinInfo,
     QgsPrintLayout, QgsLayoutItemLabel, QgsLayoutItemScaleBar, QgsLayoutItemMap,
     QgsLayoutExporter, QgsLayerTreeGroup, QgsRectangle,
     QgsPalLayerSettings, QgsTextFormat, QgsVectorLayerSimpleLabeling, QgsProperty,
@@ -52,6 +53,7 @@ try:
     from . import modello as _modello
     from . import verifica_dxf as _verifica_dxf
     from . import java_env as _java_env
+    from . import coordinate as _coordinate
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -80,6 +82,7 @@ except ImportError:
     import modello as _modello
     import verifica_dxf as _verifica_dxf
     import java_env as _java_env
+    import coordinate as _coordinate
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -1046,6 +1049,33 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_cerca_fondo.clicked.connect(self.cerca_fondo)
         riga_cerca2.addWidget(self.btn_cerca_fondo)
         layout_cerca.addLayout(riga_cerca2)
+
+        # Centro per coordinate: chi ha gia' il punto non deve passare da un
+        # fondo. Riconosce MN95, le vecchie MN03 e i gradi WGS84 dall'ordine
+        # di grandezza - vedi coordinate.analizza.
+        riga_coord = QHBoxLayout()
+        riga_coord.addWidget(QLabel("Coordinate:"))
+        self.txt_coordinate = QLineEdit()
+        self.txt_coordinate.setPlaceholderText(
+            "es. 2718000 1082000  ·  718000 82000 (MN03)  ·  45.87 8.98 (WGS84)")
+        self.txt_coordinate.setToolTip(
+            "Due numeri separati da virgola o spazio. Il sistema si riconosce "
+            "dall'ordine di grandezza: non c'e' niente da dichiarare.\n"
+            "I GON non si accettano: sono un'unita' angolare e nel piano "
+            "servono per la rotazione del foglio, non per una posizione.")
+        self.txt_coordinate.returnPressed.connect(self.centra_su_coordinate)
+        self.txt_coordinate.textChanged.connect(self._anteprima_coordinate)
+        riga_coord.addWidget(self.txt_coordinate)
+        self.btn_coordinate = QPushButton("🎯 Centra qui")
+        self.btn_coordinate.setEnabled(False)
+        self.btn_coordinate.clicked.connect(self.centra_su_coordinate)
+        riga_coord.addWidget(self.btn_coordinate)
+        layout_cerca.addLayout(riga_coord)
+
+        self.lbl_coordinate = QLabel()
+        self.lbl_coordinate.setWordWrap(True)
+        self.lbl_coordinate.setStyleSheet("color: #9E9E9E;")
+        layout_cerca.addWidget(self.lbl_coordinate)
 
         self.lbl_esito_fondo = QLabel()
         self.lbl_esito_fondo.setWordWrap(True)
@@ -2086,6 +2116,79 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return None
         formato, scala, rotazione, _c, _d = self._parametri_planimetria()
         return _planimetria.stato_capienza(punti, centro, scala, formato, rotazione)
+
+    # --- CENTRO PER COORDINATE ----------------------------------------------
+    def _trasforma_wgs84(self, lon, lat):
+        """(lon, lat) in gradi -> (E, N) in MN95, con la proiezione di QGIS.
+
+        Ritorna None se la trasformazione non e' disponibile: meglio dire
+        "non ho capito" che centrare il foglio su due numeri inventati."""
+        try:
+            sorgente = QgsCoordinateReferenceSystem("EPSG:4326")
+            destinazione = QgsCoordinateReferenceSystem(_planimetria.CRS_MU)
+            if not (sorgente.isValid() and destinazione.isValid()):
+                return None
+            tr = QgsCoordinateTransform(sorgente, destinazione,
+                                        QgsProject.instance())
+            punto = tr.transform(QgsPointXY(lon, lat))
+            return punto.x(), punto.y()
+        except Exception:
+            return None
+
+    def _leggi_coordinate(self):
+        return _coordinate.analizza(self.txt_coordinate.text(),
+                                    trasforma_wgs84=self._trasforma_wgs84)
+
+    def _anteprima_coordinate(self, *_args):
+        """Dice a ogni battuta cosa si e' capito, prima di premere qualcosa.
+
+        Il campo accetta tre sistemi e li riconosce dall'ordine di grandezza:
+        senza un riscontro, l'utente scoprirebbe solo dopo di aver incollato
+        delle MN03 dove pensava di mettere delle MN95."""
+        testo = self.txt_coordinate.text().strip()
+        coord = self._leggi_coordinate() if testo else None
+        self.btn_coordinate.setEnabled(coord is not None)
+        if not testo:
+            self.lbl_coordinate.setText("")
+            return
+        if coord is None:
+            self.lbl_coordinate.setText(_coordinate.motivo_del_rifiuto(testo))
+            self.lbl_coordinate.setStyleSheet("color: %s;" % self._rosso_avviso())
+            return
+        self.lbl_coordinate.setText(_coordinate.spiega(coord))
+        self.lbl_coordinate.setStyleSheet(
+            "color: %s;" % ("#E65100" if coord.approssimata else "#9E9E9E"))
+
+    def centra_su_coordinate(self):
+        """Porta il foglio sul punto scritto nel campo.
+
+        Usa lo stesso aggancio del centro fissato su un fondo: da li' in poi
+        la vista puo' muoversi quanto vuole, il foglio resta dove l'hai
+        messo."""
+        coord = self._leggi_coordinate()
+        if coord is None:
+            testo = self.txt_coordinate.text().strip()
+            if testo:
+                QMessageBox.warning(self, "Coordinate",
+                                    _coordinate.motivo_del_rifiuto(testo))
+            return
+        # Il fondo agganciato lascia il posto: il centro ora e' un punto
+        # scelto a mano, e continuare a colorare il rettangolo in base a un
+        # fondo che non c'entra piu' direbbe una cosa falsa.
+        self._fondo_ancorato = None
+        self.sposta_foglio_a(QgsPointXY(coord.est, coord.nord), definitivo=True)
+        self._aggiorna_centro_fissato("coordinate inserite a mano")
+        self.log("\n🎯 CENTRO PER COORDINATE")
+        self.log("   ✅ %s" % _coordinate.spiega(coord),
+                 Qgis.Warning if coord.approssimata else Qgis.Info)
+        _iface = getattr(self, "_iface", None)
+        if _iface and _iface.mapCanvas():
+            canvas = _iface.mapCanvas()
+            estensione = canvas.extent()
+            mezzo_x, mezzo_y = estensione.width() / 2.0, estensione.height() / 2.0
+            canvas.setExtent(QgsRectangle(coord.est - mezzo_x, coord.nord - mezzo_y,
+                                          coord.est + mezzo_x, coord.nord + mezzo_y))
+            canvas.refresh()
 
     def sposta_foglio_a(self, centro, definitivo=False):
         """Mette il centro del foglio dove lo si e' trascinato.

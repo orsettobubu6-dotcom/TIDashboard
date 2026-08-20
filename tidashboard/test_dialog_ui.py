@@ -1368,6 +1368,98 @@ class TestFinestraScaricaMU(unittest.TestCase):
         self.assertEqual(f.percorso_itf, percorso)
 
 
+class TestCentroPerCoordinate(unittest.TestCase):
+    """Il campo delle coordinate: riconoscimento, riscontro e centraggio.
+
+    Qui la trasformazione WGS84 e' quella VERA di QGIS - il modulo puro si
+    prova senza (test_coordinate.py), ma il collegamento alla proiezione e'
+    proprio la parte che quel test non puo' vedere.
+    """
+
+    def test_il_pulsante_resta_spento_finche_non_si_capisce(self):
+        dlg = TIDashboardDialog()
+        self.assertFalse(dlg.btn_coordinate.isEnabled())
+        dlg.txt_coordinate.setText("2718")
+        self.assertFalse(dlg.btn_coordinate.isEnabled())
+        dlg.txt_coordinate.setText("2718000 1082000")
+        self.assertTrue(dlg.btn_coordinate.isEnabled())
+
+    def test_il_riscontro_dice_cosa_ha_capito(self):
+        """Tre sistemi riconosciuti dall'ordine di grandezza: senza un
+        riscontro l'utente scoprirebbe solo dopo di aver incollato delle MN03
+        dove pensava di mettere delle MN95."""
+        dlg = TIDashboardDialog()
+        dlg.txt_coordinate.setText("2718000 1082000")
+        self.assertIn("MN95", dlg.lbl_coordinate.text())
+        dlg.txt_coordinate.setText("718000 82000")
+        self.assertIn("MN03", dlg.lbl_coordinate.text())
+
+    def test_i_gon_vengono_rifiutati_spiegando_perche(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_coordinate.setText("137.5 gon")
+        self.assertFalse(dlg.btn_coordinate.isEnabled())
+        self.assertIn("angolare", dlg.lbl_coordinate.text())
+
+    def test_il_campo_vuoto_non_dice_niente(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_coordinate.setText("2718000 1082000")
+        dlg.txt_coordinate.setText("")
+        self.assertEqual(dlg.lbl_coordinate.text(), "")
+        self.assertFalse(dlg.btn_coordinate.isEnabled())
+
+    def test_centrare_aggancia_il_foglio(self):
+        dlg = TIDashboardDialog()
+        dlg._iface = None
+        dlg.txt_coordinate.setText("2718000 1082000")
+        dlg.centra_su_coordinate()
+        self.assertIsNotNone(dlg._centro_da_fondo)
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), 2718000.0, places=3)
+        self.assertAlmostEqual(dlg._centro_da_fondo.y(), 1082000.0, places=3)
+
+    def test_centrare_scioglie_il_fondo_agganciato(self):
+        """Il rettangolo si colora in base al fondo agganciato: tenerlo dopo
+        aver spostato il centro altrove direbbe una cosa falsa."""
+        dlg = TIDashboardDialog()
+        dlg._iface = None
+        dlg._fondo_ancorato = object()
+        dlg.txt_coordinate.setText("2718000 1082000")
+        dlg.centra_su_coordinate()
+        self.assertIsNone(dlg._fondo_ancorato)
+
+    def test_coordinate_illeggibili_non_spostano_niente(self):
+        dlg = TIDashboardDialog()
+        dlg._iface = None
+        dlg._centro_da_fondo = None
+        dlg.txt_coordinate.setText("Mendrisio")
+        prima = len(_avvisi)
+        dlg.centra_su_coordinate()
+        self.assertIsNone(dlg._centro_da_fondo)
+        self.assertGreater(len(_avvisi), prima)
+
+    def test_il_wgs84_passa_dalla_proiezione_di_qgis(self):
+        """45.87 N, 8.98 E e' il Mendrisiotto: la trasformazione vera deve
+        riportarlo dentro i limiti di MN95, non da qualche altra parte."""
+        dlg = TIDashboardDialog()
+        punto = dlg._trasforma_wgs84(8.98, 45.87)
+        self.assertIsNotNone(punto, "la proiezione EPSG:4326 -> 2056 deve esserci")
+        est, nord = punto
+        self.assertTrue(2480000.0 <= est <= 2840000.0, "E fuori MN95: %.1f" % est)
+        self.assertTrue(1070000.0 <= nord <= 1300000.0, "N fuori MN95: %.1f" % nord)
+        # Mendrisio sta nell'angolo sud del cantone: si controlla che la
+        # conversione cada davvero li' e non a caso dentro i limiti.
+        self.assertAlmostEqual(est, 2718000.0, delta=8000.0)
+        self.assertAlmostEqual(nord, 1082000.0, delta=8000.0)
+
+    def test_dal_campo_al_centro_passando_per_i_gradi(self):
+        dlg = TIDashboardDialog()
+        dlg._iface = None
+        dlg.txt_coordinate.setText("45.87 8.98")
+        self.assertIn("WGS84", dlg.lbl_coordinate.text())
+        dlg.centra_su_coordinate()
+        self.assertIsNotNone(dlg._centro_da_fondo)
+        self.assertAlmostEqual(dlg._centro_da_fondo.x(), 2718000.0, delta=8000.0)
+
+
 class TestCartellaDiLavoro(unittest.TestCase):
     def test_propone_la_cartella_dell_itf_in_uso(self):
         dlg = TIDashboardDialog()

@@ -43,6 +43,7 @@ jobs:
           python tidashboard/test_cerca_fondo.py
           python tidashboard/test_scarica_mu.py
           python tidashboard/test_java_env.py
+          python tidashboard/test_coordinate.py
 
       - name: ruff sui moduli piccoli
         run: |
