@@ -81,6 +81,21 @@ def _layer(nome="beni_immobili_bene_immobile"):
     return lyr
 
 
+class _IfaceFinto(object):
+    """Un iface con un canvas VERO ma non collegato a QGIS: basta a provare
+    tutto quello che la dialog fa sulla mappa, senza aprire l'applicazione."""
+
+    def __init__(self):
+        from qgis.gui import QgsMapCanvas
+        from qgis.core import QgsCoordinateReferenceSystem
+        self._canvas = QgsMapCanvas()
+        self._canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:2056"))
+        self._canvas.setExtent(QgsRectangle(CX - 300, CY - 300, CX + 300, CY + 300))
+
+    def mapCanvas(self):
+        return self._canvas
+
+
 class TestSchede(unittest.TestCase):
     def test_tre_schede_nell_ordine_del_flusso(self):
         dlg = TIDashboardDialog()
@@ -1458,6 +1473,134 @@ class TestCentroPerCoordinate(unittest.TestCase):
         dlg.centra_su_coordinate()
         self.assertIsNotNone(dlg._centro_da_fondo)
         self.assertAlmostEqual(dlg._centro_da_fondo.x(), 2718000.0, delta=8000.0)
+
+
+class TestRisultatiSullaMappa(unittest.TestCase):
+    """I risultati della ricerca evidenziati tutti insieme sul canvas.
+
+    Serve al caso "lo stesso numero esiste in piu' sezioni": l'elenco dice
+    QUALI sono, la mappa dice DOVE stanno l'uno rispetto all'altro.
+    """
+
+    class _FondoFinto:
+        def __init__(self, numero, x, y, contorno=None, senza_geometria=False):
+            self.numero = numero
+            self.sezione = "01"
+            self.etichetta = numero
+            self.contorno = contorno
+            self.centro = None if senza_geometria else (x, y)
+            self.extent = (None if senza_geometria
+                           else (x - 50, y - 50, x + 50, y + 50))
+
+    def _dialog_con_canvas(self):
+        dlg = TIDashboardDialog()
+        dlg._iface = _IfaceFinto()
+        return dlg
+
+    def test_una_banda_per_ogni_risultato(self):
+        dlg = self._dialog_con_canvas()
+        fondi = [self._FondoFinto("452", CX, CY),
+                 self._FondoFinto("452", CX + 500, CY + 500),
+                 self._FondoFinto("452", CX - 400, CY)]
+        dlg._evidenzia_risultati(fondi)
+        self.assertEqual(len(dlg._bande_risultati), 3)
+
+    def test_una_nuova_ricerca_spegne_la_precedente(self):
+        """Lasciare accesi i risultati di prima accanto a quelli nuovi e' un
+        modo sicuro di far guardare il fondo sbagliato."""
+        dlg = self._dialog_con_canvas()
+        dlg._evidenzia_risultati([self._FondoFinto("452", CX, CY),
+                                  self._FondoFinto("452", CX + 100, CY)])
+        self.assertEqual(len(dlg._bande_risultati), 2)
+        dlg._evidenzia_risultati([self._FondoFinto("99", CX, CY)])
+        self.assertEqual(len(dlg._bande_risultati), 1)
+        dlg._evidenzia_risultati([])
+        self.assertEqual(len(dlg._bande_risultati), 0)
+
+    def test_un_fondo_senza_geometria_non_si_inventa(self):
+        """Esiste nei dati ma non si sa dove sia: meglio non disegnarlo che
+        metterlo in un posto qualunque."""
+        dlg = self._dialog_con_canvas()
+        fondi = [self._FondoFinto("452", CX, CY),
+                 self._FondoFinto("453", 0, 0, senza_geometria=True)]
+        dlg._evidenzia_risultati(fondi)
+        self.assertEqual(len(dlg._bande_risultati), 1)
+
+    def test_il_contorno_vero_batte_il_rettangolo(self):
+        from qgis.core import QgsPointXY
+        dlg = self._dialog_con_canvas()
+        contorno = [QgsPointXY(CX, CY), QgsPointXY(CX + 30, CY),
+                    QgsPointXY(CX + 30, CY + 10), QgsPointXY(CX, CY)]
+        geom = dlg._geometria_del_fondo(
+            self._FondoFinto("452", CX, CY, contorno=contorno))
+        self.assertEqual(len(geom.asPolygon()[0]), 4,
+                         "con il contorno si disegna il fondo, non il suo riquadro")
+
+    def test_un_fondo_ridotto_a_un_punto_resta_visibile(self):
+        """Ripiego su PosFondo: l'estensione e' larga zero e la banda
+        sarebbe invisibile."""
+        dlg = self._dialog_con_canvas()
+        f = self._FondoFinto("452", CX, CY)
+        f.extent = (CX, CY, CX, CY)
+        geom = dlg._geometria_del_fondo(f)
+        self.assertGreater(geom.boundingBox().width(), 0.0)
+
+    def test_il_selezionato_si_colora_diversamente(self):
+        dlg = self._dialog_con_canvas()
+        dlg._risultati_fondo = [self._FondoFinto("452", CX, CY),
+                                self._FondoFinto("452", CX + 500, CY)]
+        for f in dlg._risultati_fondo:
+            dlg.lista_fondi.addItem(f.etichetta)
+        dlg._evidenzia_risultati(dlg._risultati_fondo)
+        dlg.lista_fondi.setCurrentRow(1)
+        colori = [b.strokeColor().name() for b in dlg._bande_risultati]
+        self.assertEqual(colori[1], dlg.C_RISULTATO_SCELTO.name())
+        self.assertEqual(colori[0], dlg.C_RISULTATO.name())
+
+    def test_la_corrispondenza_salta_i_fondi_senza_posizione(self):
+        """Le bande sono meno dei risultati quando qualcuno non ha geometria:
+        accoppiarle per indice colorerebbe il fondo sbagliato."""
+        dlg = self._dialog_con_canvas()
+        dlg._risultati_fondo = [
+            self._FondoFinto("452", 0, 0, senza_geometria=True),
+            self._FondoFinto("452", CX, CY),
+        ]
+        for f in dlg._risultati_fondo:
+            dlg.lista_fondi.addItem(f.etichetta)
+        dlg._evidenzia_risultati(dlg._risultati_fondo)
+        dlg.lista_fondi.setCurrentRow(1)
+        self.assertEqual(len(dlg._bande_risultati), 1)
+        self.assertEqual(dlg._bande_risultati[0].strokeColor().name(),
+                         dlg.C_RISULTATO_SCELTO.name(),
+                         "l'unica banda e' del secondo fondo, che e' quello scelto")
+
+    def test_con_un_risultato_solo_la_vista_non_si_muove(self):
+        """Con un risultato ci sono gia' i due comandi espliciti: spostare la
+        vista senza che l'utente l'abbia chiesto sarebbe una sorpresa."""
+        dlg = self._dialog_con_canvas()
+        prima = dlg._iface.mapCanvas().extent()
+        dlg._inquadra_tutti_i_risultati([self._FondoFinto("452", CX, CY)])
+        self.assertEqual(dlg._iface.mapCanvas().extent(), prima)
+
+    def test_con_piu_risultati_la_vista_li_contiene_tutti(self):
+        dlg = self._dialog_con_canvas()
+        fondi = [self._FondoFinto("452", CX, CY),
+                 self._FondoFinto("452", CX + 2000, CY + 1500)]
+        dlg._inquadra_tutti_i_risultati(fondi)
+        vista = dlg._iface.mapCanvas().extent()
+        for f in fondi:
+            self.assertTrue(vista.contains(QgsRectangle(*f.extent)),
+                            "il risultato %s resta fuori dalla vista" % f.numero)
+
+    def test_chiudere_la_finestra_spegne_le_bande(self):
+        """Restano sul canvas di QGIS finche' qualcuno non le spegne, e chiusa
+        la finestra non c'e' piu' nessuno che possa farlo."""
+        from qgis.PyQt.QtGui import QCloseEvent
+        dlg = self._dialog_con_canvas()
+        dlg._evidenzia_risultati([self._FondoFinto("452", CX, CY)])
+        self.assertEqual(len(dlg._bande_risultati), 1)
+        dlg.closeEvent(QCloseEvent())
+        self.assertEqual(dlg._bande_risultati, [])
 
 
 class TestCartellaDiLavoro(unittest.TestCase):

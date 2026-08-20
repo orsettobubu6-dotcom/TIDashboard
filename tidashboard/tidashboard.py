@@ -2431,6 +2431,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
         banda = getattr(self, "_banda_ingombro", None)
         if banda is not None:
             banda.reset(QgsWkbTypes.PolygonGeometry)
+        # Stesso motivo per i risultati della ricerca: restano accesi sulla
+        # mappa di QGIS finche' qualcuno non li spegne, e chiusa la finestra
+        # non c'e' piu' nessuno che possa farlo.
+        self._pulisci_bande_risultati()
         super().closeEvent(event)
 
     def find_java(self):
@@ -4354,6 +4358,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         percorso = self._gpkg_corrente()
         self.lista_fondi.clear()
         self._risultati_fondo = []
+        self._evidenzia_risultati([])
         self._aggiorna_comandi_fondo()
         if not percorso:
             self._esito_fondo("Nessun GeoPackage: importa i dati o indica il "
@@ -4390,6 +4395,11 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._risultati_fondo = risultati
 
         if not risultati:
+            # Anche il "niente trovato" deve spegnere l'evidenziazione
+            # precedente: lasciare accesi i risultati di una ricerca vecchia
+            # accanto a un messaggio di ricerca fallita e' un modo sicuro di
+            # far guardare il fondo sbagliato.
+            self._evidenzia_risultati([])
             self._esito_fondo("Nessun fondo trovato. Controlla numero, sezione "
                               "e comune; se il fondo è contestato, togli la "
                               "spunta «Solo fondi in vigore».", errore=True)
@@ -4419,6 +4429,12 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if len(risultati) >= _cerca_fondo.LIMITE_RISULTATI:
             self.log("   ℹ️ Elenco troncato a %d risultati: restringi con "
                      "sezione o comune." % _cerca_fondo.LIMITE_RISULTATI)
+        self._evidenzia_risultati(risultati)
+        self._inquadra_tutti_i_risultati(risultati)
+        senza_posizione = [f for f in risultati if f.extent is None]
+        if senza_posizione:
+            self.log("   ℹ️ %d dei %d risultati non hanno geometria: sulla "
+                     "mappa non compaiono." % (len(senza_posizione), len(risultati)))
         self._aggiorna_comandi_fondo()
 
     def _esito_fondo(self, testo, errore=False, avviso=False):
@@ -4433,9 +4449,129 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return self._risultati_fondo[riga]
         return None
 
+    # --- RISULTATI EVIDENZIATI SULLA MAPPA ----------------------------------
+    # Colori: il fondo scelto si stacca dagli altri. Senza distinzione, con
+    # dodici risultati accesi tutti uguali non si capisce quale sia quello che
+    # si sta guardando nell'elenco.
+    C_RISULTATO = QColor(0, 105, 92)          # verde acqua, come l'ingombro
+    C_RISULTATO_SCELTO = QColor(230, 145, 0)  # arancione
+
+    def _pulisci_bande_risultati(self):
+        """Toglie dal canvas le bande della ricerca precedente.
+
+        Sono QgsRubberBand e NON un layer: un layer dei risultati comparirebbe
+        nell'albero e, peggio, sarebbe un altro oggetto da ricordarsi di
+        escludere dal foglio stampato. Le bande vivono solo sul canvas e non
+        possono finire in una planimetria."""
+        for banda in getattr(self, "_bande_risultati", []) or []:
+            try:
+                banda.reset(QgsWkbTypes.PolygonGeometry)
+                scena = banda.scene()
+                if scena is not None:
+                    scena.removeItem(banda)
+            except RuntimeError:
+                pass          # il canvas se n'e' gia' andato
+        self._bande_risultati = []
+
+    def _geometria_del_fondo(self, f):
+        """Il contorno vero se c'e', altrimenti il rettangolo dell'estensione.
+
+        Il contorno arriva dal WKB (vedi cerca_fondo._contorno) e puo'
+        mancare: geometria troncata, oppure il fondo e' stato localizzato dal
+        solo PosFondo, che e' un punto. In quel caso un rettangolo dice
+        comunque DOVE, che e' quello che serve qui."""
+        punti = getattr(f, "contorno", None)
+        if punti:
+            return QgsGeometry.fromPolygonXY([list(punti)])
+        if f.extent is None:
+            return None
+        est = QgsRectangle(f.extent[0], f.extent[1], f.extent[2], f.extent[3])
+        if est.width() <= 0 or est.height() <= 0:
+            # Ripiego su un punto solo: un quadratino di 10 m, altrimenti la
+            # banda sarebbe invisibile.
+            c = est.center()
+            est = QgsRectangle(c.x() - 5, c.y() - 5, c.x() + 5, c.y() + 5)
+        return QgsGeometry.fromRect(est)
+
+    def _evidenzia_risultati(self, fondi):
+        """Accende sul canvas tutti i fondi trovati, insieme.
+
+        E' la risposta al caso "lo stesso numero esiste in piu' sezioni":
+        l'elenco dice QUALI sono, la mappa dice DOVE stanno l'uno rispetto
+        all'altro - che e' l'informazione che manca quando i nomi delle
+        sezioni non si conoscono a memoria."""
+        self._pulisci_bande_risultati()
+        iface = getattr(self, "_iface", None)
+        canvas = iface.mapCanvas() if iface else None
+        if canvas is None or not fondi:
+            return
+        from qgis.gui import QgsRubberBand
+        for f in fondi:
+            geom = self._geometria_del_fondo(f)
+            if geom is None:
+                continue      # fondo senza posizione: non si inventa dove sta
+            banda = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
+            banda.setToGeometry(geom, None)
+            banda.setWidth(2)
+            self._bande_risultati.append(banda)
+        self._colora_bande_risultati()
+
+    def _colora_bande_risultati(self):
+        """Il fondo selezionato nell'elenco si accende sulla mappa.
+
+        E' quello che rende utile l'evidenziazione con piu' risultati: si
+        scorre l'elenco e si vede quale si illumina, senza doverli aprire uno
+        per uno."""
+        scelto = self.lista_fondi.currentRow() if hasattr(self, "lista_fondi") else -1
+        # Le bande seguono l'ordine dei risultati, ma i fondi senza posizione
+        # non ne hanno una: si rifa' la corrispondenza saltandoli.
+        con_posizione = [i for i, f in enumerate(getattr(self, "_risultati_fondo", []))
+                         if self._geometria_del_fondo(f) is not None]
+        # getattr: init_ui chiama i comandi del fondo prima che sia mai stata
+        # fatta una ricerca, e i test costruiscono la dialog con __new__.
+        for banda, indice in zip(getattr(self, "_bande_risultati", []),
+                                 con_posizione):
+            colore = (self.C_RISULTATO_SCELTO if indice == scelto
+                      else self.C_RISULTATO)
+            try:
+                banda.setStrokeColor(colore)
+                banda.setColor(QColor(colore.red(), colore.green(),
+                                      colore.blue(), 50))
+                banda.setWidth(3 if indice == scelto else 2)
+            except RuntimeError:
+                pass
+
+    def _inquadra_tutti_i_risultati(self, fondi):
+        """Porta la vista su tutti i risultati insieme.
+
+        Solo con PIU' di un risultato: con uno solo l'utente ha gia' i due
+        comandi espliciti (zoom, usa come centro) e spostargli la vista senza
+        che l'abbia chiesto sarebbe una sorpresa.
+
+        NON tocca il centro del foglio: se e' agganciato a un fondo o a delle
+        coordinate resta dov'e' (vedi _centro_planimetria)."""
+        iface = getattr(self, "_iface", None)
+        canvas = iface.mapCanvas() if iface else None
+        if canvas is None or len(fondi) < 2:
+            return
+        unione = QgsRectangle()
+        unione.setMinimal()
+        for f in fondi:
+            if f.extent is None:
+                continue
+            unione.combineExtentWith(
+                QgsRectangle(f.extent[0], f.extent[1], f.extent[2], f.extent[3]))
+        if unione.isEmpty():
+            return
+        margine = max(unione.width(), unione.height()) * 0.10 or 20.0
+        unione.grow(margine)
+        canvas.setExtent(unione)
+        canvas.refresh()
+
     def _aggiorna_comandi_fondo(self, _riga=None):
         """I due comandi restano spenti finché non c'è una scelta con una
         posizione: premerli senza selezione non saprebbe dove andare."""
+        self._colora_bande_risultati()
         f = self._fondo_scelto()
         attivo = f is not None and f.extent is not None
         for pulsante in (getattr(self, "btn_zoom_fondo", None),
