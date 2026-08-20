@@ -39,7 +39,7 @@ from qgis.core import (
     QgsLayoutItemPicture, QgsLayoutItemMapGrid, QgsLayoutItemShape,
     QgsLayoutSize, QgsUnitTypes, QgsLayoutExporter,
     QgsRectangle, QgsLayoutMeasurement, QgsCoordinateReferenceSystem,
-    QgsPointXY, QgsGeometry,
+    QgsPointXY, QgsGeometry, QgsMessageLog, Qgis,
 )
 from qgis.PyQt.QtCore import QRectF
 from qgis.PyQt.QtGui import QColor, QFont
@@ -849,6 +849,87 @@ def rotazione_verso(centro, punto):
     return gradi_a_gon(math.degrees(math.atan2(dy, dx)) - 90.0)
 
 
+def testo_dettagli(scala, data_validita, cenno_movimento, prodotto="gb",
+                   lettera_norma=False):
+    """Il blocco di testo del cartiglio sotto il nome del comune.
+
+    Sta in una funzione perche' lo scrivono in due: la costruzione del foglio
+    e il sorvegliante della scala, che deve poterlo rifare quando la scala
+    cambia. Due copie della stessa formattazione divergerebbero, e la copia
+    sbagliata sarebbe quella che finisce sul foglio corretto a mano."""
+    nota = nota_fattore(scala, prodotto, lettera_norma)
+    return "Scala 1:%d%s\nStato al: %s\n%s\n%s\nLegenda: %s" % (
+        scala, ("  —  " + nota) if nota else "", data_validita,
+        CENNO_PROGETTO, cenno_movimento, LEGENDA_URL)
+
+
+def sorveglia_scala(mappa, griglia, dettagli, data_validita, cenno_movimento,
+                    prodotto="gb", lettera_norma=False, log=None):
+    """Tiene il foglio coerente se la scala viene cambiata NEL COMPOSITORE.
+
+    IL PROBLEMA. Il foglio nasce con tre cose calcolate sulla scala scelta
+    nella finestra: il passo della griglia, la scala scritta nel cartiglio e
+    il fattore di proporzionalita' del cap. 1.5.2. Aprendo il layout nel
+    compositore la scala della mappa si puo' cambiare a mano, e quelle tre
+    cose NON si adeguavano:
+
+      - il passo della griglia restava quello di prima. Misurato: un layout
+        creato a 1:1000 (passo 100 m) e portato a 1:5000 mostrava ~10 croci in
+        larghezza invece di 2;
+      - il cartiglio continuava a stampare la scala VECCHIA. Su un foglio che
+        porta il titolo e la simbologia di un prodotto della misurazione
+        ufficiale, una scala dichiarata diversa da quella vera non e' un
+        dettaglio estetico: e' un'iscrizione obbligatoria (cap. 1.5.7) che
+        dice il falso.
+
+    Le prime due si correggono qui, da sole. La terza NO: il fattore di
+    proporzionalita' e' impostato come scala di riferimento sui CLONI dei
+    layer (vedi _layers_proporzionati) e si applica al momento del disegno;
+    rifarlo vorrebbe dire rifare i cloni, cioe' rifare il foglio. Quindi si
+    avvisa, e si dice cosa fare: rigenerare la planimetria dalla finestra.
+
+    Il messaggio va nel registro di QGIS e non solo in quello della finestra:
+    il compositore si usa spesso con la finestra del plugin chiusa, e un
+    avviso scritto in un posto che non esiste piu' non e' un avviso."""
+    if mappa is None:
+        return None
+    stato = {"scala": mappa.scale()}
+
+    def cambiata():
+        try:
+            nuova = mappa.scale()
+        except RuntimeError:
+            return              # il layout se n'e' andato
+        if nuova <= 0 or abs(nuova - stato["scala"]) < 0.5:
+            return              # pan o zoom senza cambio di scala
+        vecchia, stato["scala"] = stato["scala"], nuova
+        passo = intervallo_griglia(nuova)
+        try:
+            griglia.setIntervalX(passo)
+            griglia.setIntervalY(passo)
+            dettagli.setText(testo_dettagli(int(round(nuova)), data_validita,
+                                            cenno_movimento, prodotto,
+                                            lettera_norma))
+        except RuntimeError:
+            return
+        messaggio = (
+            "Scala del foglio cambiata nel compositore da 1:%d a 1:%d. "
+            "Passo della griglia adeguato a %g m e scala del cartiglio "
+            "riscritta. ATTENZIONE: la grandezza di simboli e scritture resta "
+            "quella calcolata per 1:%d (cap. 1.5.2) - per adeguarla, rigenera "
+            "la planimetria dalla finestra del plugin."
+            % (round(vecchia), round(nuova), passo, round(vecchia)))
+        QgsMessageLog.logMessage(messaggio, "TIDashboard", Qgis.Warning)
+        if log:
+            try:
+                log("   ⚠️ %s" % messaggio)
+            except RuntimeError:
+                pass            # la finestra del plugin e' stata chiusa
+
+    mappa.extentChanged.connect(cambiata)
+    return cambiata
+
+
 def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
                      rotazione_gon=0.0, comune="", data_validita=None,
                      nome=None, log=None, prodotto="gb", lettera_norma=False):
@@ -1054,14 +1135,18 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     # scriviamo e' quella dei DATI, non quella in cui il foglio e' stato
     # prodotto. "Allestimento" sarebbe una data diversa e la dichiarerebbe
     # sbagliata.
+    cenno_movimento = cenno_spostamenti(layers)
     dettagli = QgsLayoutItemLabel(layout)
-    dettagli.setText("Scala 1:%d%s\nStato al: %s\n%s\n%s\nLegenda: %s"
-                     % (scala, ("  —  " + nota) if nota else "",
-                        data_validita, CENNO_PROGETTO,
-                        cenno_spostamenti(layers), LEGENDA_URL))
+    dettagli.setText(testo_dettagli(scala, data_validita, cenno_movimento,
+                                    prodotto, lettera_norma))
     dettagli.setFont(QFont("Arial", 8))
     layout.addLayoutItem(dettagli)
     dettagli.attemptSetSceneRect(QRectF(x_testo, y_cart + 17, w_sinistra, 21))
+
+    # Da qui in poi il foglio si difende da solo se qualcuno cambia la scala
+    # nel compositore: vedi sorveglia_scala.
+    sorveglia_scala(mappa, griglia, dettagli, data_validita, cenno_movimento,
+                    prodotto, lettera_norma, _log)
 
     if rotazione_gon:
         rot = QgsLayoutItemLabel(layout)

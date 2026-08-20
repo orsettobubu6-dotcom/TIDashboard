@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qgis.core import (QgsApplication, QgsProject, QgsVectorLayer, QgsFeature,
                        QgsGeometry, QgsPointXY, QgsSingleSymbolRenderer,
-                       QgsFillSymbol)
+                       QgsFillSymbol, QgsRectangle, Qgis)
 from qgis.PyQt.QtGui import QFont, QFontMetricsF
 
 _qgs = QgsApplication([], False)
@@ -907,6 +907,106 @@ class TestRotazioneCheContiene(unittest.TestCase):
     def test_senza_geometria_non_propone_niente(self):
         self.assertIsNone(P.rotazione_che_contiene([], QgsPointXY(CX, CY), 500))
         self.assertIsNone(P.rotazione_che_contiene([(0, 0)], None, 500))
+
+
+class TestScalaCambiataNelCompositore(unittest.TestCase):
+    """Cosa succede se la scala della mappa viene cambiata A MANO dopo che il
+    foglio e' stato costruito.
+
+    Non e' un caso teorico: il layout si apre nel compositore e la scala e'
+    una casella modificabile. Prima restavano indietro sia il passo della
+    griglia sia la scala scritta nel cartiglio - e la seconda e'
+    un'iscrizione obbligatoria del cap. 1.5.7 che diceva il falso.
+    """
+
+    def _foglio(self, scala=1000, righe=None):
+        prj = QgsProject.instance()
+        lyr = _layer()
+        lay = P.crea_planimetria(prj, [lyr], QgsPointXY(CX, CY), scala,
+                                 formato="A4 orizzontale", comune="Mendrisio",
+                                 data_validita="19.08.2026",
+                                 log=(righe.append if righe is not None else None),
+                                 nome="Sorv_%d_%d" % (scala, id(lyr)))
+        mappa = _mappa(lay)
+        griglia = mappa.grid()
+        etichette = [i for i in lay.items()
+                     if i.__class__.__name__ == "QgsLayoutItemLabel"]
+        dettagli = [e for e in etichette if "Scala 1:" in e.text()][0]
+        return lay, mappa, griglia, dettagli
+
+    def test_di_partenza_griglia_e_cartiglio_sono_d_accordo(self):
+        _lay, _m, griglia, dettagli = self._foglio(1000)
+        self.assertAlmostEqual(griglia.intervalX(), P.intervallo_griglia(1000))
+        self.assertIn("Scala 1:1000", dettagli.text())
+
+    def test_il_passo_della_griglia_segue_la_nuova_scala(self):
+        """Il caso misurato: da 1:1000 (passo 100 m) a 1:5000. Senza
+        adeguamento restavano ~10 croci in larghezza invece di 2."""
+        _lay, mappa, griglia, _d = self._foglio(1000)
+        self.assertAlmostEqual(griglia.intervalX(), 100.0)
+        mappa.setScale(5000)
+        self.assertAlmostEqual(griglia.intervalX(), P.intervallo_griglia(5000))
+        self.assertNotAlmostEqual(griglia.intervalX(), 100.0)
+
+    def test_il_cartiglio_non_dichiara_piu_la_scala_vecchia(self):
+        """E' la parte grave: una scala dichiarata diversa da quella vera su
+        un foglio che porta la simbologia di un prodotto ufficiale."""
+        _lay, mappa, _g, dettagli = self._foglio(1000)
+        mappa.setScale(2000)
+        self.assertIn("Scala 1:2000", dettagli.text())
+        self.assertNotIn("Scala 1:1000", dettagli.text())
+
+    def test_le_altre_iscrizioni_restano(self):
+        """Il testo si RIFA', non si sostituisce: le altre iscrizioni
+        obbligatorie del cap. 1.5.7 devono sopravvivere al rifacimento."""
+        _lay, mappa, _g, dettagli = self._foglio(1000)
+        mappa.setScale(500)
+        testo = dettagli.text()
+        self.assertIn("Stato al: 19.08.2026", testo)
+        self.assertIn("Legenda:", testo)
+        self.assertIn("oggetti in progetto", testo)
+        self.assertIn("spostamenti permanenti", testo)
+
+    def test_uno_spostamento_senza_cambio_di_scala_non_tocca_niente(self):
+        """Pan e zoom del riquadro cambiano l'estensione ma non la scala: il
+        sorvegliante non deve riscrivere il cartiglio a ogni movimento."""
+        _lay, mappa, griglia, dettagli = self._foglio(1000)
+        passo = griglia.intervalX()
+        testo = dettagli.text()
+        est = mappa.extent()
+        mappa.setExtent(QgsRectangle(est.xMinimum() + 50, est.yMinimum() + 50,
+                                     est.xMaximum() + 50, est.yMaximum() + 50))
+        self.assertAlmostEqual(griglia.intervalX(), passo)
+        self.assertEqual(dettagli.text(), testo)
+
+    def test_la_nota_sul_fattore_si_aggiorna_con_la_scala(self):
+        """La nota del cap. 1.5.2 dipende dalla scala: a 1:1000 non c'e', a
+        1:10000 il limite di leggibilita' morde e va dichiarata."""
+        _lay, mappa, _g, dettagli = self._foglio(1000)
+        self.assertNotIn("cap. 1.5.2", dettagli.text())
+        mappa.setScale(10000)
+        self.assertIn("cap. 1.5.2", dettagli.text())
+
+    def test_avvisa_che_i_simboli_restano_alla_scala_di_prima(self):
+        """L'unica delle tre cose che NON si puo' correggere qui: il fattore
+        del cap. 1.5.2 e' impostato sui CLONI dei layer, e rifarlo vorrebbe
+        dire rifare il foglio. Quindi si avvisa, dicendo cosa fare.
+
+        L'avviso si prova sul log del plugin e non su QgsMessageLog: in
+        un'applicazione senza interfaccia quest'ultimo non emette il segnale
+        messageReceived - verificato - quindi qui non si potrebbe leggere.
+        Nel plugin vero il messaggio va in ENTRAMBI i posti, perche' il
+        compositore si usa spesso con la finestra chiusa."""
+        righe = []
+        _lay, mappa, _g, _d = self._foglio(1000, righe=righe)
+        del righe[:]
+        mappa.setScale(2500)
+        self.assertTrue(righe, "il cambio di scala non ha detto niente")
+        testo = "\n".join(righe)
+        self.assertIn("rigenera la planimetria", testo)
+        self.assertIn("1.5.2", testo)
+        self.assertIn("1:1000", testo)
+        self.assertIn("1:2500", testo)
 
 
 class TestManigliaDiRotazione(unittest.TestCase):
