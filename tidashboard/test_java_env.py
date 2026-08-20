@@ -35,7 +35,7 @@ def _albero(percorsi):
     mutazione farebbe passare il test anche con la potatura rotta, cioe'
     proverebbe il contrario di quello che dichiara.
     """
-    file_set = set(os.path.normpath(p) for p in percorsi)
+    file_set = {os.path.normpath(p) for p in percorsi}
     cartelle = set()
     for p in file_set:
         d = os.path.dirname(p)
@@ -53,8 +53,8 @@ def _albero(percorsi):
         return os.path.normpath(p) in cartelle
 
     def figli_di(d):
-        return sorted(set(os.path.basename(x) for x in cartelle
-                          if os.path.dirname(x) == d))
+        return sorted({os.path.basename(x) for x in cartelle
+                       if os.path.dirname(x) == d})
 
     def file_di(d):
         return sorted(os.path.basename(x) for x in file_set

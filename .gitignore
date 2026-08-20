@@ -15,6 +15,12 @@
 !/av2geobau_src/
 !/crea_zip_plugin.py
 
+# La configurazione di ruff. Senza questa riga il file resterebbe fuori dal
+# repository e in CI ruff girerebbe con i propri valori predefiniti: la stessa
+# trappola del workflow, che era escluso dal "/*" qui sopra e non era mai
+# entrato.
+!/ruff.toml
+
 # Le automazioni. SENZA QUESTA RIGA il "/*" qui sopra le escludeva in
 # silenzio: il commit 11cdd8f, intitolato "Il pacchetto del plugin si
 # pubblica da se' fra i Releases", conteneva in realta' il solo

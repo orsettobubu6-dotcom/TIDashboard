@@ -1,0 +1,39 @@
+# Configurazione di ruff per TIDashboard.
+#
+# Esiste perche' il file di configurazione va nel REPOSITORY: senza, in CI
+# ruff gira con i propri valori predefiniti, che non sono quelli di questo
+# progetto, e il risultato lo si scopre solo dal rosso di una corsa. E' la
+# stessa lezione del workflow che non era mai entrato nel repository perche'
+# escluso dal .gitignore.
+#
+# Le tre regole disattivate qui sotto non segnalano difetti: segnalano che
+# questo codice e' scritto in un modo, e ruff ne preferisce un altro. Vale la
+# pena scrivere il perche', altrimenti la prossima volta qualcuno le riattiva
+# pensando che siano state spente per pigrizia.
+
+target-version = "py39"
+line-length = 100
+
+[lint]
+ignore = [
+    # Formattazione con "%" invece delle f-string. Non e' una svista: TUTTO
+    # il plugin formatta cosi', dai messaggi di log alle etichette del
+    # cartiglio. Convertire i tre file che la CI controlla li renderebbe gli
+    # unici diversi dagli altri quindici moduli - cioe' peggiorerebbe la
+    # leggibilita' d'insieme per compiacere una regola di stile.
+    "UP031",
+
+    # "class X(object)" invece di "class X". Stessa ragione: le piccole
+    # classi-dato del progetto (ComuneMU, Esito, EsitoJava, Coordinate) sono
+    # scritte tutte cosi'.
+    "UP004",
+
+    # "except Exception" in java_env.sonda_versione. E' deliberato e
+    # documentato nella funzione: si esegue un file che l'utente potrebbe
+    # avere rotto, di un'architettura sbagliata o sostituito da uno stub, e
+    # Windows solleva di tutto - OSError, WinError, PermissionError. Il
+    # contratto della funzione e' "None se non parte", e restringere la
+    # cattura vorrebbe dire far esplodere la ricerca di Java per un
+    # eseguibile guasto, che e' proprio il caso che deve gestire.
+    "BLE001",
+]

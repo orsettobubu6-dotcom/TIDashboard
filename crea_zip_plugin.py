@@ -139,7 +139,7 @@ with zipfile.ZipFile(ZIP) as z:
              len([n for n in nomi if "/fonts/" in n]),
              len([n for n in nomi if "/symbols/" in n])))
 
-print("")
+print()
 esito = controlla_metadata() and esito
 
 print("\nESITO:", "PACCHETTO VALIDO" if esito else "ANOMALIE PRESENTI")
