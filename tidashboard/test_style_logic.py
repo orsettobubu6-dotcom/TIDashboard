@@ -722,6 +722,113 @@ class TestGrandezzeDelCapitolo5(unittest.TestCase):
                     msg="%s ha la grandezza delle condotte" % chiave)
 
 
+class TestContenutoDelPiano153(unittest.TestCase):
+    """Quali temi finiscono sul piano per il registro fondiario (cap. 1.5.3).
+
+    Il capitolo elenca i temi rappresentati e chiude dicendo quali NON lo sono:
+    "I temi Altezza, Aree di numerazione, Ripartizione del piano e
+    TSRipartizione non vengono rappresentati sul piano per il registro
+    fondiario".
+
+    L'esclusione nel plugin non e' implicita - non e' "i layer senza stile
+    spariscono": ogni tema escluso ha un controllo suo in
+    _get_renderer_for_table, che ritorna lo stile invisibile e scrive nel
+    registro il motivo con il riferimento al capitolo. Questo test lo verifica
+    dal RISULTATO, cioe' chiedendo al plugin il renderer e guardando se lascia
+    un segno sulla carta.
+
+    ATTENZIONE A UNA DISTINZIONE che rende inservibile una lista bianca fatta
+    di nomi di tabella: "simbolo invisibile" non vuol dire "non rappresentato".
+    Le tabelle Pos* sono i punti di ancoraggio delle SCRITTE - il simbolo e'
+    invisibile apposta e cio' che si vede e' l'etichetta. PosNumero_di_edificio
+    ne porta 7 672 sul solo comune di Mendrisio. Toglierle perche' "non
+    disegnano" cancellerebbe meta' delle iscrizioni del piano.
+    """
+
+    # (nome tabella come lo scrive ili2gpkg, tema)
+    ESCLUSI = (
+        ("altimetria_punto_quotato", "Altezza"),
+        ("altimetria_linea", "Altezza"),
+        ("aree_di_numerzone_area_di_numerazione", "Aree di numerazione"),
+        ("aree_di_numerzone_geometriaan", "Aree di numerazione"),
+        ("ripartizin_d_pani_geometria_piano", "Ripartizione del piano"),
+        ("ripartizin_d_pani_ripartizionegt", "TSRipartizione"),
+    )
+
+    # I temi che il capitolo elenca come rappresentati, con una tabella
+    # geometrica che deve disegnare.
+    RAPPRESENTATI = (
+        ("punti_fissctgria1_pfp1", "POINT", "Punti fissi cat. 1"),
+        ("punti_fissctgria2_pfp2", "POINT", "Punti fissi cat. 2"),
+        ("punti_fissctgria3_pfp3", "POINT", "Punti fissi cat. 3"),
+        ("copertura_dl_solo_superficiecs", "POLYGON", "Copertura del suolo"),
+        ("oggetti_singoli_elemento_lineare", "LINE", "Oggetti singoli"),
+        ("beni_immobili_bene_immobile", "POLYGON", "Beni immobili"),
+        ("beni_immobili_punto_di_confine", "POINT", "Beni immobili"),
+        ("condotte_elemento_condotta", "LINE", "Condotte"),
+        ("confini_comunali_confine_comunale", "LINE", "Confini comunali"),
+        ("confini_distrettuali_confine_distrettuale", "LINE", "Confini distrettuali"),
+        ("confini_cantonali_confine_cantonale", "LINE", "Confini cantonali"),
+        ("confini_nazionali_confine_nazionale", "LINE", "Confine nazionale"),
+    )
+
+    _GEOM = {"POINT": "Point", "LINE": "LineString", "POLYGON": "Polygon"}
+
+    def _renderer(self, tabella, kind):
+        layer = QgsVectorLayer(
+            "%s?crs=EPSG:2056&field=genere:string&field=segno:string"
+            % self._GEOM[kind], tabella, "memory")
+        return make_dialog_stub()._get_renderer_for_table(
+            tabella, tabella.lower(), "gb", kind, layer)
+
+    def _e_invisibile(self, renderer):
+        """Il plugin ha classificato questo tema come NON rappresentato?
+
+        Si guarda l'etichetta della regola, che _gen_stile_invisibile mette a
+        "Invisibile", invece di dedurlo dai colori del simbolo. Dedurlo dai
+        colori sembra piu' diretto e non lo e': quello stile usa un pennello
+        "no" - non dipinge nulla a prescindere dal colore - e guardando solo
+        l'alfa questo test ha dichiarato difettosi cinque temi che il codice
+        escludeva correttamente. L'etichetta e' il contratto, ed e' quello che
+        finisce anche nel registro del plugin."""
+        if renderer is None:
+            return False
+        radice = getattr(renderer, "rootRule", None)
+        if radice is None:
+            return False
+        return radice().label() == "Invisibile"
+
+    def test_i_temi_esclusi_non_disegnano_niente(self):
+        for tabella, tema in self.ESCLUSI:
+            for kind in ("POINT", "LINE", "POLYGON"):
+                r = self._renderer(tabella, kind)
+                self.assertTrue(
+                    self._e_invisibile(r),
+                    "%s (%s) viene disegnato, ma il cap. 1.5.3 non lo "
+                    "rappresenta" % (tabella, tema))
+
+    def test_i_temi_prescritti_disegnano(self):
+        """L'altra meta' del controllo: un'esclusione troppo larga toglierebbe
+        dal piano un tema che la norma pretende, e nessuno se ne accorgerebbe
+        guardando solo la lista degli esclusi."""
+        for tabella, kind, tema in self.RAPPRESENTATI:
+            r = self._renderer(tabella, kind)
+            self.assertFalse(
+                self._e_invisibile(r),
+                "%s (%s) e' reso invisibile, ma il cap. 1.5.3 lo elenca fra i "
+                "temi rappresentati" % (tabella, tema))
+
+    def test_gli_oggetti_in_progetto_restano_fuori(self):
+        """Opzionali per il cap. 1.5.3, e il cartiglio dichiara che non sono
+        rappresentati (CENNO_PROGETTO): devono quindi non esserlo davvero."""
+        for tabella in ("beni_immobili_bene_immobileprog",
+                        "copertura_dl_solo_superficiecsprog"):
+            r = self._renderer(tabella, "POLYGON")
+            self.assertTrue(self._e_invisibile(r),
+                            "%s viene disegnato, ma il cartiglio dice il "
+                            "contrario" % tabella)
+
+
 class TestLineeDellaCoperturaDelSuolo(unittest.TestCase):
     """Le linee perimetrali della Copertura del suolo (cap. 3.3).
 
