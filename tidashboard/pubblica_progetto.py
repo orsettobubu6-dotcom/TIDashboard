@@ -549,10 +549,22 @@ sistema. Una volta sola, sul server:
     sudo fc-cache -f
     fc-list | grep -i cadastra          # deve elencarli
 
-Saltando questo passo il WMS risponde lo stesso, con un font di ricambio
-scelto da Qt senza dirlo: i punti di confine e i numeri escono con la forma
-sbagliata, e non c'e' nessun errore da nessuna parte. La prova e' visiva -
-un GetMap "200 OK" non dice niente sul font.
+Saltando questo passo il servizio risponde lo stesso, con un font di
+ricambio scelto da Qt senza dirlo. VERIFICATO su un QGIS Server vero, ecco
+come si presenta: i simboli dei punti di confine escono come LETTERE
+DELL'ALFABETO (E, G, H, C), perche' il font Cadastra mappa i simboli sui
+tasti alfanumerici e il font di ricambio disegna i caratteri grezzi. I
+numeri invece sembrano giusti - le cifre si somigliano in ogni font - quindi
+guardando solo le scritte non ci si accorge di niente.
+
+La risposta e' "200 OK", l'immagine ha la stessa dimensione, non c'e' un
+errore da nessuna parte. La prova e' VISIVA: si guarda un punto di confine.
+
+    fc-list | grep -i cadastra      # deve elencare sei file
+
+NON SU WINDOWS. QGIS Server su Windows impone a Qt una piattaforma grafica
+che non vede alcun font di sistema: i simboli escono sbagliati comunque, e
+non c'e' modo di rimediare dall'esterno. Questa cartella va su Linux.
 
 Percorsi
 --------

@@ -1,5 +1,50 @@
 # Diario delle versioni
 
+## 1.2.7 — 21 agosto 2026 — sperimentale
+
+### Ogni nome della nomenclatura si scriveva due volte
+
+Il riscontro fra regola di etichetta e tabella è per sottostringa, e
+`nomenclatura_posnome_di_localita` **contiene** `nome_di_localita`: venivano
+etichettati tutti e due i layer, il punto di iscrizione **e** il poligono che
+delimita l'area denominata. Misurato sul comune di prova:
+
+| classe | poligoni | punti | iscrizioni sul foglio | dovute |
+|---|---|---|---|---|
+| `nome_di_localita` | 10 | 12 | 22 | 12 |
+| `nome_locale` | 648 | 760 | 1408 | 760 |
+
+**658 scritte di troppo** su un comune solo. E non se ne perdeva una per
+collisione: la distanza fra le due copie dello stesso nome ha mediana 52.6 m
+per le località e 40.4 m per i nomi locali — a 1:1000 sono 40–50 mm di carta,
+cioè due scritte lontane e ben leggibili che dicono la stessa cosa.
+
+Quella giusta è sul punto: il modello dice che `PosNome_X` è «l'iscrizione del
+Nome», e porta `Ori`/`HAli`/`VAli`, cioè dove e come il geometra ha deciso di
+scriverlo. Il poligono è l'estensione dell'area denominata, e il suo centro lo
+sceglie QGIS.
+
+### Il WMS dichiarava di coprire tutta la Svizzera
+
+Trovato alla prima prova contro un QGIS Server vero. L'estensione pubblicata si
+leggeva da `layer.extent()`, che su un GeoPackage viene da `gpkg_contents` — e
+ili2gpkg ci scrive i limiti dell'intero sistema di riferimento:
+
+```
+dichiarata  2480000 1070000 2850000 1310000   370 x 240 km
+calcolata   2714971 1077802 2722453 1086633   7.5 x 8.8 km
+```
+
+Un geoportale si sarebbe aperto su una mappa vuota, con il comune ridotto a un
+punto. Ora l'estensione si calcola dalle geometrie: 0.1–0.2 s per layer.
+
+> **Nota per chi pubblica su un server.** La prova locale ha confermato che
+> senza i font Cadastra installati sulla macchina il servizio risponde
+> regolarmente e disegna i simboli dei punti come **lettere dell'alfabeto**.
+> Nessun errore, nessun avviso, stessa dimensione del file. Ed è emerso che
+> **QGIS Server su Windows non serve a questo scopo**: impone una piattaforma
+> grafica che sul sistema non vede alcun font.
+
 ## 1.2.6 — 21 agosto 2026 — sperimentale
 
 ### Nomi di località in maiuscolo (raccomandazione cap. 5.7)
