@@ -1,5 +1,41 @@
 # Diario delle versioni
 
+## 1.2.5 — 21 agosto 2026 — sperimentale
+
+### Il pulsante «Consegna per QGIS Server»
+
+Scheda *Importazione*, sotto «Crea layout PB-MU». Chiede una cartella e ci
+scrive dentro tutto quello che serve a un server per disegnare il piano:
+progetto, dati, font, simboli e un `LEGGIMI.txt` con l'unico passo che il
+plugin non può fare al posto di chi consegna — installare i font sulla
+macchina. È spento finché non c'è un'importazione riuscita, con il motivo nel
+tooltip invece che nascosto.
+
+**Il progetto della sessione non viene adeguato all'importazione**, che era la
+proposta da cui siamo partiti. I flag WMS non li legge solo il server:
+`Private` toglie il layer dall'albero e `Identifiable` spegne lo strumento
+«informazioni» del desktop. Applicarli a fine importazione vorrebbe dire che da
+quel momento un clic su una copertura del suolo non risponde più, senza
+spiegazione. Si adegua al momento della consegna, e si rimette tutto a posto.
+
+A consegna finita la cartella viene riaperta e **controllata**: nessun percorso
+assoluto, ogni file citato dal progetto dentro la cartella, capabilities WMS
+presenti. Il controllo guarda il file scritto, non gli oggetti in memoria.
+
+### Due difetti trovati provando il percorso intero
+
+Una prova che passa dal metodo della finestra, invece di chiamare la funzione
+direttamente, ha mostrato quello che le prove del modulo non potevano vedere:
+
+- il controllo trattava **ogni** `datasource` come un percorso di file, e per
+  un layer temporaneo (sorgente `Point?crs=EPSG:2056&field=…`) diceva «assente
+  dalla cartella». Non manca nessun file: quel layer non ha file. Ora decide il
+  provider — `ogr`/`gdal` è un file e deve stare dentro la cartella, `memory`
+  non esiste fuori dalla sessione e viene detto per quello che è, `wms` e simili
+  vivono sulla rete e sul server vanno bene;
+- il promemoria sui font compariva solo nel messaggio di successo, cioè spariva
+  proprio quando la consegna aveva già qualcosa che non andava.
+
 ## 1.2.4 — 21 agosto 2026 — sperimentale
 
 ### Il sistema che ha prodotto l'archivio
