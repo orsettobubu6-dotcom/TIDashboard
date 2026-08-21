@@ -15,6 +15,7 @@
 # Eseguire con l'interprete di QGIS:
 #   & "C:\Program Files\QGIS 4.2.0\bin\python-qgis.bat" test_pubblica_progetto.py
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -178,6 +179,53 @@ class TestChiVaInWms(unittest.TestCase):
         tabella = QgsVectorLayer("None?field=numero:string", "fondo", "memory")
         self.assertTrue(P.senza_geometria(tabella))
         self.assertTrue(P.e_privato(tabella))
+
+
+class TestEstensione(unittest.TestCase):
+    """L'estensione dichiarata dal GeoPackage non e' quella dei dati.
+
+    ili2gpkg scrive in gpkg_contents i limiti dell'INTERO sistema di
+    riferimento. Misurato sul comune di prova:
+
+        dichiarata  2480000 1070000 2850000 1310000   tutta la Svizzera
+        calcolata   2714971 1077802 2722453 1086633   Mendrisio, 7x9 km
+
+    Il WMSExtent che ne usciva diceva al client di inquadrare la Svizzera
+    intera, e il geoportale si apriva su una mappa vuota."""
+
+    def _gpkg_che_mente(self):
+        """Un GeoPackage con due punti vicini e gpkg_contents falsato, come
+        quello vero. Si scrive con QGIS e poi si sovrascrive il metadato."""
+        cartella = tempfile.mkdtemp()
+        percorso = os.path.join(cartella, "bugiardo.gpkg")
+        _gpkg(percorso, "beni_immobili_punto_di_confine", "Point",
+              punti=((2718000.0, 1082000.0), (2718500.0, 1082400.0)))
+        con = sqlite3.connect(percorso)
+        con.execute("UPDATE gpkg_contents SET min_x=2480000, min_y=1070000, "
+                    "max_x=2850000, max_y=1310000")
+        con.commit()
+        con.close()
+        return QgsVectorLayer(
+            "%s|layername=beni_immobili_punto_di_confine" % percorso,
+            "punti", "ogr")
+
+    def test_non_si_crede_a_quella_dichiarata(self):
+        layer = self._gpkg_che_mente()
+        self.assertTrue(layer.isValid())
+        dichiarata = layer.extent()
+        self.assertGreater(dichiarata.width(), 300000,
+                           "il presupposto della prova non regge: il "
+                           "GeoPackage non dichiara piu' il falso")
+        vera = P.estensione_vera(layer)
+        self.assertLess(vera.width(), 1000, vera.toString())
+        self.assertAlmostEqual(vera.xMinimum(), 2718000.0, places=1)
+        self.assertAlmostEqual(vera.yMaximum(), 1082400.0, places=1)
+
+    def test_un_layer_vuoto_non_sposta_l_estensione(self):
+        progetto, _g, _b = progetto_di_prova()
+        est = P.estensione_pubblicata(progetto)
+        self.assertTrue(est.isNull() or est.isEmpty(),
+                        "senza oggetti non c'e' estensione da dichiarare")
 
 
 class TestCoerenzaConGliStili(unittest.TestCase):

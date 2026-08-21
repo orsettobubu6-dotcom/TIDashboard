@@ -82,6 +82,7 @@ import zipfile
 try:
     from qgis.core import (
         QgsCoordinateReferenceSystem,
+        QgsFeatureRequest,
         QgsMapLayer,
         QgsRectangle,
         QgsRenderContext,
@@ -286,6 +287,35 @@ def ripristina_layer(stati):
         _scrivi_short_name(stato["layer"], stato["short"])
 
 
+def estensione_vera(layer):
+    """L'estensione CALCOLATA dalle geometrie, non quella dichiarata.
+
+    layer.extent() su un GeoPackage legge gpkg_contents, e ili2gpkg ci scrive
+    i limiti dell'intero sistema di riferimento invece di quelli dei dati.
+    Misurato sul comune di prova:
+
+        dichiarata  2480000 1070000 2850000 1310000   (tutta la Svizzera)
+        calcolata   2714971 1077802 2722453 1086633   (Mendrisio, 7x9 km)
+
+    Il WMSExtent che ne usciva diceva al client di inquadrare la Svizzera
+    intera: il geoportale si apriva su una mappa vuota, con il comune ridotto a
+    un punto. Nessun errore, solo una mappa che sembra sbagliata.
+
+    Costa poco: 0.10 s per 11 160 fondi, 0.19 s per 16 388 superfici di
+    copertura del suolo, 0.17 s per 75 298 punti di confine. Su una consegna
+    che copia comunque un GeoPackage da decine di megabyte non si sente."""
+    if not hasattr(layer, "getFeatures"):
+        return layer.extent()
+    unione = QgsRectangle()
+    unione.setNull()
+    richiesta = QgsFeatureRequest().setNoAttributes()
+    for elemento in layer.getFeatures(richiesta):
+        geometria = elemento.geometry()
+        if geometria is not None and not geometria.isEmpty():
+            unione.combineExtentWith(geometria.boundingBox())
+    return unione
+
+
 def estensione_pubblicata(project):
     """L'estensione dei soli layer che finiscono nel WMS. Vuota se non ce ne
     sono con geometria: e' il caso di un progetto non ancora importato."""
@@ -294,7 +324,7 @@ def estensione_pubblicata(project):
     for layer in project.mapLayers().values():
         if e_privato(layer) or senza_geometria(layer):
             continue
-        est = layer.extent()
+        est = estensione_vera(layer)
         if est is None or est.isNull() or est.isEmpty():
             continue
         unione.combineExtentWith(est)
