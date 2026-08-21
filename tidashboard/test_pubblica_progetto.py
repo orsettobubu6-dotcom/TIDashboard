@@ -451,6 +451,51 @@ class TestIlControlloMorde(unittest.TestCase):
                   "/srv/tidashboard/symbols/normal/Symbol_1.svg")
         self.assertEqual([r for r in rilievi if ".svg" in r], [atteso])
 
+    def _cartella_con_progetto(self, corpo):
+        cartella = tempfile.mkdtemp()
+        os.makedirs(os.path.join(cartella, "fonts"))
+        for nome in P.FONT_DA_COPIARE:
+            with open(os.path.join(cartella, "fonts", nome), "wb"):
+                pass
+        with open(os.path.join(cartella, "prova.qgs"), "w",
+                  encoding="utf-8") as f:
+            f.write("<qgis>%s</qgis>" % corpo)
+        return cartella
+
+    def test_un_layer_temporaneo_non_e_un_file_mancante(self):
+        """Difetto trovato dalla prova d'insieme sul pulsante: il controllo
+        trattava OGNI datasource come un percorso, e per un layer di memoria
+        (sorgente "Point?crs=EPSG:2056&field=...") diceva "assente dalla
+        cartella". Non manca nessun file: quel layer non ha file. Il guasto
+        vero e' un altro, e va detto per quello che e' - sul server quel layer
+        sarebbe vuoto."""
+        cartella = self._cartella_con_progetto(
+            "<maplayer><datasource>Point?crs=EPSG:2056&amp;field=numero:string"
+            "</datasource><provider>memory</provider></maplayer>")
+        rilievi = P.verifica_consegna(cartella)[0]
+        self.assertTrue(any("layer temporaneo" in r for r in rilievi), rilievi)
+        self.assertFalse(any("assente dalla cartella" in r for r in rilievi),
+                         rilievi)
+
+    def test_un_layer_di_rete_non_si_cerca_su_disco(self):
+        """Un WMS di sfondo sul server funziona: non e' un percorso da
+        controllare, e segnalarlo sarebbe un allarme falso ripetuto."""
+        cartella = self._cartella_con_progetto(
+            "<maplayer><datasource>crs=EPSG:2056&amp;format=image/png&amp;"
+            "url=https://wms.geo.admin.ch/</datasource>"
+            "<provider>wms</provider></maplayer>")
+        rilievi = P.verifica_consegna(cartella)[0]
+        self.assertFalse(any("dato" in r for r in rilievi), rilievi)
+
+    def test_un_file_ogr_fuori_dalla_cartella_si_segnala_lo_stesso(self):
+        """L'altra meta': togliendo il controllo ai non-file non deve
+        sparire anche per i file."""
+        cartella = self._cartella_con_progetto(
+            "<maplayer><datasource>C:\\altrove\\comune.gpkg|layername=x"
+            "</datasource><provider>ogr</provider></maplayer>")
+        rilievi = P.verifica_consegna(cartella)[0]
+        self.assertTrue(any("percorso assoluto" in r for r in rilievi), rilievi)
+
     def test_i_percorsi_lasciati_assoluti(self):
         vera = P.adegua_progetto
 

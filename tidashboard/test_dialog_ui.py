@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qgis.core import (QgsApplication, QgsProject, QgsVectorLayer, QgsFeature,
-                       QgsGeometry, QgsPointXY, QgsRectangle, Qgis)
+                       QgsGeometry, QgsPointXY, QgsRectangle, Qgis,
+                       QgsVectorFileWriter)
 from qgis.PyQt.QtCore import QDate, Qt
 from qgis.PyQt.QtWidgets import QMessageBox, QPushButton
 
@@ -24,6 +25,9 @@ _qgs.initQgis()
 
 from tidashboard.tidashboard import TIDashboardDialog
 from tidashboard import planimetria as P
+# Il MODULO, non solo la classe: serve per sostituire temporaneamente le
+# finestre di dialogo che una prova non puo' aprire davvero.
+from tidashboard import tidashboard as cd
 
 CX, CY = 2718000.0, 1082000.0
 ITF_VERO = r"C:\Users\gabri\Downloads\5254010100\5254010100.itf"
@@ -813,6 +817,171 @@ class TestPulsanteLayoutBP(unittest.TestCase):
         dlg.combo_product.setCurrentIndex(1)      # Piano di base
         self.assertTrue(dlg.btn_layout.isEnabled())
         self.assertEqual(dlg.btn_layout.toolTip(), "")
+
+
+class TestPulsanteConsegna(unittest.TestCase):
+    """La consegna per QGIS Server: c'e' sempre, e si accende quando c'e'
+    qualcosa da consegnare."""
+
+    def test_spento_finche_non_ci_sono_layer(self):
+        dlg = TIDashboardDialog()
+        self.assertFalse(dlg.btn_consegna.isHidden())
+        self.assertFalse(dlg.btn_consegna.isEnabled())
+        self.assertIn("importazione riuscita", dlg.btn_consegna.toolTip())
+
+    def test_si_accende_dopo_l_importazione(self):
+        dlg = TIDashboardDialog()
+        dlg.loaded_layers = [object()]
+        dlg._aggiorna_pulsante_consegna()
+        self.assertTrue(dlg.btn_consegna.isEnabled())
+
+    def test_il_tooltip_dice_la_cosa_che_ci_si_dimentica(self):
+        """Che il server non esegue il plugin e che i font vanno installati
+        la'. E' l'unico passo che il plugin non puo' fare al posto di chi
+        consegna, ed e' quello che fallisce in silenzio."""
+        dlg = TIDashboardDialog()
+        dlg.loaded_layers = [object()]
+        dlg._aggiorna_pulsante_consegna()
+        suggerimento = dlg.btn_consegna.toolTip()
+        self.assertIn("NON esegue questo plugin", suggerimento)
+        self.assertIn("font", suggerimento)
+
+    def test_senza_geopackage_avvisa_e_non_chiede_la_cartella(self):
+        """Se il GeoPackage non c'e', chiedere dove salvare sarebbe una
+        domanda inutile fatta prima di scoprire che non si puo' fare niente."""
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(r"C:\non\esiste\comune.gpkg")
+        chiamate = []
+        vecchia_cartella = cd.QFileDialog.getExistingDirectory
+        cd.QFileDialog.getExistingDirectory = staticmethod(
+            lambda *a, **k: chiamate.append("cartella") or "")
+        prima = len(_avvisi)
+        try:
+            dlg.consegna_qgis_server()
+        finally:
+            cd.QFileDialog.getExistingDirectory = vecchia_cartella
+        self.assertEqual(chiamate, [], "ha chiesto la cartella per niente")
+        self.assertGreater(len(_avvisi), prima, "non ha avvisato di nulla")
+
+    def test_annullando_la_cartella_non_succede_niente(self):
+        dlg = TIDashboardDialog()
+        gpkg = os.path.join(tempfile.mkdtemp(), "comune.gpkg")
+        with open(gpkg, "wb"):
+            pass
+        dlg.txt_gpkg.setText(gpkg)
+        chiamate = []
+        vecchia_cartella = cd.QFileDialog.getExistingDirectory
+        vecchia_consegna = cd._pubblica.consegna
+        cd.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: "")
+        cd._pubblica.consegna = lambda *a, **k: chiamate.append("consegna")
+        try:
+            dlg.consegna_qgis_server()
+        finally:
+            cd.QFileDialog.getExistingDirectory = vecchia_cartella
+            cd._pubblica.consegna = vecchia_consegna
+        self.assertEqual(chiamate, [])
+
+    def test_la_consegna_intera_scrive_una_cartella_che_supera_il_controllo(self):
+        """Il percorso buono, dal pulsante alla cartella scritta.
+
+        Le prove del modulo chiamano consegna() direttamente; questa passa dal
+        metodo della finestra, cioe' dal punto in cui si sbaglia a passare il
+        GeoPackage o la cartella del plugin."""
+        base = tempfile.mkdtemp()
+        gpkg = os.path.join(base, "comune.gpkg")
+        memoria = QgsVectorLayer(
+            "Point?crs=EPSG:2056&field=numero:string",
+            "beni_immobili_punto_di_confine", "memory")
+        opzioni = QgsVectorFileWriter.SaveVectorOptions()
+        opzioni.driverName = "GPKG"
+        opzioni.layerName = "beni_immobili_punto_di_confine"
+        QgsVectorFileWriter.writeAsVectorFormatV3(
+            memoria, gpkg, QgsProject.instance().transformContext(), opzioni)
+        layer = QgsVectorLayer(
+            "%s|layername=beni_immobili_punto_di_confine" % gpkg, "punti", "ogr")
+        self.assertTrue(layer.isValid())
+        progetto = QgsProject.instance()
+        progetto.addMapLayer(layer)
+
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(gpkg)
+        dlg.loaded_layers = [layer]
+        dlg._aggiorna_pulsante_consegna()
+        dest = os.path.join(base, "consegna")
+        vecchia_cartella = cd.QFileDialog.getExistingDirectory
+        vecchia_info = cd.QMessageBox.information
+        vecchio_avviso = cd.QMessageBox.warning
+        # Si raccolgono ENTRAMBI i messaggi: quale dei due esca dipende dai
+        # rilievi, e i rilievi dipendono da cosa hanno lasciato nel progetto
+        # condiviso le altre prove. Cio' che deve valere in tutt'e due i casi
+        # e' che all'utente sia stato detto qualcosa, e che ci sia dentro il
+        # promemoria sui font.
+        detto = []
+        raccogli = staticmethod(
+            lambda *a, **k: detto.append(a[2] if len(a) > 2 else ""))
+        cd.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: dest)
+        cd.QMessageBox.information = raccogli
+        cd.QMessageBox.warning = raccogli
+        try:
+            dlg.consegna_qgis_server()
+            # La sorgente si legge PRIMA di togliere il layer dal progetto:
+            # removeMapLayer distrugge l'oggetto C++, e leggerlo dopo solleva
+            # "wrapped C/C++ object has been deleted".
+            sorgente_dopo = layer.source()
+        finally:
+            cd.QFileDialog.getExistingDirectory = vecchia_cartella
+            cd.QMessageBox.information = vecchia_info
+            cd.QMessageBox.warning = vecchio_avviso
+            progetto.removeMapLayer(layer.id())
+
+        for atteso in ("comune.gpkg", "consegna.qgz", "fonts", "symbols",
+                       "LEGGIMI.txt"):
+            self.assertIn(atteso, os.listdir(dest))
+        from tidashboard import pubblica_progetto as PP
+        rilievi, _dati = PP.verifica_consegna(dest)
+        # NON si pretende zero rilievi: QgsProject.instance() e' uno solo per
+        # tutta la suite e porta i layer temporanei lasciati dalle altre prove.
+        # Il controllo li segnala, e ha ragione - un layer temporaneo sul
+        # server sarebbe vuoto. Qui interessa che non ci sia niente di storto
+        # in cio' che questa consegna ha scritto.
+        nostri = [r for r in rilievi if "layer temporaneo" not in r]
+        self.assertEqual(nostri, [])
+        self.assertTrue(detto, "non ha detto all'utente che era pronta")
+        self.assertIn("font", detto[0],
+                      "il promemoria sui font e' l'unica cosa che il plugin "
+                      "non puo' fare al posto di chi consegna")
+        # E la sessione e' rimasta con il suo GeoPackage, non con la copia.
+        self.assertTrue(sorgente_dopo.startswith(gpkg), sorgente_dopo)
+
+    def test_la_clessidra_non_resta_addosso_a_qgis_se_qualcosa_va_storto(self):
+        """setOverrideCursor senza restore lascia QGIS con la clessidra fino
+        al riavvio: e' il genere di guasto che non si collega piu' alla sua
+        causa."""
+        from qgis.PyQt.QtWidgets import QApplication
+        dlg = TIDashboardDialog()
+        gpkg = os.path.join(tempfile.mkdtemp(), "comune.gpkg")
+        with open(gpkg, "wb"):
+            pass
+        dlg.txt_gpkg.setText(gpkg)
+        vecchia_cartella = cd.QFileDialog.getExistingDirectory
+        vecchia_consegna = cd._pubblica.consegna
+        vecchio_errore = cd.QMessageBox.critical
+
+        def esplode(*a, **k):
+            raise RuntimeError("disco pieno")
+
+        cd.QFileDialog.getExistingDirectory = staticmethod(
+            lambda *a, **k: tempfile.mkdtemp())
+        cd._pubblica.consegna = esplode
+        cd.QMessageBox.critical = staticmethod(lambda *a, **k: None)
+        try:
+            dlg.consegna_qgis_server()
+        finally:
+            cd.QFileDialog.getExistingDirectory = vecchia_cartella
+            cd._pubblica.consegna = vecchia_consegna
+            cd.QMessageBox.critical = vecchio_errore
+        self.assertIsNone(QApplication.overrideCursor(),
+                          "QGIS resterebbe con la clessidra addosso")
 
 
 class TestComandiDurantelLavoro(unittest.TestCase):

@@ -552,8 +552,12 @@ def consegna(cartella, project, gpkg_path, plugin_dir, titolo="",
     finally: chi ha lanciato la consegna continua a lavorare sul GeoPackage
     originale, e il passo dopo (DXF, planimetria) scrive dove scriveva prima.
 
-    Nessuna chiamata all'interfaccia qui dentro: la copia di un GeoPackage di
-    produzione dura, e questa funzione deve poter girare in un QThread."""
+    Nessuna chiamata all'interfaccia qui dentro - cosi' si prova senza una
+    finestra - ma VA CHIAMATA DAL THREAD PRINCIPALE. Il pezzo che dura e' la
+    copia del GeoPackage; tutto il resto tocca il progetto QGIS (datasource,
+    flag dei layer, percorsi dei simboli), e gli oggetti del progetto non si
+    maneggiano da un thread secondario. Meglio qualche secondo di finestra
+    ferma che un blocco raro e inspiegabile dentro QGIS."""
     dest = os.path.abspath(str(cartella))
     os.makedirs(dest, exist_ok=True)
     if not os.path.isfile(str(gpkg_path)):
@@ -597,6 +601,11 @@ def consegna(cartella, project, gpkg_path, plugin_dir, titolo="",
 # --- IL SECONDO PARERE: SI GUARDA IL FILE SCRITTO ------------------------
 
 _RE_DATASOURCE = re.compile(r"<datasource>(.*?)</datasource>", re.DOTALL)
+# datasource e provider, nell'ordine in cui QGIS li scrive dentro <maplayer>.
+_RE_LAYER = re.compile(
+    r"<datasource>(.*?)</datasource>.*?<provider[^>]*>(.*?)</provider>",
+    re.DOTALL)
+PROVIDER_DI_FILE = ("ogr", "gdal")
 _RE_SVG = re.compile(r'value="([^"]*\.svg)"', re.IGNORECASE)
 _RE_FONT = re.compile(r'(?:fontFamily|name="font" type="QString" value)="([^"]+)"')
 _RE_PRIVATO = re.compile(r"<Private>(\d)</Private>")
@@ -673,8 +682,23 @@ def verifica_consegna(cartella):
                 mancanti += 1
         return mancanti
 
-    datasource = _RE_DATASOURCE.findall(xml)
-    controlla(datasource, "dato")
+    # NON OGNI datasource E' UN PERCORSO. Il primo controllo li trattava tutti
+    # come file e segnalava "assente dalla cartella" per un layer temporaneo,
+    # la cui sorgente e' "Point?crs=EPSG:2056&field=...". Chi decide e' il
+    # PROVIDER, che sta accanto nel progetto:
+    #   ogr, gdal      -> e' un file, e deve stare dentro la cartella;
+    #   memory         -> non e' un file e non esiste fuori da questa sessione:
+    #                     sul server quel layer sarebbe vuoto, e va detto;
+    #   wms, wfs, ...   -> vive sulla rete, sul server va benissimo.
+    coppie = _RE_LAYER.findall(xml)
+    datasource = [d for d, _p in coppie]
+    controlla([d for d, p in coppie if p in PROVIDER_DI_FILE], "dato")
+    for _d, p in coppie:
+        if p == "memory":
+            rilievi.append("layer temporaneo nel progetto: i suoi dati non "
+                           "esistono fuori da questa sessione e sul server "
+                           "sarebbe vuoto")
+            break
     svg = sorted(set(_RE_SVG.findall(xml)))
     controlla(svg, "simbolo SVG")
 

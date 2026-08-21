@@ -19,7 +19,7 @@ from qgis.PyQt.QtWidgets import (
     QTextEdit, QLabel, QGroupBox, QMessageBox, QAction, QCheckBox, QGridLayout,
     QComboBox, QDoubleSpinBox, QDateEdit, QTabWidget, QProgressBar, QWidget,
     QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, QListWidget,
-    QListWidgetItem
+    QListWidgetItem, QApplication
 )
 from qgis.PyQt.QtCore import (QThread, pyqtSignal, QPointF, QRectF, QDate,
                               QTimer, Qt)
@@ -54,6 +54,7 @@ try:
     from . import verifica_dxf as _verifica_dxf
     from . import java_env as _java_env
     from . import coordinate as _coordinate
+    from . import pubblica_progetto as _pubblica
     from . import simbologia as _simbologia
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
@@ -83,6 +84,7 @@ except ImportError:
     import verifica_dxf as _verifica_dxf
     import java_env as _java_env
     import coordinate as _coordinate
+    import pubblica_progetto as _pubblica
     import simbologia as _simbologia
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
@@ -905,6 +907,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         layout_import.addWidget(self.btn_layout)
         self._aggiorna_pulsante_layout()
 
+        # "Consegna", non "WebGIS": quello che esce di qui e' una cartella da
+        # copiare su un server, non un sito. Il tooltip dice la cosa che ci si
+        # dimentica sempre - che il server non esegue questo plugin.
+        self.btn_consegna = QPushButton("🌐 CONSEGNA PER QGIS SERVER")
+        self.btn_consegna.setStyleSheet(_STILE_PULSANTE % "#00695C")
+        self.btn_consegna.clicked.connect(self.consegna_qgis_server)
+        layout_import.addWidget(self.btn_consegna)
+        self._aggiorna_pulsante_consegna()
+
         layout_import.addStretch()
         group_import.setLayout(layout_import)
         self.pagina_import = self._in_scheda(group_import)
@@ -1513,6 +1524,24 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_layout.setToolTip(
             "" if attivo else
             "Disponibile solo con il prodotto \"Piano di base (PB-MU)\"")
+
+    def _aggiorna_pulsante_consegna(self):
+        """Si consegna quello che c'e': senza layer caricati non c'e' niente.
+
+        Spento con il motivo nel tooltip invece che nascosto - un comando che
+        sparisce non spiega perche' non e' disponibile."""
+        pulsante = getattr(self, "btn_consegna", None)
+        if pulsante is None:
+            return
+        attivo = bool(getattr(self, "loaded_layers", None))
+        pulsante.setEnabled(attivo)
+        pulsante.setToolTip(
+            "Scrive una cartella (progetto + dati + font + simboli) da copiare "
+            "su QGIS Server.\nIl server NON esegue questo plugin: legge solo il "
+            "progetto, e i font vanno installati sulla macchina."
+            if attivo else
+            "Disponibile dopo un'importazione riuscita: non c'e' ancora niente "
+            "da consegnare.")
 
     def create_file_row(self, label_text, line_edit, filter_str, is_save, scheda=None):
         row = QHBoxLayout()
@@ -3773,6 +3802,14 @@ class TIDashboardDialog(StiliMixin, QDialog):
             _iface.mapCanvas().refresh()
             self.log("\n🖼️ Canvas aggiornato")
 
+        # Adesso c'e' qualcosa da consegnare. NON si adegua il progetto qui:
+        # i flag WMS non li legge solo il server - Private toglie il layer
+        # dall'albero e Identifiable spegne lo strumento "informazioni" del
+        # desktop - e applicarli a fine importazione vorrebbe dire che da quel
+        # momento un clic su una copertura del suolo non risponde piu', senza
+        # spiegazione. Si adegua quando si consegna, e si rimette a posto.
+        self._aggiorna_pulsante_consegna()
+
     def _reorganize_layer_tree(self, geom_layers, attr_layers):
         """Raggruppa il pannello Layers secondo i 12 livelli di RF_LAYER_GROUPS
         (circ154 cap. 1.5.4), invece di lasciare un elenco piatto di
@@ -4289,6 +4326,88 @@ class TIDashboardDialog(StiliMixin, QDialog):
                          % (child_table, parent_table), Qgis.Warning)
         if fatti:
             self.log("   📊 Orientamenti di simbolo collegati: %d" % fatti)
+
+    def consegna_qgis_server(self):
+        """Scrive la cartella da copiare su QGIS Server e la ricontrolla.
+
+        NEL THREAD DELL'INTERFACCIA, non in un QThread come le altre attese
+        lunghe. Il pezzo che dura e' la copia del GeoPackage, ma il resto tocca
+        il progetto QGIS - datasource, flag dei layer, percorsi dei simboli - e
+        gli oggetti del progetto non si maneggiano da un thread secondario.
+        Meglio una finestra ferma per qualche secondo, con la clessidra, che un
+        blocco raro e inspiegabile dentro QGIS."""
+        gpkg = self.txt_gpkg.text().strip()
+        if not os.path.isfile(gpkg):
+            QMessageBox.warning(self, "Consegna per QGIS Server",
+                                "GeoPackage non trovato:\n%s" % (gpkg or "(vuoto)"))
+            return
+
+        cartella = QFileDialog.getExistingDirectory(
+            self, "Cartella di consegna (vuota o nuova)",
+            os.path.dirname(gpkg))
+        if not cartella:
+            return
+        # La consegna riscrive symbols/ e il progetto: su una cartella che
+        # contiene gia' altro si sovrascrive senza che l'utente lo sappia.
+        if os.path.isdir(cartella) and os.listdir(cartella):
+            if QMessageBox.question(
+                    self, "Consegna per QGIS Server",
+                    "La cartella non è vuota:\n%s\n\nI file con lo stesso nome "
+                    "verranno sovrascritti. Procedere?" % cartella,
+                    _MB_SI | _MB_NO, _MB_NO) != _MB_SI:
+                return
+
+        nome = os.path.splitext(os.path.basename(gpkg))[0]
+        self.log("\n🌐 Consegna per QGIS Server → %s" % cartella)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            esito = _pubblica.consegna(
+                cartella, QgsProject.instance(), gpkg,
+                os.path.dirname(os.path.abspath(__file__)), titolo=nome)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            self.log("   ❌ Consegna non riuscita: %s" % e, Qgis.Critical)
+            QMessageBox.critical(self, "Consegna per QGIS Server",
+                                 "Consegna non riuscita:\n%s" % e)
+            return
+        finally:
+            # restoreOverrideCursor anche sul percorso di errore, altrimenti
+            # QGIS resta con la clessidra addosso fino al riavvio.
+            if QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+
+        self.log("   ✅ %s" % os.path.basename(esito["qgz"]))
+        self.log("   📦 %d layer, di cui %d fuori dal servizio (cap. 1.5.3); "
+                 "%d font, %d simboli"
+                 % (esito["n_layer"], esito["n_privati"], esito["n_font"],
+                    esito["n_svg"]))
+
+        # E POI SI GUARDA IL FILE SCRITTO, non gli oggetti appena impostati.
+        rilievi, _dati = _pubblica.verifica_consegna(cartella)
+        for r in rilievi:
+            self.log("   ⚠️ %s" % r, Qgis.Warning)
+
+        # IL PROMEMORIA SUI FONT VA IN ENTRAMBI I MESSAGGI. Prima stava solo in
+        # quello di successo, cioe' spariva proprio quando la consegna aveva
+        # gia' qualcosa che non andava - il momento in cui una dimenticanza in
+        # piu' costa di piu'. Ed e' l'unico passo che il plugin non puo' fare
+        # al posto di chi consegna: senza i font installati il server risponde
+        # lo stesso, con un carattere di ricambio scelto da Qt in silenzio.
+        promemoria = ("\n\nI font Cadastra vanno INSTALLATI sul server: QGIS "
+                      "Server non carica i .ttf che trova accanto al progetto. "
+                      "Le istruzioni sono in LEGGIMI.txt dentro la cartella.")
+        if rilievi:
+            QMessageBox.warning(
+                self, "Consegna per QGIS Server",
+                "Cartella scritta, ma il controllo ha trovato %d problemi:\n\n%s"
+                "\n\nIl dettaglio è nel registro.%s"
+                % (len(rilievi), "\n".join(rilievi[:5]), promemoria))
+        else:
+            QMessageBox.information(
+                self, "Consegna per QGIS Server",
+                "Cartella pronta:\n%s\n\nControllata: nessun percorso assoluto, "
+                "ogni file citato dal progetto è dentro la cartella.%s"
+                % (cartella, promemoria))
 
     def create_layout_bp(self):
         """Crea un layout per il piano di base (PB-MU): mappa a tutto foglio
