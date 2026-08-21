@@ -62,9 +62,11 @@ try:
     from .etichette import *       # noqa: F401,F403 - regole di etichettatura
     from .ordinamento import *     # noqa: F401,F403 - ordine z e gruppi
     from .simbologia import *      # noqa: F401,F403 - costruttori di simboli
-    from .etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
+    from .etichette import (KEYWORD_LOCALITA, _LABEL_DISABLED_BY_DEFAULT,
+                            _LABEL_LAYER_OFF_BY_DEFAULT,
                             _LABEL_PRIORITY, _LABEL_PRIORITY_DEFAULT,
-                            _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
+                            _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS,
+                            campo_di_iscrizione, iscrizione_localita)
     from .ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
                               _raw_table_name, _rf_group_debug_info,
                               _rf_group_for_table, _zorder_debug_info,
@@ -92,9 +94,11 @@ except ImportError:
     from etichette import *        # noqa: F401,F403
     from ordinamento import *      # noqa: F401,F403
     from simbologia import *       # noqa: F401,F403
-    from etichette import (_LABEL_DISABLED_BY_DEFAULT, _LABEL_LAYER_OFF_BY_DEFAULT,
+    from etichette import (KEYWORD_LOCALITA, _LABEL_DISABLED_BY_DEFAULT,
+                           _LABEL_LAYER_OFF_BY_DEFAULT,
                            _LABEL_PRIORITY, _LABEL_PRIORITY_DEFAULT,
-                           _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS)
+                           _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS,
+                           campo_di_iscrizione, iscrizione_localita)
     from ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
                              _raw_table_name, _rf_group_debug_info,
                              _rf_group_for_table, _zorder_debug_info,
@@ -1232,6 +1236,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.chk_lettera_norma.toggled.connect(self._aggiorna_nota_fattore)
         layout_plan.addWidget(self.chk_lettera_norma)
 
+        # Raccomandazione del cap. 5.7, non obbligo: spenta di default.
+        self.chk_localita_maiuscolo = QCheckBox(
+            "Nomi di località in maiuscolo (raccomandazione cap. 5.7)")
+        self.chk_localita_maiuscolo.setToolTip(
+            "«I nomi di località corrispondenti a delle borgate sono da "
+            "indicare preferibilmente con lettere maiuscole.»\n"
+            "Il modello non dice quali località siano borgate: la regola vale "
+            "per tutta la classe Nome_di_località.\nIl dato non viene "
+            "modificato — il maiuscolo è solo nel disegno.")
+        self.chk_localita_maiuscolo.toggled.connect(
+            self._aggiorna_maiuscolo_localita)
+        layout_plan.addWidget(self.chk_localita_maiuscolo)
+
         self.lbl_fattore = QLabel()
         self.lbl_fattore.setWordWrap(True)
         layout_plan.addWidget(self.lbl_fattore)
@@ -1524,6 +1541,46 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_layout.setToolTip(
             "" if attivo else
             "Disponibile solo con il prodotto \"Piano di base (PB-MU)\"")
+
+    def _maiuscolo_localita(self):
+        """getattr: i test costruiscono la finestra con __new__, senza widget."""
+        spunta = getattr(self, "chk_localita_maiuscolo", None)
+        return bool(spunta is not None and spunta.isChecked())
+
+    def _aggiorna_maiuscolo_localita(self, _acceso=None):
+        """Accende o spegne il maiuscolo sui layer GIA' caricati.
+
+        Senza questo la spunta varrebbe solo alla prossima importazione, che su
+        un file di produzione sono minuti: una scelta di resa grafica non puo'
+        costare un reimport. Si riscrive solo l'espressione dell'etichetta, il
+        resto del formato non si tocca."""
+        maiuscolo = self._maiuscolo_localita()
+        toccati = 0
+        for layer in getattr(self, "loaded_layers", None) or []:
+            if not _vivo(layer) or KEYWORD_LOCALITA not in \
+                    _raw_table_name(layer).lower():
+                continue
+            etichettatura = layer.labeling()
+            if etichettatura is None:
+                continue
+            impostazioni = etichettatura.settings()
+            # Si riparte SEMPRE dal campo di base: senza, accendendo due volte
+            # si otterrebbe upper("upper(...)"), che non e' un campo ne' una
+            # espressione valida e lascerebbe l'etichetta vuota.
+            campo = campo_di_iscrizione(impostazioni.fieldName,
+                                        impostazioni.isExpression)
+            impostazioni.fieldName, impostazioni.isExpression = \
+                iscrizione_localita(campo, maiuscolo)
+            layer.setLabeling(QgsVectorLayerSimpleLabeling(impostazioni))
+            layer.triggerRepaint()
+            toccati += 1
+        if toccati:
+            self.log("   🔠 Nomi di località %s su %d layer (cap. 5.7)"
+                     % ("in MAIUSCOLO" if maiuscolo else "come nel dato",
+                        toccati))
+        _iface = getattr(self, "_iface", None)
+        if _iface and _iface.mapCanvas():
+            _iface.mapCanvas().refresh()
 
     def _aggiorna_pulsante_consegna(self):
         """Si consegna quello che c'e': senza layer caricati non c'e' niente.
@@ -4108,6 +4165,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
                     f'coalesce("indice_finale", length("{field_name}")) - coalesce("indice_iniziale", 1) + 1)'
                 )
                 settings.isExpression = True
+            elif keyword == KEYWORD_LOCALITA:
+                settings.fieldName, settings.isExpression = \
+                    iscrizione_localita(field_name, self._maiuscolo_localita())
             else:
                 settings.fieldName = field_name
             text_format = QgsTextFormat()

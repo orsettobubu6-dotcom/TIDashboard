@@ -8,11 +8,11 @@
 
 # Regole delle etichette testuali, estratte da tidashboard.py.
 #
-# Sono dati puri, senza dipendenze: la tabella delle grandezze normative
-# (cap.5 delle istruzioni federali) e le liste di tabelle Pos* che si
+# Sono dati puri, senza dipendenze da QGIS: la tabella delle grandezze
+# normative (cap.5 delle istruzioni federali) e le liste di tabelle Pos* che si
 # discostano dai default del modello. Tenerle separate dal codice che le
 # applica evita di doverle cercare dentro 5000 righe di interfaccia.
-
+import re
 
 # ==================================================================================================================
 # 1bis. REGOLE ETICHETTE TESTUALI (cap. 5 Weisung-GB-it.pdf)
@@ -119,6 +119,56 @@ _LABEL_DISABLED_BY_DEFAULT = ("pospfp", "pospfa")
 # normale/spaziato/altro) - "altro" e' un placeholder di estensione senza
 # oggetti/semantica definita, trattato come "normale".
 _POS_STILE_KEYWORDS = ("nome_locale", "nome_di_localita", "nome_del_luogo")
+
+# I nomi di localita' in maiuscolo (cap. 5.7). Il capitolo dice:
+#
+#   "Raccomandazione: I nomi di localita' corrispondenti a delle borgate sono
+#    da indicare preferibilmente con lettere maiuscole."
+#
+# E' una RACCOMANDAZIONE, non un obbligo, e per questo la spunta e' spenta di
+# default: accenderla di serie cambierebbe l'aspetto di tutte le planimetrie
+# gia' prodotte per una cosa che la norma non pretende.
+#
+# IL LIMITE. La norma dice "localita' CORRISPONDENTI A DELLE BORGATE", e il
+# modello un posto dove dirlo ce l'ha: Nome_di_localita porta
+#
+#     Tipo: OPTIONAL TEXT*30; !! assegnato dal cantone
+#
+# Solo che nella consegna ticinese e' VUOTO - NULL su tutte e dieci le
+# localita' del comune di prova. Un campo facoltativo che il Cantone non
+# compila non e' un criterio: filtrarci sopra spegnerebbe la regola sempre.
+#
+# Si applica quindi a tutta la classe Nome_di_localita, che su Mendrisio
+# contiene esattamente le dieci borgate - Arzo, Besazio, Capolago, Cragno,
+# Genestrerio, Ligornetto, Mendrisio, Meride, Rancate, Tremona - ma altrove
+# potrebbe contenere una localita' che borgata non e'. La regola e' giusta
+# quasi sempre, non sempre; il giorno in cui il Cantone valorizzasse Tipo
+# potrebbe diventare esatta.
+#
+# Il maiuscolo si fa al DISEGNO, non nel dato: nel GeoPackage i nomi stanno in
+# minuscolo (zero su dieci maiuscoli, verificato), e cambiarli sarebbe
+# riscrivere una consegna ufficiale per una questione di resa grafica.
+KEYWORD_LOCALITA = "nome_di_localita"
+_RE_UPPER = re.compile(r'^upper\("(.*)"\)$', re.DOTALL)
+
+
+def iscrizione_localita(campo, maiuscolo):
+    """(testo dell'etichetta, e' un'espressione) per il nome di localita'."""
+    if not maiuscolo or not campo:
+        return (campo, False)
+    return ('upper("%s")' % campo.replace('"', '""'), True)
+
+
+def campo_di_iscrizione(testo, e_espressione):
+    """Il campo di partenza, qualunque sia lo stato attuale dell'etichetta.
+
+    Serve per poter accendere e spegnere il maiuscolo su un layer gia'
+    etichettato senza rifare l'importazione: senza questa, riaccendendolo due
+    volte si otterrebbe upper("upper(...)")."""
+    if not e_espressione:
+        return testo
+    dentro = _RE_UPPER.match(testo or "")
+    return dentro.group(1).replace('""', '"') if dentro else testo
 
 # ==================================================================================================================
 # 1ter. PRIORITA' DELLE ETICHETTE IN CASO DI SOVRAPPOSIZIONE

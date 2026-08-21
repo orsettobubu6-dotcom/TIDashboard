@@ -819,6 +819,90 @@ class TestPulsanteLayoutBP(unittest.TestCase):
         self.assertEqual(dlg.btn_layout.toolTip(), "")
 
 
+class TestLocalitaMaiuscolo(unittest.TestCase):
+    """Il maiuscolo sui nomi di località (raccomandazione cap. 5.7).
+
+    Il capitolo dice «preferibilmente», non «devono»: la spunta è spenta di
+    default, e accenderla non deve costare una nuova importazione."""
+
+    def _layer_localita(self, campo="nome"):
+        layer = QgsVectorLayer(
+            "Point?crs=EPSG:2056&field=%s:string" % campo,
+            "nomenclatura_posnome_di_localita", "memory")
+        impostazioni = cd.QgsPalLayerSettings()
+        impostazioni.fieldName = campo
+        impostazioni.enabled = True
+        layer.setLabeling(cd.QgsVectorLayerSimpleLabeling(impostazioni))
+        layer.setLabelsEnabled(True)
+        return layer
+
+    def test_spenta_di_default(self):
+        dlg = TIDashboardDialog()
+        self.assertFalse(dlg.chk_localita_maiuscolo.isChecked())
+        self.assertIn("5.7", dlg.chk_localita_maiuscolo.text())
+
+    def test_il_tooltip_cita_la_norma_e_il_suo_limite(self):
+        dlg = TIDashboardDialog()
+        t = dlg.chk_localita_maiuscolo.toolTip()
+        self.assertIn("borgate", t)
+        self.assertIn("non viene modificato", t,
+                      "deve dire che il dato non si tocca")
+
+    def test_accendere_cambia_i_layer_gia_caricati(self):
+        """Senza questo la spunta varrebbe solo alla prossima importazione,
+        che su un file di produzione sono minuti."""
+        dlg = TIDashboardDialog()
+        layer = self._layer_localita()
+        dlg.loaded_layers = [layer]
+        dlg.chk_localita_maiuscolo.setChecked(True)
+        imp = layer.labeling().settings()
+        self.assertTrue(imp.isExpression)
+        self.assertEqual(imp.fieldName, 'upper("nome")')
+
+    def test_spegnere_riporta_al_campo(self):
+        dlg = TIDashboardDialog()
+        layer = self._layer_localita()
+        dlg.loaded_layers = [layer]
+        dlg.chk_localita_maiuscolo.setChecked(True)
+        dlg.chk_localita_maiuscolo.setChecked(False)
+        imp = layer.labeling().settings()
+        self.assertFalse(imp.isExpression)
+        self.assertEqual(imp.fieldName, "nome")
+
+    def test_accendere_due_volte_non_annida_upper(self):
+        """upper("upper(...)") non e' ne' un campo ne' un'espressione valida:
+        l'etichetta uscirebbe vuota, e in mappa si vedrebbe solo che i nomi
+        di localita' sono spariti."""
+        dlg = TIDashboardDialog()
+        layer = self._layer_localita()
+        dlg.loaded_layers = [layer]
+        dlg.chk_localita_maiuscolo.setChecked(True)
+        dlg._aggiorna_maiuscolo_localita()      # come una seconda accensione
+        self.assertEqual(layer.labeling().settings().fieldName, 'upper("nome")')
+
+    def test_non_tocca_gli_altri_nomi_della_nomenclatura(self):
+        """La norma parla di localita'. Nome locale e nome del luogo restano
+        come sono - il primo sono 648 microtoponimi sul comune di prova."""
+        dlg = TIDashboardDialog()
+        altro = self._layer_localita()
+        altro.setName("nomenclatura_posnome_locale")
+        # il nome della tabella si legge dalla source, non dal nome del layer:
+        # un layer di memoria non ha "layername=", quindi vale il nome.
+        dlg.loaded_layers = [altro]
+        dlg.chk_localita_maiuscolo.setChecked(True)
+        self.assertFalse(altro.labeling().settings().isExpression)
+
+    def test_il_campo_puo_venire_dal_join(self):
+        """Sulla tabella Pos* il testo arriva dal join e si chiama
+        "<tabella_padre>_nome": l'espressione deve citare QUEL campo."""
+        dlg = TIDashboardDialog()
+        layer = self._layer_localita(campo="nomenclatura_nome_di_localita_nome")
+        dlg.loaded_layers = [layer]
+        dlg.chk_localita_maiuscolo.setChecked(True)
+        self.assertEqual(layer.labeling().settings().fieldName,
+                         'upper("nomenclatura_nome_di_localita_nome")')
+
+
 class TestPulsanteConsegna(unittest.TestCase):
     """La consegna per QGIS Server: c'e' sempre, e si accende quando c'e'
     qualcosa da consegnare."""
