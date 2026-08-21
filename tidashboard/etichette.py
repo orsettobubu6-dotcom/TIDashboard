@@ -151,6 +151,42 @@ _POS_STILE_KEYWORDS = ("nome_locale", "nome_di_localita", "nome_del_luogo")
 KEYWORD_LOCALITA = "nome_di_localita"
 _RE_UPPER = re.compile(r'^upper\("(.*)"\)$', re.DOTALL)
 
+# LE UNICHE TRE REGOLE CHE NON COMINCIANO PER "pos", e che percio' combaciano
+# anche con la tabella PADRE.
+#
+# Il riscontro fra regola e tabella e' per sottostringa, e
+# "nomenclatura_posnome_di_localita" CONTIENE "nome_di_localita": venivano
+# etichettati tutti e due i layer, il punto di iscrizione e il poligono che
+# delimita l'area denominata. Il nome finiva sul foglio DUE VOLTE.
+#
+# MISURATO sul comune di prova, e non e' un caso limite:
+#
+#   classe              poligoni  punti   iscrizioni  dovute
+#   nome_di_localita          10     12           22      12
+#   nome_locale              648    760         1408     760
+#
+# cioe' 658 scritte di troppo. E non se ne perde una per collisione: la
+# distanza fra le due iscrizioni della stessa cosa ha mediana 52.6 m per le
+# localita' e 40.4 m per i nomi locali - a 1:1000 sono 40-50 mm di carta.
+#
+# QUELLA GIUSTA E' SUL PUNTO. Il modello e' esplicito: PosNome_X e'
+# "l'iscrizione del Nome", e porta Ori/HAli/VAli, cioe' dove e come il geometra
+# ha deciso di scriverlo. Il poligono e' l'estensione dell'area denominata; il
+# centro lo sceglie QGIS, non la misurazione.
+#
+# Nome_del_luogo non era toccato perche' il suo padre non ha geometria: viene
+# caricato come tabella attributo, e quelle non si etichettano.
+TESTO_SOLO_SU_POS = ("nome_del_luogo", "nome_di_localita", "nome_locale")
+
+
+def e_tabella_pos(t_low):
+    """La tabella e' un punto di iscrizione (PosX), non l'oggetto che nomina.
+
+    Stessa forma usata da _get_renderer_for_table: "pos" in testa, oppure
+    "_pos" dopo il nome del topic (nomenclatura_posnome_locale)."""
+    t = (t_low or "").lower()
+    return t.startswith("pos") or "_pos" in t
+
 
 def iscrizione_localita(campo, maiuscolo):
     """(testo dell'etichetta, e' un'espressione) per il nome di localita'."""

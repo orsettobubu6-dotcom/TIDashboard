@@ -62,11 +62,13 @@ try:
     from .etichette import *       # noqa: F401,F403 - regole di etichettatura
     from .ordinamento import *     # noqa: F401,F403 - ordine z e gruppi
     from .simbologia import *      # noqa: F401,F403 - costruttori di simboli
-    from .etichette import (KEYWORD_LOCALITA, _LABEL_DISABLED_BY_DEFAULT,
+    from .etichette import (KEYWORD_LOCALITA, TESTO_SOLO_SU_POS,
+                            _LABEL_DISABLED_BY_DEFAULT,
                             _LABEL_LAYER_OFF_BY_DEFAULT,
                             _LABEL_PRIORITY, _LABEL_PRIORITY_DEFAULT,
                             _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS,
-                            campo_di_iscrizione, iscrizione_localita)
+                            campo_di_iscrizione, e_tabella_pos,
+                            iscrizione_localita)
     from .ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
                               _raw_table_name, _rf_group_debug_info,
                               _rf_group_for_table, _zorder_debug_info,
@@ -94,11 +96,13 @@ except ImportError:
     from etichette import *        # noqa: F401,F403
     from ordinamento import *      # noqa: F401,F403
     from simbologia import *       # noqa: F401,F403
-    from etichette import (KEYWORD_LOCALITA, _LABEL_DISABLED_BY_DEFAULT,
+    from etichette import (KEYWORD_LOCALITA, TESTO_SOLO_SU_POS,
+                           _LABEL_DISABLED_BY_DEFAULT,
                            _LABEL_LAYER_OFF_BY_DEFAULT,
                            _LABEL_PRIORITY, _LABEL_PRIORITY_DEFAULT,
                            _POS_LEFT_BOTTOM_KEYWORDS, _POS_STILE_KEYWORDS,
-                           campo_di_iscrizione, iscrizione_localita)
+                           campo_di_iscrizione, e_tabella_pos,
+                           iscrizione_localita)
     from ordinamento import (CAMPO_ORI_SIMBOLO, PREFISSO_SIMBOLO,
                              _raw_table_name, _rf_group_debug_info,
                              _rf_group_for_table, _zorder_debug_info,
@@ -1543,8 +1547,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
             "Disponibile solo con il prodotto \"Piano di base (PB-MU)\"")
 
     def _maiuscolo_localita(self):
-        """getattr: i test costruiscono la finestra con __new__, senza widget."""
-        spunta = getattr(self, "chk_localita_maiuscolo", None)
+        """La spunta e' accesa? Falso se la spunta non c'e' proprio.
+
+        try/except E NON getattr con valore di riposo, che e' quello che avevo
+        scritto e che NON funziona: su una finestra costruita con __new__ -
+        come fanno le prove, per non alzare una GUI vera - PyQt rifiuta
+        qualunque accesso ad attributo con RuntimeError ("super-class
+        __init__() was never called"), e il valore di riposo di getattr copre
+        AttributeError, non RuntimeError. La riga alzava un'eccezione proprio
+        nel caso che diceva di gestire."""
+        try:
+            spunta = self.chk_localita_maiuscolo
+        except (AttributeError, RuntimeError):
+            return False
         return bool(spunta is not None and spunta.isChecked())
 
     def _aggiorna_maiuscolo_localita(self, _acceso=None):
@@ -4148,6 +4163,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
         for keyword, candidates, bold, italic, size in TEXT_LABEL_RULES:
             if keyword not in t_low:
                 continue
+
+            # La scritta va sul PUNTO DI ISCRIZIONE, non sull'oggetto che
+            # nomina: vedi TESTO_SOLO_SU_POS. Senza questo controllo il nome
+            # finiva sul foglio due volte - 658 iscrizioni di troppo sul solo
+            # comune di prova, a mediana 40-50 mm di carta l'una dall'altra.
+            if keyword in TESTO_SOLO_SU_POS and not e_tabella_pos(t_low):
+                self.log("     ⏭️ %s: l'iscrizione sta sulla tabella Pos*, "
+                         "qui sarebbe la seconda copia dello stesso nome"
+                         % class_name)
+                return
 
             field_name = self._find_label_field(layer, candidates)
             if not field_name:

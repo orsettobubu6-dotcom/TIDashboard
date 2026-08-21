@@ -444,6 +444,55 @@ class TestApplyLabelsToLayer(unittest.TestCase):
         self.assertTrue(settings.isExpression)
         self.assertTrue(layer.labelsEnabled())
 
+    def test_il_nome_non_si_scrive_anche_sul_poligono(self):
+        """Il riscontro fra regola e tabella e' per sottostringa, e
+        "nomenclatura_posnome_di_localita" CONTIENE "nome_di_localita":
+        venivano etichettati tutti e due i layer, il punto di iscrizione e il
+        poligono dell'area denominata, e il nome finiva sul foglio DUE VOLTE.
+
+        Misurato sul comune di prova: 22 iscrizioni di localita' per 12 dovute
+        e 1408 nomi locali per 760, cioe' 658 scritte di troppo. Non se ne
+        perdeva una per collisione - la distanza fra le due copie ha mediana
+        52.6 m e 40.4 m, che a 1:1000 sono 40-50 mm di carta."""
+        for tabella, classe in (("nomenclatura_nome_di_localita", "Nome_di_localita"),
+                                ("nomenclatura_nome_locale", "Nome_locale"),
+                                ("nomenclatura_nome_del_luogo", "Nome_del_luogo")):
+            layer = QgsVectorLayer("Polygon?field=nome:string", "t", "memory")
+            make_dialog_stub()._apply_labels_to_layer(layer, tabella, classe,
+                                                      is_gb=True)
+            self.assertFalse(
+                layer.labelsEnabled(),
+                "%s viene etichettato: il nome uscirebbe due volte" % tabella)
+
+    def test_ma_sul_punto_di_iscrizione_si(self):
+        """L'altra meta': un'esclusione troppo larga toglierebbe la scritta
+        anche da dove deve stare, e il piano resterebbe senza nomi."""
+        for tabella in ("nomenclatura_posnome_di_localita",
+                        "nomenclatura_posnome_locale",
+                        "nomenclatura_posnome_del_luogo"):
+            layer = QgsVectorLayer("Point?field=nome:string", "t", "memory")
+            make_dialog_stub()._apply_labels_to_layer(layer, tabella, tabella,
+                                                      is_gb=True)
+            self.assertTrue(layer.labelsEnabled(),
+                            "%s resta senza iscrizione" % tabella)
+
+    def test_la_regola_riconosce_le_tabelle_di_iscrizione(self):
+        for tabella in ("posfondo", "nomenclatura_posnome_locale",
+                        "beni_immobili_posnumero_di_edificio"):
+            self.assertTrue(cd.e_tabella_pos(tabella), tabella)
+        for tabella in ("nomenclatura_nome_locale", "copertura_dl_solo_superficiecs",
+                        "beni_immobili_bene_immobile"):
+            self.assertFalse(cd.e_tabella_pos(tabella), tabella)
+
+    def test_le_altre_etichette_non_sono_toccate(self):
+        """Il controllo vale per le tre regole della nomenclatura, non per
+        tutte: il punto quotato non e' una tabella Pos e deve restare
+        etichettato."""
+        layer = QgsVectorLayer("Point", "t", "memory")
+        make_dialog_stub()._apply_labels_to_layer(
+            layer, "altimetria_punto_quotato", "Punto_quotato", is_gb=True)
+        self.assertTrue(layer.labelsEnabled())
+
     def test_posfondo_grassetto_non_corsivo(self):
         # TEXT_LABEL_RULES: ("posfondo", ("Numero",), True, False, 2.5)
         layer = QgsVectorLayer("Point?field=numero:string", "t", "memory")
