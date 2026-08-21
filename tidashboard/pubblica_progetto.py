@@ -85,7 +85,6 @@ try:
         QgsMapLayer,
         QgsRectangle,
         QgsRenderContext,
-        QgsWkbTypes,
     )
     QGIS_PRESENTE = True
 except ImportError:  # pragma: no cover - dipende dall'ambiente, non dal codice
@@ -185,11 +184,15 @@ def non_rappresentato(layer):
 def senza_geometria(layer):
     """Tabelle caricate solo per fare da sorgente ai join (Fondo,
     Nome_del_luogo, Oggetto_condotta...). Non hanno niente da disegnare e in
-    un GetCapabilities sono solo rumore."""
+    un GetCapabilities sono solo rumore.
+
+    isSpatial() e non un confronto con QgsWkbTypes.NullGeometry: gli enum di
+    geometria stanno migrando da QgsWkbTypes a Qgis, e un confronto con un
+    alias deprecato e' il tipo di riga che funziona su una versione e cade
+    sull'altra - come e' appena successo con QVariant fra il QGIS di Windows e
+    quello della CI."""
     try:
-        if not QGIS_PRESENTE:
-            return False
-        return layer.geometryType() == QgsWkbTypes.NullGeometry
+        return not layer.isSpatial()
     except AttributeError:
         return False
 

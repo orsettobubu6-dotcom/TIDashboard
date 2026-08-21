@@ -77,15 +77,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # LE ULTIME RIGHE DIVENTANO ANNOTAZIONI, non solo registro. Il registro
+      # di una Actions si legge solo da autenticati ("Sign in to view logs"),
+      # e con un job rosso davanti restava da indovinare quale prova fosse
+      # caduta - che e' il modo per accumulare tentativi invece di correzioni.
+      # Le annotazioni si leggono anche senza accedere.
       - name: Test con QGIS 4.2 headless
         run: |
+          set +e
           docker run --rm \
             --entrypoint bash \
             -v "$PWD":/src \
             -w /src \
             -e QT_QPA_PLATFORM=offscreen \
             qgis/qgis:4.2-trixie \
-            -lc 'python3 tidashboard/test_style_logic.py && python3 tidashboard/test_planimetria.py && python3 tidashboard/test_verifica_dxf.py && python3 tidashboard/test_pubblica_progetto.py'
+            -lc 'python3 tidashboard/test_style_logic.py && python3 tidashboard/test_planimetria.py && python3 tidashboard/test_verifica_dxf.py && python3 tidashboard/test_pubblica_progetto.py' 2>&1 | tee /tmp/qgis.log
+          esito=${PIPESTATUS[0]}
+          if [ "$esito" -ne 0 ]; then
+            echo "::error::test QGIS falliti (uscita $esito); ultime righe:"
+            tail -n 40 /tmp/qgis.log | while IFS= read -r riga; do
+              echo "::error::$riga"
+            done
+          fi
+          exit "$esito"
         # test_dialog_ui.py alza una GUI vera: va con xvfb in un secondo
         # tempo, non in questo job. Un rosso per un QMessageBox non deve
         # mascherare un regressione sui simboli a 600 dpi.

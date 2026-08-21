@@ -23,11 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from qgis.core import (
     QgsApplication,
-    QgsCoordinateReferenceSystem,
     QgsCoordinateTransformContext,
     QgsFeature,
-    QgsField,
-    QgsFields,
     QgsFillSymbol,
     QgsGeometry,
     QgsMapLayer,
@@ -41,9 +38,7 @@ from qgis.core import (
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsVectorLayerSimpleLabeling,
-    QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import QVariant
 
 QgsApplication.setPrefixPath(os.environ.get("QGIS_PREFIX_PATH", ""), True)
 _qgs = QgsApplication([], False)
@@ -64,18 +59,33 @@ def _un_svg():
     raise unittest.SkipTest("nessun SVG nella dotazione del plugin")
 
 
-def _gpkg(percorso, tabella, tipo):
-    campi = QgsFields()
-    campi.append(QgsField("numero", QVariant.String))
+def _gpkg(percorso, tabella, tipo, punti=()):
+    """Una tabella vera dentro un GeoPackage vero.
+
+    I campi si dichiarano nell'URI del layer di memoria, come in tutte le
+    altre suite, invece di costruirli con QgsField/QVariant: QVariant e' un
+    residuo di Qt5 che PyQt6 sta togliendo, e questa era l'unica riga di tutto
+    il plugin che ci si appoggiava. Ha funzionato sul QGIS di Windows e ha
+    fatto cadere il job Linux della CI - un'API che il resto del codice evita
+    non e' il posto giusto per scoprire una differenza di ambiente."""
+    memoria = QgsVectorLayer("%s?crs=EPSG:2056&field=numero:string" % tipo,
+                             tabella, "memory")
+    if punti:
+        elementi = []
+        for x, y in punti:
+            f = QgsFeature(memoria.fields())
+            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
+            elementi.append(f)
+        memoria.dataProvider().addFeatures(elementi)
+        memoria.updateExtents()
     opzioni = QgsVectorFileWriter.SaveVectorOptions()
     opzioni.driverName = "GPKG"
     opzioni.layerName = tabella
     if os.path.exists(percorso):
         opzioni.actionOnExistingFile = \
             QgsVectorFileWriter.CreateOrOverwriteLayer
-    QgsVectorFileWriter.create(percorso, campi, tipo,
-                               QgsCoordinateReferenceSystem("EPSG:2056"),
-                               QgsCoordinateTransformContext(), opzioni)
+    QgsVectorFileWriter.writeAsVectorFormatV3(
+        memoria, percorso, QgsCoordinateTransformContext(), opzioni)
     return QgsVectorLayer("%s|layername=%s" % (percorso, tabella), tabella, "ogr")
 
 
@@ -103,27 +113,18 @@ def progetto_di_prova(con_punti=False):
     os.makedirs(lavoro)
     gpkg = os.path.join(lavoro, "comune.gpkg")
 
-    confini = _gpkg(gpkg, "beni_immobili_punto_di_confine", QgsWkbTypes.Point)
+    confini = _gpkg(gpkg, "beni_immobili_punto_di_confine", "Point",
+                    punti=((2718000.0, 1082000.0), (2718500.0, 1082400.0))
+                    if con_punti else ())
     simbolo = QgsMarkerSymbol()
     simbolo.changeSymbolLayer(0, QgsSvgMarkerSymbolLayer(_un_svg()))
     confini.setRenderer(QgsSingleSymbolRenderer(simbolo))
 
-    altimetria = _invisibile(_gpkg(gpkg, "altimetria_linea",
-                                   QgsWkbTypes.LineString))
+    altimetria = _invisibile(_gpkg(gpkg, "altimetria_linea", "LineString"))
     posfondo = _con_etichetta(_invisibile(
-        _gpkg(gpkg, "beni_immobili_posfondo", QgsWkbTypes.Point)))
-    copertura = _gpkg(gpkg, "copertura_dl_solo_superficiecs",
-                      QgsWkbTypes.Polygon)
+        _gpkg(gpkg, "beni_immobili_posfondo", "Point")))
+    copertura = _gpkg(gpkg, "copertura_dl_solo_superficiecs", "Polygon")
     copertura.setRenderer(QgsSingleSymbolRenderer(QgsFillSymbol()))
-
-    if con_punti:
-        confini.startEditing()
-        for x, y in ((2718000.0, 1082000.0), (2718500.0, 1082400.0)):
-            f = QgsFeature(confini.fields())
-            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
-            confini.addFeature(f)
-        confini.commitChanges()
-        confini.updateExtents()
 
     progetto = QgsProject()
     for layer in (confini, altimetria, posfondo, copertura):
