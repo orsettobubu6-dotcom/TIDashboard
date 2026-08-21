@@ -48,7 +48,8 @@ jobs:
       - name: ruff sui moduli piccoli
         run: |
           pip install ruff
-          ruff check crea_zip_plugin.py tidashboard/java_env.py tidashboard/test_java_env.py
+          ruff check crea_zip_plugin.py tidashboard/java_env.py tidashboard/test_java_env.py \
+                     tidashboard/pubblica_progetto.py tidashboard/test_pubblica_progetto.py
 
       - name: metadata
         run: python crea_zip_plugin.py --solo-check-metadata
@@ -84,7 +85,7 @@ jobs:
             -w /src \
             -e QT_QPA_PLATFORM=offscreen \
             qgis/qgis:4.2-trixie \
-            -lc 'python3 tidashboard/test_style_logic.py && python3 tidashboard/test_planimetria.py && python3 tidashboard/test_verifica_dxf.py'
+            -lc 'python3 tidashboard/test_style_logic.py && python3 tidashboard/test_planimetria.py && python3 tidashboard/test_verifica_dxf.py && python3 tidashboard/test_pubblica_progetto.py'
         # test_dialog_ui.py alza una GUI vera: va con xvfb in un secondo
         # tempo, non in questo job. Un rosso per un QMessageBox non deve
         # mascherare un regressione sui simboli a 600 dpi.
