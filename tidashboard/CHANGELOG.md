@@ -1,5 +1,49 @@
 # Diario delle versioni
 
+## 1.2.1 — 21 agosto 2026 — sperimentale
+
+### Il pacchetto pubblicato si può verificare davvero
+
+L'archivio era già costruito per essere riproducibile — date e permessi delle
+voci fissati apposta — ma il controllo, fatto per la prima volta sulla Release
+1.2.0, **non tornava**: l'impronta pubblicata dalla CI (`27d92656…`) e quella
+di una ricostruzione su Windows (`6c594f1c…`) erano diverse.
+
+I due archivi differivano su 15 file, tutti più grandi in locale di esattamente
+un byte per riga — `LICENSE` +339 byte su 339 righe: contenuto identico, fine
+riga diversi. Con `core.autocrlf=true` Windows scrive CRLF in copia di lavoro e
+il runner Linux scrive LF. La compressione, invece, è deterministica.
+
+Ora un `.gitattributes` dichiara `eol=lf` per tutto il testo e marca
+esplicitamente i binari: ogni checkout, su qualunque sistema, produce gli
+stessi byte. **Da questa versione l'impronta accanto alla Release è
+verificabile ricostruendo dallo stesso tag**; quella della 1.2.0 non lo era, e
+il README lo dice.
+
+### Il limite del fattore di proporzionalità (cap. 1.5.2)
+
+Il limite inferiore applicato alle scale ridotte si ricavava dalla scrittura
+più piccola del cap. 5, che la costante dichiarava di 1.5 mm citando il numero
+di edificio: è la stessa lettura errata del cap. 5.5 corretta nella 1.2.0, dove
+la tabella prescrive **1.8**. Il limite valeva quindi 1.2/1.5 = 0.80 invece di
+1.2/1.8 = **0.67**.
+
+Sulle quattro scale ridotte si disegnava il 20% più grande di quanto la ragione
+stessa del limite richiedesse — cioè ci si allontanava dalla proporzione del
+cap. 1.5.2 più del necessario. A 1:5000 il numero di fondo passa da 2.00 a
+1.67 mm, la linea di confine da 0.32 a 0.27.
+
+### Il contenuto del piano (cap. 1.5.3) è ora verificato
+
+Tre test chiedono al plugin, tema per tema, che cosa finisce sul foglio: i
+quattro esclusi dal capitolo (Altezza, Aree di numerazione, Ripartizione del
+piano, TSRipartizione), i dodici elencati fra i rappresentati, e gli oggetti in
+progetto, che il cartiglio dichiara non rappresentati.
+
+Il secondo è l'altra metà del controllo: un'esclusione troppo larga
+toglierebbe dal piano un tema prescritto, e guardando solo la lista degli
+esclusi non se ne accorgerebbe nessuno.
+
 ## 1.2.0 — 19 agosto 2026 — sperimentale
 
 ### Dati ufficiali scaricabili dal plugin
