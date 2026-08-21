@@ -1,5 +1,73 @@
 # Diario delle versioni
 
+## 1.2.2 — 21 agosto 2026 — sperimentale
+
+### Si installa da GitHub senza sbagliare pacchetto
+
+Scaricare con *Code → Download ZIP* dava
+`ModuleNotFoundError: No module named 'TIDashboard-main/tidashboard'`, e non è
+aggiustabile da questo lato: GitHub mette sempre una cartella `<nome>-<ramo>`
+in cima, QGIS usa il nome della cartella come nome di modulo Python, e un
+trattino non è un nome valido. Nessuna disposizione dei file nel repository può
+farlo funzionare.
+
+Il repository pubblica ora un **catalogo `plugins.xml`**: un indirizzo da
+incollare una volta sola in QGIS (*Estensioni → Impostazioni → Aggiungi*), dopo
+il quale il plugin si installa e si aggiorna come qualunque altra estensione.
+Il catalogo è generato da `metadata.txt` a ogni costruzione del pacchetto —
+scritto a mano si scollerebbe dalla versione al primo rilascio — e il suo
+indirizzo di scarico punta al **tag**, non a «latest»: se la Release di quella
+versione non esiste ancora, il download fallisce invece di servire di nascosto
+un pacchetto diverso da quello dichiarato.
+
+Un difetto trovato leggendo il codice che consuma il catalogo
+(`pyplugin_installer/installer_data.py`): QGIS ricava l'**identificativo** del
+plugin da `file_name` prendendo tutto ciò che sta prima del primo punto, e
+quell'identificativo deve coincidere con il nome della cartella installata. Con
+`tidashboard_1.2.1.zip` sarebbe uscito `tidashboard_1`: il plugin sarebbe
+comparso come una cosa diversa da quella installata, sarebbe rimasto «non
+installato» anche dopo l'installazione e nessun aggiornamento sarebbe mai stato
+proposto, senza un errore da nessuna parte. Ora la costruzione si ferma se
+l'identificativo non torna.
+
+Le Release portano anche una copia a nome fisso, `tidashboard.zip`, così il
+README può indirizzare un collegamento che non scade a ogni pubblicazione.
+
+### Il progetto stilizzato si può consegnare a QGIS Server
+
+Modulo nuovo `pubblica_progetto.py`, sul modello di `legend_manifest.py`: un
+ponte verso un altro programma, non una funzione dell'interfaccia. Scrive una
+cartella (`.qgz` + `.gpkg` + `fonts/` + `symbols/` + `LEGGIMI.txt`) che si copia
+su un server e basta. **Non è ancora collegato a un pulsante**: per ora è una
+libreria, con le sue prove.
+
+I percorsi che escono dal PC sono due, non uno. Il datasource diventa relativo
+da solo quando il progetto si sposta; il percorso del simbolo no — misurato,
+resta un `../../../…` che risale alla cartella del plugin, che sul server non
+esiste. Copiare `symbols/` accanto al `.qgz` non cambia nulla, perché nulla
+punta alla copia: i simboli vanno riscritti uno per uno. Il terzo, i font,
+non è un percorso e non si può riscrivere: vanno installati sulla macchina, e
+`LEGGIMI.txt` dice come.
+
+Chi resta fuori dal servizio non è un elenco di nomi ma si deduce dalla
+decisione che il plugin ha già preso applicando gli stili, così i temi che il
+cap. 1.5.3 non rappresenta restano fuori senza essere nominati due volte — con
+la distinzione che le tabelle `Pos*` hanno il simbolo invisibile *apposta* e
+portano le iscrizioni, quindi restano dentro.
+
+La sessione non viene toccata: `Private` toglie il layer dall'albero e
+`Identifiable` spegne lo strumento «informazioni» anche sul desktop, quindi
+tutto ciò che la consegna cambia viene rimesso a posto. E il risultato si
+controlla sul **file scritto**, non sugli oggetti in memoria.
+
+### Il pacchetto controllava 11 moduli su 17
+
+La lista dei file attesi nell'archivio era scritta a mano e si era scollata:
+sei moduli non erano controllati, tutti nati dopo che la lista era stata
+scritta. Se uno fosse sparito, lo script avrebbe detto `PACCHETTO VALIDO`
+mentre il plugin moriva al caricamento. Ora i moduli attesi si leggono dagli
+`import` di `tidashboard.py`.
+
 ## 1.2.1 — 21 agosto 2026 — sperimentale
 
 ### Il pacchetto pubblicato si può verificare davvero

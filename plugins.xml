@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Generato da crea_zip_plugin.py: non modificare a mano. -->
 <plugins>
-  <pyqgis_plugin name="TIDashboard" version="1.2.1">
+  <pyqgis_plugin name="TIDashboard" version="1.2.2">
     <description>Piano per il registro fondiario e piano di base della misurazione ufficiale svizzera (modello ticinese MD01MUTI7MN95).</description>
     <about>Importa i dati della misurazione ufficiale dal formato INTERLIS/ITF a GeoPackage, applica la simbologia prescritta dalle istruzioni federali (circolare 154 allegato 2 per il piano per il registro fondiario, Weisung BP-AV per il piano di base), esporta in DXF e genera planimetrie stampabili alle scale ufficiali, con rotazione del foglio e cartiglio conforme. Il modello INTERLIS e il traduttore DXF sono in dotazione. RICHIEDE JAVA 8 o superiore, installato separatamente. Provato solo su Windows. Contiene componenti di terze parti con licenze proprie: vedi CREDITI.md.</about>
-    <version>1.2.1</version>
+    <version>1.2.2</version>
     <qgis_minimum_version>4.0</qgis_minimum_version>
     <qgis_maximum_version>4.99</qgis_maximum_version>
     <homepage>https://github.com/orsettobubu6-dotcom/TIDashboard</homepage>
-    <file_name>tidashboard.1.2.1.zip</file_name>
+    <file_name>tidashboard.1.2.2.zip</file_name>
     <author_name>Gabriele Peverelli</author_name>
-    <download_url>https://github.com/orsettobubu6-dotcom/TIDashboard/releases/download/v1.2.1/tidashboard_1.2.1.zip</download_url>
+    <download_url>https://github.com/orsettobubu6-dotcom/TIDashboard/releases/download/v1.2.2/tidashboard_1.2.2.zip</download_url>
     <uploaded_by>Gabriele Peverelli</uploaded_by>
     <experimental>True</experimental>
     <deprecated>False</deprecated>
