@@ -1,0 +1,39 @@
+# Fine riga dichiarati, perche' il pacchetto sia lo STESSO ovunque.
+#
+# PERCHE' ESISTE. Il pacchetto e' costruito per essere riproducibile: date e
+# permessi delle voci dello zip sono fissi apposta, cosi' l'impronta SHA256
+# pubblicata accanto alla Release si puo' verificare ricostruendola in casa.
+# Solo che non funzionava, e me ne sono accorto confrontandola davvero:
+#
+#   pubblicata dalla CI (Linux)     27d92656...
+#   ricostruita qui   (Windows)     6c594f1c...
+#
+# Le due differivano su 15 file, tutti piu' grandi in locale di ESATTAMENTE un
+# byte per riga - LICENSE +339 byte su 339 righe. Contenuto identico, fine
+# riga diversi: con core.autocrlf=true Windows scrive CRLF in copia di lavoro,
+# il runner Linux scrive LF, e lo zip esce con byte diversi a parita' di
+# sorgente.
+#
+# Senza questa dichiarazione l'impronta certifica solo "questo e' il file che
+# quel giorno ha prodotto quella macchina", che e' molto meno di quanto
+# sembra.
+#
+# eol=lf e non "text=auto" e basta: auto normalizza il REPOSITORY ma lascia
+# alla configurazione locale di ciascuno cosa scrivere su disco, che e'
+# esattamente la variabile da togliere di mezzo.
+* text=auto eol=lf
+
+# Binari: mai toccati, in nessun caso. Una sola conversione di fine riga
+# dentro un jar o un font lo rende inservibile.
+*.jar    binary
+*.ttf    binary
+*.otf    binary
+*.png    binary
+*.jpg    binary
+*.gif    binary
+*.ico    binary
+*.zip    binary
+*.gpkg   binary
+*.pdf    binary
+*.dxf    binary
+*.itf    binary

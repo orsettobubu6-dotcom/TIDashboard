@@ -59,9 +59,14 @@ python crea_zip_plugin.py
 
 Quando una versione è pubblicata, lo stesso pacchetto si trova già pronto fra i
 **[Releases](https://github.com/orsettobubu6-dotcom/TIDashboard/releases)**.
-È lo ZIP costruito dalla CI dallo stesso script: essendo l'archivio
-riproducibile, l'impronta di quello scaricato e di quello costruito in casa
-coincidono.
+È lo ZIP costruito dalla CI dallo stesso script. L'archivio è riproducibile —
+date, permessi e fine riga sono fissati apposta — quindi l'impronta di quello
+scaricato e quella di uno ricostruito dallo stesso tag devono coincidere; se
+non coincidono, c'è qualcosa da guardare.
+
+> Vale **dalla 1.2.1 in poi**. Il pacchetto della 1.2.0 è stato pubblicato
+> prima che i fine riga fossero dichiarati, e la sua impronta dipende dal
+> sistema su cui si ricostruisce: su Windows non torna.
 
 > Non scaricare con *Code → Download ZIP*: quell'archivio ha una cartella in
 > più in cima e QGIS non riesce a caricarlo.

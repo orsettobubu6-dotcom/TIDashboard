@@ -21,6 +21,10 @@
 # entrato.
 !/ruff.toml
 
+# I fine riga dichiarati. Stessa storia del workflow e di ruff.toml: se il
+# file non entra nel repository, in CI non esiste e non serve a niente.
+!/.gitattributes
+
 # Le automazioni. SENZA QUESTA RIGA il "/*" qui sopra le escludeva in
 # silenzio: il commit 11cdd8f, intitolato "Il pacchetto del plugin si
 # pubblica da se' fra i Releases", conteneva in realta' il solo
