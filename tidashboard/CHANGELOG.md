@@ -1,5 +1,34 @@
 # Diario delle versioni
 
+## 1.2.6 — 21 agosto 2026 — sperimentale
+
+### Nomi di località in maiuscolo (raccomandazione cap. 5.7)
+
+Nuova spunta nella scheda *Planimetria*, **spenta di default**. Le istruzioni
+federali dicono:
+
+> «Raccomandazione: I nomi di località corrispondenti a delle borgate sono da
+> indicare preferibilmente con lettere maiuscole.»
+
+«Preferibilmente», non «devono»: accenderla di serie cambierebbe l'aspetto di
+tutte le planimetrie già prodotte per una cosa che la norma non pretende.
+L'effetto è immediato sui layer già caricati — una scelta di resa grafica non
+può costare una reimportazione, che su un file di produzione sono minuti.
+
+**Il dato non viene toccato.** Nel GeoPackage i nomi sono in minuscolo (zero su
+dieci maiuscoli, verificato sul comune di prova) e il maiuscolo si applica al
+disegno. Cambiare i nomi sarebbe riscrivere una consegna ufficiale per una
+questione di resa grafica.
+
+**Il limite, dichiarato.** La norma parla di località «corrispondenti a delle
+borgate». Il modello un posto per dirlo ce l'ha — `Tipo: OPTIONAL TEXT*30;
+!! assegnato dal cantone` — ma nella consegna ticinese è vuoto su tutte le
+località del comune di prova. Un campo facoltativo che il Cantone non compila
+non è un criterio, quindi la regola vale per l'intera classe
+`Nome_di_localita`: su Mendrisio quelle dieci sono esattamente le borgate,
+altrove potrebbe non essere così. Diventerà esatta il giorno in cui `Tipo`
+verrà valorizzato.
+
 ## 1.2.5 — 21 agosto 2026 — sperimentale
 
 ### Il pulsante «Consegna per QGIS Server»
