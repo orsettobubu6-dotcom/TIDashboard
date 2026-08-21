@@ -48,32 +48,63 @@ passo.*
 
 ## Installazione
 
-Serve **QGIS 4.0** o superiore e **Java 8** o superiore installato a parte.
+Serve **QGIS 4.0 o superiore** e **Java 8** o superiore installato a parte.
 
-Il pacchetto si costruisce in locale — serve un Python qualunque, non quello
-di QGIS, e lo ZIP finisce in `dist/` con accanto il suo `.sha256`:
+> ⚠️ **Non usare *Code → Download ZIP*.** Quell'archivio non è un pacchetto
+> QGIS: ha sempre una cartella in più in cima, `TIDashboard-main`. QGIS usa il
+> nome della cartella come nome di modulo Python, e un trattino non è un nome
+> valido — l'installazione finisce con
+> `ModuleNotFoundError: No module named 'TIDashboard-main/tidashboard'`.
+> Non è aggiustabile da questo lato: è come GitHub confeziona quel file.
+> Usare uno dei due modi qui sotto.
+
+### 1. Dire a QGIS dove trovarlo (consigliato)
+
+Una volta sola, in QGIS: *Estensioni → Gestisci ed installa estensioni →
+Impostazioni → Aggiungi…*, un nome a piacere e questo indirizzo:
+
+```
+https://raw.githubusercontent.com/orsettobubu6-dotcom/TIDashboard/main/plugins.xml
+```
+
+Poi attivare *Mostra anche le estensioni sperimentali* (il plugin è marcato
+sperimentale: senza quella spunta non compare). Da lì TIDashboard si installa
+come qualunque altra estensione, e QGIS avvisa da solo quando esce una
+versione nuova.
+
+Il catalogo `plugins.xml` è **generato** da `metadata.txt` a ogni costruzione
+del pacchetto, e indirizza il file del tag corrispondente: se la Release di
+quella versione non esiste ancora, il download fallisce invece di servire di
+nascosto un pacchetto diverso da quello dichiarato.
+
+### 2. Scaricare il pacchetto e installarlo da ZIP
+
+**[⬇ Ultima versione](https://github.com/orsettobubu6-dotcom/TIDashboard/releases/latest/download/tidashboard.zip)**
+— oppure il file con la versione nel nome dalla pagina
+[Releases](https://github.com/orsettobubu6-dotcom/TIDashboard/releases).
+Poi in QGIS: *Estensioni → Gestisci ed installa estensioni → Installa da ZIP*,
+sempre con *Mostra anche le estensioni sperimentali* attivo.
+
+> Il collegamento con nome fisso esiste **dalla 1.2.2 in poi**; per le versioni
+> precedenti si prende il file `tidashboard_<versione>.zip` dalla pagina delle
+> Releases.
+
+### 3. Costruirlo in locale
+
+Serve un Python qualunque, non quello di QGIS. Lo ZIP finisce in `dist/` con
+accanto il suo `.sha256`:
 
 ```bash
 python crea_zip_plugin.py
 ```
 
-Quando una versione è pubblicata, lo stesso pacchetto si trova già pronto fra i
-**[Releases](https://github.com/orsettobubu6-dotcom/TIDashboard/releases)**.
-È lo ZIP costruito dalla CI dallo stesso script. L'archivio è riproducibile —
-date, permessi e fine riga sono fissati apposta — quindi l'impronta di quello
-scaricato e quella di uno ricostruito dallo stesso tag devono coincidere; se
-non coincidono, c'è qualcosa da guardare.
+L'archivio è riproducibile — date, permessi e fine riga sono fissati apposta —
+quindi l'impronta di quello scaricato e quella di uno ricostruito dallo stesso
+tag devono coincidere; se non coincidono, c'è qualcosa da guardare.
 
 > Vale **dalla 1.2.1 in poi**. Il pacchetto della 1.2.0 è stato pubblicato
 > prima che i fine riga fossero dichiarati, e la sua impronta dipende dal
 > sistema su cui si ricostruisce: su Windows non torna.
-
-> Non scaricare con *Code → Download ZIP*: quell'archivio ha una cartella in
-> più in cima e QGIS non riesce a caricarlo.
-
-poi in QGIS: *Estensioni → Gestisci ed installa estensioni → Installa da ZIP*.
-Essendo marcato sperimentale, va prima attivata l'opzione *Mostra anche le
-estensioni sperimentali*.
 
 ## Documentazione
 

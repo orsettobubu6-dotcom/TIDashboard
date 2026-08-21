@@ -25,6 +25,12 @@
 # file non entra nel repository, in CI non esiste e non serve a niente.
 !/.gitattributes
 
+# Il catalogo che QGIS legge per installare e aggiornare il plugin da solo.
+# Deve stare NEL repository: l'indirizzo che si incolla in QGIS e' quello del
+# file grezzo su raw.githubusercontent.com, e un file non committato li' non
+# esiste. Quarta volta che questa allowlist tenta lo stesso scherzo.
+!/plugins.xml
+
 # Le automazioni. SENZA QUESTA RIGA il "/*" qui sopra le escludeva in
 # silenzio: il commit 11cdd8f, intitolato "Il pacchetto del plugin si
 # pubblica da se' fra i Releases", conteneva in realta' il solo

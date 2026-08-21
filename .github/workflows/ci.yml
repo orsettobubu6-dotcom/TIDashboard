@@ -134,6 +134,20 @@ jobs:
           echo "tag=$TAG metadata=$META"
           test "$TAG" = "$META"
 
+      # UN NOME CHE NON CAMBIA MAI, accanto a quello con la versione. Serve a
+      # un solo scopo: dare al README un indirizzo che resti valido dopo ogni
+      # pubblicazione -
+      #   .../releases/latest/download/tidashboard.zip
+      # Il file con la versione nel nome resta, ed e' quello che il catalogo
+      # plugins.xml indirizza (li' l'indirizzo DEVE essere quello del tag: un
+      # "latest" servirebbe un pacchetto diverso da quello dichiarato).
+      - name: Copia con nome stabile per il collegamento "ultima versione"
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          cp "dist/tidashboard_${TAG}.zip" dist/tidashboard.zip
+          (cd dist && sha256sum tidashboard.zip > tidashboard.zip.sha256)
+          ls -l dist
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

@@ -13,6 +13,7 @@ import re
 import stat
 import sys
 import zipfile
+from xml.sax.saxutils import escape
 
 QUI = os.path.dirname(os.path.abspath(__file__))
 NOME = "tidashboard"
@@ -43,14 +44,78 @@ OBBLIGATORI = ("name", "qgisMinimumVersion", "description", "about", "version",
                "author", "email", "repository", "tracker")
 
 
-def controlla_metadata():
-    """I campi che plugins.qgis.org pretende. Ritorna True se ci sono tutti."""
+def leggi_metadata():
     campi = {}
     with open(os.path.join(SRC, "metadata.txt"), encoding="utf-8") as f:
         for riga in f:
             if "=" in riga and not riga.startswith("["):
                 chiave, valore = riga.split("=", 1)
                 campi[chiave.strip()] = valore.strip()
+    return campi
+
+
+def scrivi_plugins_xml(campi):
+    """Il catalogo che QGIS legge per installare e AGGIORNARE il plugin.
+
+    PERCHE' ESISTE. "Code -> Download ZIP" di GitHub non potra' mai funzionare
+    con QGIS, e non e' una questione di come e' fatto questo repository: quel
+    file ha sempre una cartella in piu' in cima chiamata "<nome>-<ramo>", QGIS
+    usa il nome della cartella come nome di modulo Python, e un trattino non e'
+    un nome valido. Il rimedio non e' aggiustare quel download, e' rendere
+    inutile usarlo - dando a QGIS un indirizzo da cui prendere il pacchetto
+    giusto da solo.
+
+    L'INDIRIZZO PUNTA AL TAG, non a "latest". Se un domani si alzasse la
+    versione in metadata.txt senza pubblicare la Release, un indirizzo
+    "latest" servirebbe il pacchetto VECCHIO facendolo passare per quello
+    nuovo: QGIS lo installerebbe e direbbe di avere la versione nuova. Con
+    l'indirizzo del tag, invece, finche' la Release non c'e' il download
+    fallisce e si vede.
+
+    Il file si RIGENERA a ogni costruzione: scritto a mano si scollerebbe da
+    metadata.txt alla prima versione, che e' la stessa trappola della lista
+    dei moduli attesi."""
+    versione = campi.get("version", "0.0.0")
+    deposito = campi.get("repository", "").rstrip("/")
+    scarico = "%s/releases/download/v%s/%s_%s.zip" % (
+        deposito, versione, NOME, versione)
+    voci = [
+        ("description", campi.get("description", "")),
+        ("about", campi.get("about", "")),
+        ("version", versione),
+        ("qgis_minimum_version", campi.get("qgisMinimumVersion", "")),
+        ("qgis_maximum_version", campi.get("qgisMaximumVersion", "")),
+        ("homepage", campi.get("homepage", deposito)),
+        ("file_name", "%s_%s.zip" % (NOME, versione)),
+        ("author_name", campi.get("author", "")),
+        ("download_url", scarico),
+        ("uploaded_by", campi.get("author", "")),
+        ("experimental", campi.get("experimental", "False")),
+        ("deprecated", campi.get("deprecated", "False")),
+        ("tracker", campi.get("tracker", "")),
+        ("repository", deposito),
+        ("tags", campi.get("tags", "")),
+    ]
+    righe = ['<?xml version="1.0" encoding="UTF-8"?>',
+             "<!-- Generato da crea_zip_plugin.py: non modificare a mano. -->",
+             "<plugins>",
+             '  <pyqgis_plugin name="%s" version="%s">'
+             % (escape(campi.get("name", NOME), {'"': "&quot;"}),
+                escape(versione, {'"': "&quot;"}))]
+    # Le voci vuote si omettono invece di scriverle come <tag></tag>: un
+    # catalogo pubblico non deve far indovinare a chi lo legge se un campo e'
+    # assente o solo non compilato.
+    righe += ["    <%s>%s</%s>" % (c, escape(v), c) for c, v in voci if v]
+    righe += ["  </pyqgis_plugin>", "</plugins>", ""]
+    percorso = os.path.join(QUI, "plugins.xml")
+    with open(percorso, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(righe))
+    return percorso, scarico
+
+
+def controlla_metadata():
+    """I campi che plugins.qgis.org pretende. Ritorna True se ci sono tutti."""
+    campi = leggi_metadata()
     ok = True
     print("campi obbligatori metadata.txt:")
     for c in OBBLIGATORI:
@@ -99,6 +164,9 @@ with open(ZIP + ".sha256", "w", encoding="utf-8") as f:
 print("creato: %s" % ZIP)
 print("SHA256: %s" % impronta)
 print("file inclusi: %d   dimensione: %.2f MB" % (n_file, os.path.getsize(ZIP) / 1048576.0))
+
+_xml, _scarico = scrivi_plugins_xml(leggi_metadata())
+print("plugins.xml -> %s" % _scarico)
 
 esito = True
 with zipfile.ZipFile(ZIP) as z:
