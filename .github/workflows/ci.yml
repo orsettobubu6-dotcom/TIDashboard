@@ -94,8 +94,17 @@ jobs:
             -lc 'python3 tidashboard/test_style_logic.py && python3 tidashboard/test_planimetria.py && python3 tidashboard/test_verifica_dxf.py && python3 tidashboard/test_pubblica_progetto.py' 2>&1 | tee /tmp/qgis.log
           esito=${PIPESTATUS[0]}
           if [ "$esito" -ne 0 ]; then
-            echo "::error::test QGIS falliti (uscita $esito); ultime righe:"
-            tail -n 40 /tmp/qgis.log | while IFS= read -r riga; do
+            echo "::error::test QGIS falliti (uscita $esito)"
+            # ESTRATTO MIRATO, non "le ultime N righe": GitHub conserva al
+            # massimo dieci annotazioni per passo, e con l'uscita verbosa di
+            # unittest quelle dieci erano tutte prove RIUSCITE - il guasto
+            # restava fuori. Qui si prendono i nomi delle prove cadute,
+            # l'eccezione e il conto finale.
+            {
+              grep -E '^(FAIL|ERROR):' /tmp/qgis.log
+              grep -E '^[A-Za-z_.]+(Error|Exception):' /tmp/qgis.log | tail -n 3
+              grep -E '^(Ran |FAILED)' /tmp/qgis.log | tail -n 2
+            } | head -n 8 | while IFS= read -r riga; do
               echo "::error::$riga"
             done
           fi
