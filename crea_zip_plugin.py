@@ -79,6 +79,31 @@ def scrivi_plugins_xml(campi):
     deposito = campi.get("repository", "").rstrip("/")
     scarico = "%s/releases/download/v%s/%s_%s.zip" % (
         deposito, versione, NOME, versione)
+
+    # I PUNTI IN file_name NON SONO UN VEZZO. Letto nel codice che consuma
+    # questo file (pyplugin_installer/installer_data.py, xmlDownloaded):
+    #
+    #     name = fileName.partition(".")[0]
+    #     plugin = {"id": name, ...}
+    #
+    # QGIS ricava l'IDENTIFICATIVO del plugin da file_name, prendendo tutto
+    # cio' che sta prima del PRIMO PUNTO, e quell'identificativo deve
+    # coincidere con il nome della cartella installata - e' cosi' che QGIS
+    # capisce se il plugin c'e' gia' e se esiste una versione piu' nuova.
+    # Con "tidashboard_1.2.1.zip" verrebbe fuori "tidashboard_1": il plugin
+    # comparirebbe come una cosa diversa da quella installata, resterebbe
+    # "non installato" anche dopo l'installazione e nessun aggiornamento
+    # verrebbe mai proposto. Nessun errore, da nessuna parte. E' anche il
+    # motivo per cui plugins.qgis.org nomina i suoi file con i punti.
+    #
+    # Il nome del file ALLEGATO alla Release resta quello con la
+    # sottolineatura: qui conta solo cio' che QGIS legge, e download_url
+    # indirizza il file vero.
+    nome_file = "%s.%s.zip" % (NOME, versione)
+    identificativo = nome_file.partition(".")[0]
+    if identificativo != NOME:
+        raise SystemExit("file_name %r darebbe l'identificativo %r invece di %r"
+                         % (nome_file, identificativo, NOME))
     voci = [
         ("description", campi.get("description", "")),
         ("about", campi.get("about", "")),
@@ -86,7 +111,7 @@ def scrivi_plugins_xml(campi):
         ("qgis_minimum_version", campi.get("qgisMinimumVersion", "")),
         ("qgis_maximum_version", campi.get("qgisMaximumVersion", "")),
         ("homepage", campi.get("homepage", deposito)),
-        ("file_name", "%s_%s.zip" % (NOME, versione)),
+        ("file_name", nome_file),
         ("author_name", campi.get("author", "")),
         ("download_url", scarico),
         ("uploaded_by", campi.get("author", "")),
