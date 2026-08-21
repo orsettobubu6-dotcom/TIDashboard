@@ -196,6 +196,17 @@ with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         # Permessi fissi (rw-r--r--): quelli veri del filesystem
         # cambierebbero l'impronta fra Windows e Linux.
         info.external_attr = (stat.S_IFREG | 0o644) << 16
+        # E IL SISTEMA CHE HA PRODOTTO L'ARCHIVIO, che lo zip si annota da
+        # solo: zipfile mette 0 (MS-DOS) su Windows e 3 (Unix) altrove. Era
+        # l'ultima cosa che restava a distinguere i due archivi - stessi file,
+        # stesso ordine, stessi byte compressi, e un byte diverso nella
+        # directory centrale di ognuna delle 174 voci ("\x14\x03" contro
+        # "\x14\x00").
+        #
+        # Si fissa a 3 e non a 0 perche' i permessi qui sopra sono permessi
+        # UNIX: hanno senso solo se l'archivio dichiara di venire da un
+        # sistema Unix. Con 0 quei bit c'erano ma nessuno li avrebbe letti.
+        info.create_system = 3
         with open(assoluto, "rb") as sorgente:
             z.writestr(info, sorgente.read())
         n_file += 1
@@ -230,6 +241,11 @@ with zipfile.ZipFile(ZIP) as z:
     print("voci in ordine alfabetico :", "SI" if ordinato else
           "NO <-- l'impronta dipenderebbe dal filesystem")
     esito = esito and ordinato
+
+    sistemi = {i.create_system for i in z.infolist()}
+    print("sistema dichiarato        :", sistemi,
+          "" if sistemi == {3} else "<-- deve essere {3}: dipenderebbe dall'OS")
+    esito = esito and sistemi == {3}
 
     # I MODULI ATTESI SI LEGGONO DAGLI IMPORT, non dal disco. Prima erano
     # scritti a mano e la lista si era scollata: dei 17 moduli ne controllava

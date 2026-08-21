@@ -1,8 +1,35 @@
 # Diario delle versioni
 
+## 1.2.4 — 21 agosto 2026 — sperimentale
+
+### Il sistema che ha prodotto l'archivio
+
+Terza causa, e ultima. Dopo aver fissato i fine riga (1.2.1) e l'ordine delle
+voci (1.2.3), i due archivi della 1.2.3 erano ancora diversi: stessi file,
+stesso ordine, stessi byte compressi, e **un byte diverso nella directory
+centrale di ognuna delle 174 voci** — `\x14\x03` contro `\x14\x00`.
+
+È il campo che lo ZIP si annota da solo: il sistema che l'ha prodotto.
+`zipfile` scrive 0 (MS-DOS) su Windows e 3 (Unix) altrove. Ora è fissato a 3 —
+non a 0, perché i permessi che scriviamo sono permessi Unix e hanno senso solo
+se l'archivio dichiara di venire da un sistema Unix; con 0 quei bit c'erano ma
+nessuno li avrebbe letti.
+
+**Questa volta la promessa è stata misurata prima di scriverla.** Fissato il
+campo, la ricostruzione su Windows del contenuto della 1.2.3 ha prodotto
+`e992cab9…`, cioè esattamente l'archivio che la CI aveva costruito su Linux:
+byte per byte, senza sapere in anticipo il risultato. La verifica dell'archivio
+controlla ora anche questo campo, oltre all'ordine.
+
+> **Correzione al diario della 1.2.3.** Quella voce diceva che la verifica vale
+> «dalla 1.2.3 in poi». Vale **dalla 1.2.4**: la 1.2.3 aveva tolto la seconda
+> causa su tre. È la seconda volta di fila che una causa risolta è stata
+> scambiata per il problema risolto; per le versioni precedenti il confronto
+> non torna, e non è segno di manomissione.
+
 ## 1.2.3 — 21 agosto 2026 — sperimentale
 
-### L'impronta pubblicata ora si verifica davvero (e prima no)
+### L'ordine delle voci nell'archivio
 
 Il controllo promesso dal README — scaricare il pacchetto della Release,
 ricostruirlo dallo stesso tag e confrontare le impronte — **non tornava**, e
@@ -24,10 +51,11 @@ visita **rovesciato**: stessa impronta, byte per byte.
 > **Correzione al diario della 1.2.1.** Quella voce dichiarava che «da questa
 > versione l'impronta accanto alla Release è verificabile ricostruendo dallo
 > stesso tag». Era falso: la correzione dei fine riga aveva tolto una causa su
-> due. Verificato ricostruendo dal tag `v1.2.1` — stessi file, stessi
-> contenuti, ordine diverso, impronta diversa. **La verifica vale dalla 1.2.3
-> in poi**; per la 1.2.0, la 1.2.1 e la 1.2.2 il confronto non torna, e non è
-> segno che quei pacchetti siano stati manomessi.
+> tre. Verificato ricostruendo dal tag `v1.2.1` — stessi file, stessi
+> contenuti, ordine diverso, impronta diversa.
+>
+> E anche questa voce ha dichiarato troppo presto (vedi 1.2.4): restava il
+> campo «sistema che ha prodotto l'archivio». **La verifica vale dalla 1.2.4.**
 
 ## 1.2.2 — 21 agosto 2026 — sperimentale
 
