@@ -9,6 +9,7 @@ metadata.txt, cosi' il nome del file non puo' divergere dal contenuto.
 """
 import hashlib
 import os
+import re
 import stat
 import sys
 import zipfile
@@ -108,15 +109,31 @@ with zipfile.ZipFile(ZIP) as z:
     print("cartella di primo livello :", radici)
     esito = esito and corrotto is None and radici == {NOME}
 
-    attesi = ["metadata.txt", "__init__.py", "tidashboard.py", "planimetria.py",
-              "dati_comune.py", "cerca_fondo.py", "legend_manifest.py",
-              # moduli nati dallo spacchettamento di tidashboard.py: se uno
-              # sparisse dallo zip il plugin non si caricherebbe affatto
-              "colori.py", "etichette.py", "ordinamento.py", "simbologia.py",
-              "stili.py",
-              # documenti richiesti per la pubblicazione
-              "icon.png", "README.md", "CHANGELOG.md", "CREDITI.md", "NORME.md",
-              "av2geobau/av2geobau_ti.jar", "models/MD01MUTI7MN95.ili"]
+    # I MODULI ATTESI SI LEGGONO DAGLI IMPORT, non dal disco. Prima erano
+    # scritti a mano e la lista si era scollata: dei 17 moduli ne controllava
+    # 11, e i sei rimasti fuori erano tutti nati dopo.
+    #
+    # Ricavarli da os.listdir sembrava la correzione ovvia e NON HA DENTI:
+    # elencando la stessa cartella da cui si costruisce lo zip, un modulo
+    # cancellato sparisce da tutt'e due e il confronto torna. Provato -
+    # spostando via coordinate.py il controllo diceva ancora PACCHETTO VALIDO.
+    #
+    # Cio' che conta e' un'altra cosa: che nello zip ci sia tutto quello che
+    # tidashboard.py IMPORTA. Se un modulo sparisce, l'import resta e il
+    # plugin muore al caricamento con ModuleNotFoundError - che e' esattamente
+    # il guasto che questo controllo esiste per impedire.
+    with open(os.path.join(SRC, "tidashboard.py"), encoding="utf-8") as f:
+        sorgente = f.read()
+    # Le due forme usate nel file: "from . import x as _x" e "from .x import y".
+    coppie = re.findall(r"^\s*from \. import (\w+)|^\s*from \.(\w+) import",
+                        sorgente, re.MULTILINE)
+    importati = sorted({nome for coppia in coppie for nome in coppia if nome})
+    moduli = ["%s.py" % m for m in importati]
+    print("moduli importati da tidashboard.py: %d" % len(moduli))
+    attesi = ["metadata.txt", "__init__.py", "tidashboard.py"] + moduli + [
+        # documenti richiesti per la pubblicazione
+        "icon.png", "README.md", "CHANGELOG.md", "CREDITI.md", "NORME.md",
+        "av2geobau/av2geobau_ti.jar", "models/MD01MUTI7MN95.ili"]
     for rel in attesi:
         voce = "%s/%s" % (NOME, rel)
         ok = voce in nomi
