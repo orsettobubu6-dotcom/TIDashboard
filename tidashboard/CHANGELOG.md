@@ -1,5 +1,34 @@
 # Diario delle versioni
 
+## 1.2.3 — 21 agosto 2026 — sperimentale
+
+### L'impronta pubblicata ora si verifica davvero (e prima no)
+
+Il controllo promesso dal README — scaricare il pacchetto della Release,
+ricostruirlo dallo stesso tag e confrontare le impronte — **non tornava**, e
+questa volta la causa non erano i fine riga.
+
+I due archivi della 1.2.2, quello pubblicato dalla CI e quello ricostruito su
+Windows, avevano: gli stessi 174 file, gli stessi contenuti, le stesse date e
+gli stessi permessi, perfino le **stesse dimensioni compresse voce per voce**.
+Era diverso solo l'**ordine**. `os.walk` visita le sottocartelle nell'ordine che
+gli dà il filesystem, e quell'ordine non è lo stesso su NTFS e su ext4: su
+Linux `models/` veniva prima di `fonts/`, qui `av2geobau/` prima di tutto.
+Ordinare i file *dentro* ciascuna cartella, come si faceva, non basta.
+
+Ora le voci si raccolgono tutte, si ordinano per nome e poi si scrivono; e la
+verifica dell'archivio controlla che siano in ordine alfabetico, così il
+difetto non può rientrare in silenzio. Provato costruendo con l'ordine di
+visita **rovesciato**: stessa impronta, byte per byte.
+
+> **Correzione al diario della 1.2.1.** Quella voce dichiarava che «da questa
+> versione l'impronta accanto alla Release è verificabile ricostruendo dallo
+> stesso tag». Era falso: la correzione dei fine riga aveva tolto una causa su
+> due. Verificato ricostruendo dal tag `v1.2.1` — stessi file, stessi
+> contenuti, ordine diverso, impronta diversa. **La verifica vale dalla 1.2.3
+> in poi**; per la 1.2.0, la 1.2.1 e la 1.2.2 il confronto non torna, e non è
+> segno che quei pacchetti siano stati manomessi.
+
 ## 1.2.2 — 21 agosto 2026 — sperimentale
 
 ### Si installa da GitHub senza sbagliare pacchetto
@@ -84,9 +113,12 @@ il runner Linux scrive LF. La compressione, invece, è deterministica.
 
 Ora un `.gitattributes` dichiara `eol=lf` per tutto il testo e marca
 esplicitamente i binari: ogni checkout, su qualunque sistema, produce gli
-stessi byte. **Da questa versione l'impronta accanto alla Release è
-verificabile ricostruendo dallo stesso tag**; quella della 1.2.0 non lo era, e
-il README lo dice.
+stessi byte.
+
+> **Questa voce dichiarava troppo** (corretto nella 1.2.3): diceva che da
+> questa versione l'impronta era verificabile ricostruendo dallo stesso tag.
+> I fine riga erano una causa su due — restava l'ordine delle voci
+> nell'archivio, che dipendeva dal filesystem. La verifica vale dalla 1.2.3.
 
 ### Il limite del fattore di proporzionalità (cap. 1.5.2)
 

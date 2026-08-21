@@ -98,13 +98,16 @@ accanto il suo `.sha256`:
 python crea_zip_plugin.py
 ```
 
-L'archivio è riproducibile — date, permessi e fine riga sono fissati apposta —
-quindi l'impronta di quello scaricato e quella di uno ricostruito dallo stesso
-tag devono coincidere; se non coincidono, c'è qualcosa da guardare.
+L'archivio è riproducibile — date, permessi, fine riga **e ordine delle voci**
+sono fissati apposta — quindi l'impronta di quello scaricato e quella di uno
+ricostruito dallo stesso tag devono coincidere; se non coincidono, c'è qualcosa
+da guardare.
 
-> Vale **dalla 1.2.1 in poi**. Il pacchetto della 1.2.0 è stato pubblicato
-> prima che i fine riga fossero dichiarati, e la sua impronta dipende dal
-> sistema su cui si ricostruisce: su Windows non torna.
+> Vale **dalla 1.2.3 in poi**, e le versioni precedenti sono state dichiarate
+> verificabili prima che lo fossero davvero. Fino alla 1.2.0 non erano fissati
+> i fine riga; fino alla 1.2.2 non era fissato l'ordine delle voci
+> nell'archivio, che dipende dal filesystem su cui lo si costruisce. Per quelle
+> versioni il confronto non torna, e non è segno di manomissione.
 
 ## Documentazione
 

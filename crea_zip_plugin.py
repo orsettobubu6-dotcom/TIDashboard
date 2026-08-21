@@ -163,23 +163,42 @@ os.makedirs(DIST, exist_ok=True)
 if os.path.exists(ZIP):
     os.remove(ZIP)
 
+# L'ORDINE DELLE VOCI, che e' la terza cosa da fissare dopo date e permessi e
+# l'unica che era rimasta fuori. os.walk visita le SOTTOCARTELLE nell'ordine
+# che gli da' il filesystem, e quell'ordine non e' lo stesso su NTFS e su
+# ext4: ordinare i file dentro ciascuna cartella - come si faceva - non basta.
+#
+# MISURATO sui due archivi della 1.2.2, quello pubblicato dalla CI e quello
+# ricostruito qui: 174 file identici, contenuti identici, permessi e date
+# identici, perfino le dimensioni compresse identiche voce per voce. Diverso
+# solo l'ORDINE - su Linux "models/" prima di "fonts/", qui "av2geobau/"
+# prima di tutto - e quindi diversa l'impronta dell'archivio.
+#
+# Vale anche per la 1.2.1, verificato ricostruendo dal suo tag: la
+# dichiarazione "da questa versione l'impronta si puo' verificare" era falsa.
+# Si raccoglie tutto, si ordina per nome interno, poi si scrive.
+voci = []
+for radice, cartelle, file in os.walk(SRC):
+    cartelle[:] = [c for c in cartelle if c not in ESCLUDI_DIR]
+    for nome_file in file:
+        if os.path.splitext(nome_file)[1].lower() in ESCLUDI_EST:
+            continue
+        assoluto = os.path.join(radice, nome_file)
+        interno = os.path.join(NOME, os.path.relpath(assoluto, SRC))
+        voci.append((interno.replace(os.sep, "/"), assoluto))
+voci.sort()
+
 n_file = 0
 with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-    for radice, cartelle, file in os.walk(SRC):
-        cartelle[:] = [c for c in cartelle if c not in ESCLUDI_DIR]
-        for nome_file in sorted(file):
-            if os.path.splitext(nome_file)[1].lower() in ESCLUDI_EST:
-                continue
-            assoluto = os.path.join(radice, nome_file)
-            interno = os.path.join(NOME, os.path.relpath(assoluto, SRC))
-            info = zipfile.ZipInfo(interno.replace(os.sep, "/"), DATA_FISSA)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            # Permessi fissi (rw-r--r--): quelli veri del filesystem
-            # cambierebbero l'impronta fra Windows e Linux.
-            info.external_attr = (stat.S_IFREG | 0o644) << 16
-            with open(assoluto, "rb") as sorgente:
-                z.writestr(info, sorgente.read())
-            n_file += 1
+    for interno, assoluto in voci:
+        info = zipfile.ZipInfo(interno, DATA_FISSA)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        # Permessi fissi (rw-r--r--): quelli veri del filesystem
+        # cambierebbero l'impronta fra Windows e Linux.
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
+        with open(assoluto, "rb") as sorgente:
+            z.writestr(info, sorgente.read())
+        n_file += 1
 
 with open(ZIP, "rb") as f:
     impronta = hashlib.sha256(f.read()).hexdigest()
@@ -201,6 +220,16 @@ with zipfile.ZipFile(ZIP) as z:
     print("\nintegrita' archivio       :", "OK" if corrotto is None else "CORROTTO: %s" % corrotto)
     print("cartella di primo livello :", radici)
     esito = esito and corrotto is None and radici == {NOME}
+
+    # L'invariante che rende l'impronta verificabile altrove. Se un domani si
+    # tornasse a scrivere seguendo os.walk, l'archivio uscirebbe identico nel
+    # contenuto e diverso nell'impronta - cioe' il difetto tornerebbe senza
+    # che nulla si rompa: solo il confronto con la Release smetterebbe di
+    # tornare, e su una macchina sola non si vede.
+    ordinato = nomi == sorted(nomi)
+    print("voci in ordine alfabetico :", "SI" if ordinato else
+          "NO <-- l'impronta dipenderebbe dal filesystem")
+    esito = esito and ordinato
 
     # I MODULI ATTESI SI LEGGONO DAGLI IMPORT, non dal disco. Prima erano
     # scritti a mano e la lista si era scollata: dei 17 moduli ne controllava
