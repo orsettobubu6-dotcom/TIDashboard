@@ -398,10 +398,22 @@ class TestIlControlloMorde(unittest.TestCase):
 
     def test_i_simboli_copiati_ma_non_rimappati(self):
         """E' la consegna che sembra fatta bene: la cartella symbols/ c'e',
-        i file ci sono, e nessun simbolo li usa. Il percorso scritto e'
-        relativo e sul PC di chi consegna esiste pure, quindi un controllo che
-        chiedesse solo "il file c'e'?" direbbe di si'. Cio' che conta e' che
-        il percorso RESTI DENTRO la cartella che si copia."""
+        i file ci sono, e nessun simbolo li usa.
+
+        SI CHIEDE CHE IL RILIEVO CI SIA, NON COME E' SCRITTO. Un simbolo non
+        rimappato viene messo su carta in due forme diverse a seconda di dove
+        gira QGIS - misurate tutt'e due:
+
+          Windows  ../../../../../../../Progetti/COGO/tidashboard/symbols/
+                   normal/Symbol_1_Fels.svg          relativo, ma esce
+          Linux    /src/tidashboard/symbols/normal/Symbol_1_Fels.svg
+                                                     assoluto
+
+        Sono lo stesso guasto - un percorso che sul server non esiste - e il
+        controllo li prende con due regole diverse. Chiedere la formula esatta
+        legava la prova alla piattaforma: passava qui e faceva cadere il job
+        Linux della CI, cioe' proprio la piattaforma per cui questo modulo
+        esiste."""
         vera = P.rimappa_svg
         P.rimappa_svg = lambda progetto, origine, destinazione: []
         try:
@@ -409,8 +421,35 @@ class TestIlControlloMorde(unittest.TestCase):
         finally:
             P.rimappa_svg = vera
         rilievi = P.verifica_consegna(dest)[0]
-        self.assertTrue(any("esce dalla cartella" in r for r in rilievi),
-                        rilievi)
+        self.assertTrue(
+            any(".svg" in r and ("esce dalla cartella" in r
+                                 or "percorso assoluto" in r)
+                for r in rilievi),
+            rilievi)
+
+    def test_un_simbolo_con_percorso_assoluto(self):
+        """La forma che il guasto prende su Linux, provata anche da Windows.
+
+        Il progetto si scrive a mano: aspettare la piattaforma che produce
+        quella forma vuol dire scoprire il buco in CI, che e' come l'ho
+        scoperto la prima volta."""
+        cartella = tempfile.mkdtemp()
+        os.makedirs(os.path.join(cartella, "fonts"))
+        for nome in P.FONT_DA_COPIARE:
+            with open(os.path.join(cartella, "fonts", nome), "wb"):
+                pass
+        with open(os.path.join(cartella, "prova.qgs"), "w",
+                  encoding="utf-8") as f:
+            f.write('<qgis><Private>1</Private>'
+                    '<WMSServiceCapabilities type="bool">true'
+                    '</WMSServiceCapabilities><crs>EPSG:2056</crs>'
+                    '<Option name="name" type="QString" '
+                    'value="/srv/tidashboard/symbols/normal/Symbol_1.svg"/>'
+                    "</qgis>")
+        rilievi = P.verifica_consegna(cartella)[0]
+        atteso = ("simbolo SVG con percorso assoluto: "
+                  "/srv/tidashboard/symbols/normal/Symbol_1.svg")
+        self.assertEqual([r for r in rilievi if ".svg" in r], [atteso])
 
     def test_i_percorsi_lasciati_assoluti(self):
         vera = P.adegua_progetto
