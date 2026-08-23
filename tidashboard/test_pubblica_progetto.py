@@ -14,6 +14,7 @@
 #
 # Eseguire con l'interprete di QGIS:
 #   & "C:\Program Files\QGIS 4.2.0\bin\python-qgis.bat" test_pubblica_progetto.py
+import gc
 import os
 import sqlite3
 import sys
@@ -592,5 +593,33 @@ class TestPercorsiAssoluti(unittest.TestCase):
             self.assertFalse(P._e_assoluto(p), p)
 
 
+def _lascia_andare(*classi):
+    """Molla i progetti tenuti dalle classi e chiude QGIS in modo ordinato.
+
+    PERCHE' ESISTE. Su Linux questa suite usciva con 139 - segmentation fault
+    - con tutte e 39 le prove PASSATE: il crollo arrivava dopo, quando il
+    processo si chiude. faulthandler non stampava niente, segno che a quel
+    punto Python aveva gia' finito e il guasto era nella distruzione degli
+    oggetti C++.
+
+    Le classi tengono dei QgsProject AUTONOMI in attributi di classe, che
+    vivono fino alla fine del processo: vengono distrutti quando l'ambiente
+    QGIS che li regge non c'e' piu', e in che ordine non lo decide nessuno.
+    Qui si molla il riferimento finche' QGIS e' ancora in piedi, e solo dopo
+    si chiude - l'ordine diventa quello scritto, invece di quello che capita.
+
+    Non e' un rimedio a un difetto preciso: e' togliere di mezzo la parte
+    indefinita. Il difetto preciso, da un container che non ho, non l'ho
+    potuto leggere."""
+    for classe in classi:
+        for nome in ("progetto", "layer", "esito", "prima"):
+            if hasattr(classe, nome):
+                setattr(classe, nome, None)
+    gc.collect()
+    _qgs.exitQgis()
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    _esito = unittest.main(verbosity=2, exit=False).result
+    _lascia_andare(TestChiVaInWms, TestConsegna)
+    sys.exit(0 if _esito.wasSuccessful() else 1)
