@@ -195,11 +195,18 @@ class TestEstensione(unittest.TestCase):
 
     def _gpkg_che_mente(self):
         """Un GeoPackage con due punti vicini e gpkg_contents falsato, come
-        quello vero. Si scrive con QGIS e poi si sovrascrive il metadato."""
+        quello vero. Si scrive con QGIS e poi si sovrascrive il metadato.
+
+        IL LAYER INTERMEDIO SI RILASCIA PRIMA della modifica con sqlite3:
+        _gpkg() ne restituisce uno con il file gia' aperto da OGR, e scrivere
+        sullo stesso file da un'altra connessione mentre quello e' vivo e'
+        cercarsi guai - due lettori dello stesso GeoPackage con idee diverse
+        su cosa contenga."""
         cartella = tempfile.mkdtemp()
         percorso = os.path.join(cartella, "bugiardo.gpkg")
-        _gpkg(percorso, "beni_immobili_punto_di_confine", "Point",
-              punti=((2718000.0, 1082000.0), (2718500.0, 1082400.0)))
+        intermedio = _gpkg(percorso, "beni_immobili_punto_di_confine", "Point",
+                           punti=((2718000.0, 1082000.0), (2718500.0, 1082400.0)))
+        del intermedio
         con = sqlite3.connect(percorso)
         con.execute("UPDATE gpkg_contents SET min_x=2480000, min_y=1070000, "
                     "max_x=2850000, max_y=1310000")
