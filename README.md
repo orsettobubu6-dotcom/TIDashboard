@@ -103,6 +103,13 @@ sistema dichiarato sono fissati apposta — quindi l'impronta di quello scaricat
 e quella di uno ricostruito dallo stesso tag devono coincidere; se non
 coincidono, c'è qualcosa da guardare.
 
+> Il confronto va fatto su un **checkout pulito del tag**, non sulla propria
+> copia di lavoro: `.gitattributes` normalizza i fine riga quando si committa,
+> ma non riscrive i file già presenti sul disco. Ricostruendo da una copia di
+> lavoro dove si è appena editato qualcosa l'impronta non torna, e non è segno
+> di nulla. In pratica:
+> `git worktree add --detach /tmp/prova v1.2.7 && cd /tmp/prova && python crea_zip_plugin.py`
+
 > Vale **dalla 1.2.4 in poi**, ed è stato misurato prima di essere scritto: una
 > ricostruzione su Windows produce lo stesso archivio, byte per byte, di quello
 > costruito dalla CI su Linux. Le versioni precedenti erano state dichiarate
