@@ -1,5 +1,45 @@
 # Diario delle versioni
 
+## 1.2.8 — 25 agosto 2026 — sperimentale
+
+Quattro difetti segnalati da una valutazione esterna del codice, verificati
+uno per uno prima di toccare qualcosa.
+
+### Il ramo che avvisa dei font mancanti alzava un'eccezione
+
+`simbologia._load_font_file` usava `QgsMessageLog` senza importarlo. Quel
+ramo esiste **apposta** per non fallire in silenzio quando un font manca o è
+corrotto — il difetto più caro di questo progetto — e sollevava
+`NameError` esattamente lì. Nessuna prova ci passava, perché nessuna provava
+a caricare un font inesistente. Ora c'è.
+
+### Le coordinate incollate da un PDF venivano rifiutate
+
+Lo spazio unificatore (U+00A0) e quello stretto (U+202F) — la norma
+tipografica nei PDF e nelle pagine web — stavano nella classe dei separatori
+delle **migliaia**, quindi sparivano prima che la coppia venisse divisa:
+`2718000 1082000` diventava un numero solo, e il messaggio invitava a
+«separare i due numeri con uno spazio», cioè proprio quello che si era appena
+fatto.
+
+Lo stesso carattere non può stare in tutt'e due i ruoli. Ora è separatore, e
+le migliaia scritte con lo spazio si ricompongono dopo — un gruppo di
+migliaia ha esattamente tre cifre, quindi non si indovina. Undici forme di
+scrittura provate: apostrofi, virgole, lettere degli assi, decimali.
+
+### Una data in formato svizzero faceva saltare la lettura
+
+Il filtro sulle date delle tabelle di attualizzazione era `len(v) == 10`, e
+`12.03.2024` ha esattamente dieci caratteri: passava, e lo `split("-")`
+successivo sollevava `ValueError`. Ora si verifica il formato.
+
+### Il LICENSE non era controllato
+
+Nel pacchetto c'era, ma solo perché sta nella cartella: nessuno lo
+verificava, mentre la GPL-2.0 ne pretende la distribuzione. Ora è fra i file
+attesi dal pacchettizzatore. Sistemata anche una frase troncata in
+`CREDITI.md`.
+
 ## 1.2.7 — 21 agosto 2026 — sperimentale
 
 ### Ogni nome della nomenclatura si scriveva due volte
