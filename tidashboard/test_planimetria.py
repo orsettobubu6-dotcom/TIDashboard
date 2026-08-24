@@ -525,6 +525,76 @@ class TestNoveIscrizioni(unittest.TestCase):
         zone.setName("zone_di_movimento_movimento")
         self.assertEqual(P.cenno_spostamenti([zone]), P.CENNO_MOVIMENTO_SI)
 
+    def test_un_layer_estraneo_non_fa_dichiarare_il_falso(self):
+        """IL DIFETTO, dimostrato prima di correggerlo: la decisione si
+        prendeva cercando "movimento" nel nome del layer, e un layer
+        qualunque aggiunto al progetto - "movimento terra" - faceva scrivere
+        sul cartiglio che gli spostamenti permanenti erano rappresentati.
+        E' una delle nove iscrizioni obbligatorie del cap. 1.5.7."""
+        estraneo = _layer()
+        estraneo.setName("movimento terra")
+        self.assertEqual(P.cenno_spostamenti([estraneo]), P.CENNO_MOVIMENTO_NO)
+
+    def test_il_punto_di_iscrizione_non_conta_come_oggetto(self):
+        """PosMovimento e' dove va scritta l'etichetta, non lo spostamento:
+        contarlo vorrebbe dire dichiarare rappresentate delle scritte."""
+        pos = _layer()
+        pos.setName("zone_di_movimento_posmovimento")
+        self.assertEqual(P.cenno_spostamenti([pos]), P.CENNO_MOVIMENTO_NO)
+
+    def test_la_tabella_vera_conta_ancora(self):
+        """L'altra meta': un controllo troppo stretto toglierebbe il cenno
+        anche dove va messo."""
+        self.assertTrue(P.e_tabella_movimento("zone_di_movimento_movimento"))
+        self.assertFalse(P.e_tabella_movimento("zone_di_movimento_posmovimento"))
+        self.assertFalse(P.e_tabella_movimento("movimento terra"))
+        self.assertFalse(P.e_tabella_movimento(None))
+
+    def test_il_fattore_si_rimette_sui_cloni_al_cambio_scala(self):
+        """B4: il cartiglio veniva riscritto con la scala nuova e dichiarava
+        il fattore NUOVO, mentre i cloni continuavano a disegnare con quello
+        VECCHIO - due iscrizioni obbligatorie in contraddizione sullo stesso
+        foglio. Ora il fattore si rimette sui cloni."""
+        progetto = QgsProject.instance()
+        clone = _layer()
+        clone.setName("clone_fuori_dall_albero")
+        progetto.addMapLayer(clone, False)      # nel progetto, NON nell'albero
+
+        class _FintaMappa(object):
+            def layers(self):
+                return [clone]
+
+        try:
+            adeguati, non_adeguati = P.riapplica_fattore(
+                _FintaMappa(), 5000, "gb", False, progetto)
+            self.assertEqual((adeguati, non_adeguati), (1, 0))
+            atteso = P.fattore_proporzionale(5000, "gb", False) * 5000.0
+            self.assertAlmostEqual(clone.renderer().referenceScale(), atteso,
+                                   places=3)
+        finally:
+            progetto.removeMapLayer(clone.id())
+
+    def test_un_layer_dell_albero_non_si_tocca(self):
+        """Cambiargli la scala di riferimento cambierebbe anche il disegno sul
+        canvas, che e' il difetto per cui i cloni esistono."""
+        progetto = QgsProject.instance()
+        vero = _layer()
+        vero.setName("layer_vero_nell_albero")
+        progetto.addMapLayer(vero)              # nell'albero
+        prima = vero.renderer().referenceScale()
+
+        class _FintaMappa(object):
+            def layers(self):
+                return [vero]
+
+        try:
+            adeguati, non_adeguati = P.riapplica_fattore(
+                _FintaMappa(), 5000, "gb", False, progetto)
+            self.assertEqual((adeguati, non_adeguati), (0, 1))
+            self.assertEqual(vero.renderer().referenceScale(), prima)
+        finally:
+            progetto.removeMapLayer(vero.id())
+
     def test_il_cartiglio_contiene_tutte_le_righe(self):
         """Le due iscrizioni in piu' non devono uscire dal riquadro: e' il
         motivo per cui H_CARTIGLIO e' passato da 32 a 40 mm."""

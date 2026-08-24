@@ -119,21 +119,43 @@ CENNO_MOVIMENTO_SI = "Gli spostamenti permanenti di terreno sono rappresentati."
 CENNO_MOVIMENTO_NO = "Gli spostamenti permanenti di terreno non sono rappresentati."
 
 
+TOPIC_MOVIMENTO = "zone_di_movimento"
+
+
+def e_tabella_movimento(tabella):
+    """La tabella delle zone con spostamenti permanenti di terreno.
+
+    SI GUARDA IL NOME DELLA TABELLA, non quello del layer. Prima la decisione
+    si prendeva cercando la sottostringa "movimento" nel nome del layer unito
+    alla sorgente, e bastava un layer estraneo chiamato "movimento terra" -
+    uno qualunque, aggiunto dall'utente al progetto - perche' il cartiglio
+    dichiarasse rappresentati degli spostamenti permanenti che non c'erano.
+    Provato: quel layer produceva CENNO_MOVIMENTO_SI. E' una delle nove
+    iscrizioni obbligatorie del cap. 1.5.7: se dice il falso, il foglio dice
+    il falso.
+
+    Il topic e' Zone_di_movimento; la classe con le geometrie e' Movimento,
+    e PosMovimento e' il punto di iscrizione dell'etichetta - va escluso,
+    altrimenti si conterebbero le scritte invece degli oggetti."""
+    t = (tabella or "").lower()
+    if TOPIC_MOVIMENTO not in t:
+        return False
+    coda = t.split(TOPIC_MOVIMENTO, 1)[1].lstrip("_")
+    return not coda.startswith("pos")
+
+
 def cenno_spostamenti(layers):
     """Il cenno del cap.1.5.7 sugli spostamenti permanenti di terreno, deciso
     sui layer che finiscono davvero sul foglio: senza feature da disegnare
     scrivere "sono rappresentati" sarebbe falso."""
     for l in layers or []:
         try:
-            nome = (l.name() or "").lower() + " " + (l.source() or "").lower()
+            if not e_tabella_movimento(_raw_table_name(l)):
+                continue
+            if l.featureCount() > 0:
+                return CENNO_MOVIMENTO_SI
         except Exception:
             continue
-        if "movimento" in nome and "pos" not in nome.split("movimento")[0][-4:]:
-            try:
-                if l.featureCount() > 0:
-                    return CENNO_MOVIMENTO_SI
-            except Exception:
-                pass
     return CENNO_MOVIMENTO_NO
 C_AVVERTENZA = QColor(204, 0, 0)
 
@@ -875,8 +897,38 @@ def testo_dettagli(scala, data_validita, cenno_movimento, prodotto="gb",
         CENNO_PROGETTO, cenno_movimento, LEGENDA_URL)
 
 
+def riapplica_fattore(mappa, scala, prodotto="gb", lettera_norma=False,
+                      project=None):
+    """Rimette la scala di riferimento del cap. 1.5.2 sui cloni del foglio.
+
+    Ritorna (adeguati, non_adeguati). Un layer che sta nell'albero del
+    progetto NON si tocca: e' quello vero, e la scala di riferimento
+    cambierebbe anche il canvas."""
+    fattore = fattore_proporzionale(scala, prodotto, lettera_norma)
+    # -1 e' il modo di QGIS per dire "nessuna scala di riferimento": serve
+    # quando il fattore torna a 1, altrimenti resterebbe quella vecchia.
+    riferimento = fattore * float(scala) if abs(fattore - 1.0) > 1e-9 else -1.0
+    radice = project.layerTreeRoot() if project is not None else None
+    adeguati = non_adeguati = 0
+    for l in (mappa.layers() or []):
+        try:
+            if radice is not None and radice.findLayer(l.id()) is not None:
+                non_adeguati += 1
+                continue
+            r = l.renderer() if hasattr(l, "renderer") else None
+            if r is None or not hasattr(r, "setReferenceScale"):
+                non_adeguati += 1
+                continue
+            r.setReferenceScale(riferimento)
+            adeguati += 1
+        except (AttributeError, RuntimeError):
+            non_adeguati += 1
+    return adeguati, non_adeguati
+
+
 def sorveglia_scala(mappa, griglia, dettagli, data_validita, cenno_movimento,
-                    prodotto="gb", lettera_norma=False, log=None):
+                    prodotto="gb", lettera_norma=False, log=None,
+                    project=None):
     """Tiene il foglio coerente se la scala viene cambiata NEL COMPOSITORE.
 
     IL PROBLEMA. Il foglio nasce con tre cose calcolate sulla scala scelta
@@ -894,11 +946,22 @@ def sorveglia_scala(mappa, griglia, dettagli, data_validita, cenno_movimento,
         dettaglio estetico: e' un'iscrizione obbligatoria (cap. 1.5.7) che
         dice il falso.
 
-    Le prime due si correggono qui, da sole. La terza NO: il fattore di
-    proporzionalita' e' impostato come scala di riferimento sui CLONI dei
-    layer (vedi _layers_proporzionati) e si applica al momento del disegno;
-    rifarlo vorrebbe dire rifare i cloni, cioe' rifare il foglio. Quindi si
-    avvisa, e si dice cosa fare: rigenerare la planimetria dalla finestra.
+      - il fattore di proporzionalita' del cap. 1.5.2 restava quello della
+        scala vecchia, mentre il cartiglio - riscritto con la scala nuova -
+        dichiarava il fattore NUOVO. Due iscrizioni obbligatorie in
+        contraddizione fra loro, sullo stesso foglio.
+
+    ORA SI CORREGGONO TUTTE E TRE. Il fattore vive come scala di riferimento
+    sui CLONI dei layer (vedi _layers_proporzionati): rimetterla non vuol dire
+    rifare il foglio, basta cambiarla sui cloni che il foglio gia' usa. Si
+    tocca SOLO cio' che non sta nell'albero del progetto - un layer
+    dell'albero e' quello vero, e cambiargli la scala di riferimento
+    cambierebbe anche il disegno sul canvas, che e' il difetto per cui i
+    cloni esistono.
+
+    Se qualche layer non si puo' adeguare (nessun clone, perche' il foglio era
+    nato alla scala di riferimento dove il fattore vale 1) si avvisa e si dice
+    cosa fare: rigenerare la planimetria dalla finestra.
 
     Il messaggio va nel registro di QGIS e non solo in quello della finestra:
     il compositore si usa spesso con la finestra del plugin chiusa, e un
@@ -924,17 +987,36 @@ def sorveglia_scala(mappa, griglia, dettagli, data_validita, cenno_movimento,
                                             lettera_norma))
         except RuntimeError:
             return
-        messaggio = (
-            "Scala del foglio cambiata nel compositore da 1:%d a 1:%d. "
-            "Passo della griglia adeguato a %g m e scala del cartiglio "
-            "riscritta. ATTENZIONE: la grandezza di simboli e scritture resta "
-            "quella calcolata per 1:%d (cap. 1.5.2) - per adeguarla, rigenera "
-            "la planimetria dalla finestra del plugin."
-            % (round(vecchia), round(nuova), passo, round(vecchia)))
-        QgsMessageLog.logMessage(messaggio, "TIDashboard", Qgis.Warning)
+        adeguati, non_adeguati = riapplica_fattore(
+            mappa, nuova, prodotto, lettera_norma, project)
+        if non_adeguati or not adeguati:
+            # "non adeguati" e "nessun layer" finiscono nello stesso ramo di
+            # proposito: in tutt'e due i casi non e' vero che il fattore sia
+            # stato rimesso, e dirlo ("adeguato su 0 layer") sarebbe una
+            # rassicurazione senza contenuto proprio sull'iscrizione che
+            # rischia di essere falsa.
+            livello = Qgis.Warning
+            messaggio = (
+                "Scala del foglio cambiata nel compositore da 1:%d a 1:%d. "
+                "Passo della griglia adeguato a %g m e scala del cartiglio "
+                "riscritta. ATTENZIONE: su %d layer la grandezza di simboli e "
+                "scritture resta quella calcolata per 1:%d (cap. 1.5.2), "
+                "mentre il cartiglio dichiara il fattore di 1:%d - per "
+                "rimetterli d'accordo, rigenera la planimetria dalla finestra "
+                "del plugin."
+                % (round(vecchia), round(nuova), passo, non_adeguati,
+                   round(vecchia), round(nuova)))
+        else:
+            livello = Qgis.Info
+            messaggio = (
+                "Scala del foglio cambiata nel compositore da 1:%d a 1:%d. "
+                "Adeguati passo della griglia (%g m), scala del cartiglio e "
+                "fattore di proporzionalita' del cap. 1.5.2 su %d layer."
+                % (round(vecchia), round(nuova), passo, adeguati))
+        QgsMessageLog.logMessage(messaggio, "TIDashboard", livello)
         if log:
             try:
-                log("   ⚠️ %s" % messaggio)
+                log("   %s %s" % ("⚠️" if non_adeguati else "📐", messaggio))
             except RuntimeError:
                 pass            # la finestra del plugin e' stata chiusa
 
@@ -1158,7 +1240,7 @@ def crea_planimetria(project, layers, centro, scala, formato="A4 verticale",
     # Da qui in poi il foglio si difende da solo se qualcuno cambia la scala
     # nel compositore: vedi sorveglia_scala.
     sorveglia_scala(mappa, griglia, dettagli, data_validita, cenno_movimento,
-                    prodotto, lettera_norma, _log)
+                    prodotto, lettera_norma, _log, project)
 
     if rotazione_gon:
         rot = QgsLayoutItemLabel(layout)
