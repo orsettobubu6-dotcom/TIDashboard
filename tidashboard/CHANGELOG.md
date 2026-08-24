@@ -1,5 +1,51 @@
 # Diario delle versioni
 
+## 1.2.9 — 25 agosto 2026 — sperimentale
+
+Gli ultimi cinque difetti segnalati dalla valutazione esterna. Con questa
+versione **tutti e otto sono chiusi**.
+
+### Due iscrizioni obbligatorie potevano dire il falso
+
+Sono le uniche due che finiscono *stampate* sul foglio, e per questo vengono
+prima delle altre.
+
+**Il cenno sugli spostamenti permanenti di terreno** (cap. 1.5.7) si decideva
+cercando la parola «movimento» nel nome del layer. Dimostrato prima di
+correggere: un layer qualunque chiamato «movimento terra», aggiunto al
+progetto da chiunque, faceva scrivere sul cartiglio che gli spostamenti erano
+rappresentati. Ora si guarda il nome della **tabella** — topic
+`Zone_di_movimento`, classe `Movimento` — escludendo `PosMovimento`, che è il
+punto di iscrizione dell'etichetta: contarlo vorrebbe dire dichiarare
+rappresentate delle scritte.
+
+**Il fattore di proporzionalità dopo un cambio scala nel compositore**
+(cap. 1.5.2): il cartiglio veniva riscritto con la scala nuova e dichiarava il
+fattore nuovo, mentre i layer disegnavano ancora con quello vecchio — due
+iscrizioni obbligatorie in contraddizione sullo stesso foglio. Ora la scala di
+riferimento si rimette sui cloni che il foglio già usa, senza rifare niente.
+Dove non si può, resta l'avviso.
+
+### Un file INTERLIS 2 passava come «non verificabile»
+
+Il controllo del modello cercava solo la riga `MODL` dell'INTERLIS 1: davanti a
+un `.xtf` federale rispondeva «non posso verificare» — un avviso, non un
+blocco. Ma quel formato questa catena non lo importa affatto. Ora si riconosce
+dal contenuto (un `.xtf` rinominato `.itf` non inganna) e si blocca.
+
+### Un DXF senza tabella LAYER passava in silenzio
+
+«Nessun layer dichiarato» veniva trattato come «niente da confrontare», ed era
+invece il caso peggiore: colore, spessore e tipo di linea di *ogni* entità li
+deciderebbe chi apre il file.
+
+### Un GeoPackage corrotto poteva far cadere il programma
+
+Il numero di punti di un poligono è un valore **letto dal file**: in un blob
+rotto vale qualunque cosa, e la lettura veniva preparata prima di verificare
+quanti byte restassero. Il risultato non era un errore di lettura ma un
+`MemoryError`, cioè un guasto che sembra del programma invece che del dato.
+
 ## 1.2.8 — 25 agosto 2026 — sperimentale
 
 Quattro difetti segnalati da una valutazione esterna del codice, verificati
