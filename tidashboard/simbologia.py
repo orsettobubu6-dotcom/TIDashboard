@@ -26,6 +26,11 @@ from qgis.core import (
     QgsSvgMarkerSymbolLayer, QgsFontMarkerSymbolLayer,
     QgsRuleBasedRenderer, QgsFillSymbol, QgsLineSymbol, QgsMarkerSymbol,
     QgsSingleSymbolRenderer, QgsReadWriteContext, QgsStyle,
+    # MANCAVA, ed era usato solo nel ramo d'errore di _load_font_file: quel
+    # ramo esiste per non fallire in silenzio quando un font manca o e'
+    # corrotto, e invece alzava NameError proprio li'. Nessuna prova ci
+    # passava, perche' nessuna provava a caricare un font inesistente.
+    QgsMessageLog,
 )
 
 try:

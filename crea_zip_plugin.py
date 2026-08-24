@@ -269,8 +269,11 @@ with zipfile.ZipFile(ZIP) as z:
     moduli = ["%s.py" % m for m in importati]
     print("moduli importati da tidashboard.py: %d" % len(moduli))
     attesi = ["metadata.txt", "__init__.py", "tidashboard.py"] + moduli + [
-        # documenti richiesti per la pubblicazione
-        "icon.png", "README.md", "CHANGELOG.md", "CREDITI.md", "NORME.md",
+        # documenti richiesti per la pubblicazione. LICENSE non era in questa
+        # lista: nel pacchetto c'era, ma solo perche' sta nella cartella -
+        # nessuno lo verificava, e la GPL-2.0 ne pretende la distribuzione.
+        "icon.png", "LICENSE", "README.md", "CHANGELOG.md", "CREDITI.md",
+        "NORME.md",
         "av2geobau/av2geobau_ti.jar", "models/MD01MUTI7MN95.ili"]
     for rel in attesi:
         voce = "%s/%s" % (NOME, rel)

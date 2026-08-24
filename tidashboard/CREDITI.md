@@ -1,6 +1,9 @@
 # Componenti di terze parti
 
 > ⚠️ **Il progetto è pubblicato** su
+> <https://github.com/orsettobubu6-dotcom/TIDashboard> con licenza
+> **GPL-2.0-or-later**: il testo completo è nel file `LICENSE` distribuito
+> insieme al pacchetto.
 
 > Le licenze delle librerie Java sono invece **accertate**, tranne tre su
 > quindici: vedi la tabella sotto.

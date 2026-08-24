@@ -50,8 +50,19 @@ WGS84_LAT = (45.5, 48.0)
 # Separatori ammessi fra i due numeri: virgola, punto e virgola, barra o
 # spazi. Il punto NON e' un separatore: e' il segno decimale.
 _SEPARATORE = re.compile(r"[;,/\s]+")
-# Gli apostrofi delle migliaia svizzere (2'718'000) e gli spazi unificatori.
-_MIGLIAIA = re.compile(r"['’  ]")
+# Gli apostrofi delle migliaia svizzere (2'718'000). SOLO GLI APOSTROFI. Prima questa classe conteneva anche lo spazio
+# unificatore (U+00A0) e quello stretto (U+202F), e questo li rendeva
+# invisibili come separatori della COPPIA: "2718000<U+00A0>1082000" - due
+# coordinate incollate da un PDF o da una pagina web, dove lo spazio
+# unificatore e' la norma tipografica - diventava "27180001082000", un
+# numero solo, e veniva rifiutato con un messaggio che invitava a separare
+# i due numeri con uno spazio. Che e' proprio quello che l'utente aveva
+# fatto. Lo stesso carattere non puo' stare in tutt'e due i ruoli.
+_MIGLIAIA = re.compile(r"['’]")
+# Un gruppo di migliaia e' fatto di ESATTAMENTE tre cifre: e' cio' che
+# permette di distinguere "2 718 000 1 082 000" (migliaia scritte con lo
+# spazio) da "2718000 1082000" (due numeri e basta) senza indovinare.
+_TRE_CIFRE = re.compile(r"^\d{3}$")
 
 
 class Coordinate(object):
@@ -77,6 +88,29 @@ class Coordinate(object):
                 and self.sistema == altro.sistema)
 
 
+def _ricomponi_migliaia(pezzi):
+    """Riunisce i gruppi di migliaia scritti con lo spazio.
+
+    Lo spazio e' un separatore fra i due numeri, ma qualcuno lo usa anche per
+    le migliaia ("2 718 000 1 082 000"). I due casi si distinguono senza
+    indovinare: un gruppo di migliaia ha ESATTAMENTE tre cifre e segue un
+    pezzo che ne ha una, due o tre. Cosi' "2 718 000" torna 2718000, mentre
+    "2718000 1082000" resta due numeri - il secondo pezzo ne ha sette, non
+    tre, e non si attacca al primo."""
+    fusi = []
+    for pezzo in pezzi:
+        if (fusi and _TRE_CIFRE.match(pezzo)
+                and fusi[-1].isdigit() and len(fusi[-1]) <= 3):
+            fusi[-1] += pezzo
+        elif (fusi and _TRE_CIFRE.match(pezzo) and fusi[-1].isdigit()
+                and len(fusi[-1]) > 3 and len(fusi[-1]) % 3 == 1):
+            # gruppi successivi dello stesso numero: 2 + 718 -> 2718, poi 000
+            fusi[-1] += pezzo
+        else:
+            fusi.append(pezzo)
+    return fusi
+
+
 def _numeri(testo):
     """I due numeri, o None. Tollera le forme in cui la gente scrive davvero:
     "E 2718000 N 1082000", "2'718'000/1'082'000", "2718000;1082000"."""
@@ -86,7 +120,8 @@ def _numeri(testo):
     # Le lettere degli assi si tolgono: "E"/"N" in italiano e tedesco,
     # "Y"/"X" nella tradizione topografica svizzera.
     pulito = re.sub(r"(?i)\b[ENYX]\s*[:=]?\s*", " ", pulito)
-    pezzi = [p for p in _SEPARATORE.split(pulito.strip()) if p]
+    pezzi = _ricomponi_migliaia(
+        [p for p in _SEPARATORE.split(pulito.strip()) if p])
     if len(pezzi) != 2:
         return None
     try:

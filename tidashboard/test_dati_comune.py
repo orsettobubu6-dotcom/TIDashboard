@@ -88,6 +88,24 @@ class TestDataValidita(unittest.TestCase):
                    (["in_vigore", "data1"], [("2024-01-15", "1998-01-01")])})
         self.assertEqual(D.leggi_data_validita(p), "15.01.2024")
 
+    def test_una_data_scritta_all_uso_svizzero_non_fa_saltare_tutto(self):
+        """Il filtro era len(v) == 10, e "12.03.2024" ha esattamente dieci
+        caratteri: passava, e poi lo split("-") alzava ValueError su un dato
+        che nessuno aveva promesso fosse ISO. Il cartiglio ne esce senza la
+        data - che e' una delle nove iscrizioni obbligatorie - invece che con
+        un'eccezione in faccia all'utente."""
+        p = _gpkg({"x_tenuta_a_giornobi":
+                   (["in_vigore"], [("12.03.2024",)])})
+        self.assertEqual(D.leggi_data_validita(p), "")
+
+    def test_una_data_valida_fra_valori_sporchi_si_trova_lo_stesso(self):
+        """L'altra meta': scartare il formato sbagliato non deve far perdere
+        quello giusto."""
+        p = _gpkg({"x_tenuta_a_giornobi":
+                   (["in_vigore"], [("12.03.2024",), ("2024-07-31",),
+                                    ("",), ("boh",)])})
+        self.assertEqual(D.leggi_data_validita(p), "31.07.2024")
+
     def test_senza_tabelle_di_attualizzazione(self):
         p = _gpkg({"beni_immobili_bene_immobile": (["numero"], [("4471",)])})
         self.assertEqual(D.leggi_data_validita(p), "")

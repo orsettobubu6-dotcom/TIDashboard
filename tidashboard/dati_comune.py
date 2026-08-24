@@ -23,6 +23,7 @@
 # forma (suffisso del nome, colonne presenti) leggendo il catalogo del
 # GeoPackage.
 import os
+import re
 import sqlite3
 
 # Colonna dedicata all'intestazione del piano: dove c'e', vince.
@@ -101,6 +102,9 @@ PREFISSO_TENUTA = "tenuta_a_giorno"
 # aggiornamenti futuri, la data da inserire e' In_vigore. Data1 corrisponde ai
 # vecchi aggiornamenti e non viene piu' usato". Si prova quindi prima in_vigore.
 COLONNE_DATA = ("in_vigore", "data1")
+# Una data ISO, aaaa-mm-gg. Serve a distinguerla da una data scritta all'uso
+# svizzero (12.03.2024), che ha esattamente la stessa lunghezza.
+_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def data_estrazione_itf(percorso_itf):
@@ -157,7 +161,13 @@ def leggi_data_validita(percorso_gpkg):
                 for v in _valori(con, tabella, nome):
                     # ili2gpkg le scrive ISO (aaaa-mm-gg): il confronto fra
                     # stringhe in quel formato e' gia' cronologico.
-                    if len(v) == 10 and v > massima:
+                    #
+                    # SI CONTROLLA IL FORMATO, non la lunghezza. Il filtro era
+                    # len(v) == 10, e una data scritta all'uso svizzero -
+                    # "12.03.2024" - ha esattamente dieci caratteri: passava,
+                    # e poi lo split("-") qui sotto alzava ValueError su un
+                    # dato che nessuno aveva promesso fosse ISO.
+                    if _ISO.match(v or "") and v > massima:
                         massima = v
                 break
     except sqlite3.Error:

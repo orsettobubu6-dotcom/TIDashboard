@@ -105,6 +105,49 @@ class TestWGS84(unittest.TestCase):
         self.assertIsNone(C.analizza("45.87, 8.98"))
 
 
+class TestSpaziInvisibili(unittest.TestCase):
+    """Le coordinate incollate da un PDF o da una pagina web.
+
+    Lo spazio unificatore (U+00A0) e quello stretto (U+202F) sono la norma
+    tipografica in quei documenti, e a occhio sono spazi normali. Stavano
+    nella classe dei separatori delle MIGLIAIA, quindi venivano tolti prima
+    di dividere la coppia: "2718000<U+00A0>1082000" diventava un numero solo
+    e veniva rifiutato con un messaggio che invitava a separare i due numeri
+    con uno spazio - cioe' proprio quello che l'utente aveva fatto."""
+
+    def _coppia(self, testo):
+        letto = C.analizza(testo)
+        self.assertIsNotNone(letto, "rifiutato: %r" % testo)
+        return (letto.est, letto.nord)
+
+    def test_spazio_unificatore(self):
+        self.assertEqual(self._coppia("2718000 1082000"),
+                         (2718000.0, 1082000.0))
+
+    def test_spazio_stretto(self):
+        self.assertEqual(self._coppia("2718000 1082000"),
+                         (2718000.0, 1082000.0))
+
+    def test_migliaia_scritte_con_lo_spazio(self):
+        """L'altra faccia: lo spazio separa anche le migliaia. I due casi si
+        distinguono senza indovinare, perche' un gruppo di migliaia ha
+        esattamente tre cifre."""
+        self.assertEqual(self._coppia("2 718 000 1 082 000"),
+                         (2718000.0, 1082000.0))
+        self.assertEqual(
+            self._coppia("2 718 000 1 082 000"),
+            (2718000.0, 1082000.0))
+
+    def test_gli_apostrofi_restano_migliaia(self):
+        self.assertEqual(self._coppia("2'718'000 1'082'000"),
+                         (2718000.0, 1082000.0))
+
+    def test_i_decimali_non_si_attaccano(self):
+        est, nord = self._coppia("2718000.25 1082000.50")
+        self.assertAlmostEqual(est, 2718000.25, places=2)
+        self.assertAlmostEqual(nord, 1082000.50, places=2)
+
+
 class TestRifiuti(unittest.TestCase):
     def test_fuori_dalla_svizzera(self):
         # ATTENZIONE alla scelta dei valori: "500000 200000" sembra fuori ma

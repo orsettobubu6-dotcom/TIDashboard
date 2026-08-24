@@ -771,6 +771,28 @@ class TestGrandezzeDelCapitolo5(unittest.TestCase):
                     msg="%s ha la grandezza delle condotte" % chiave)
 
 
+class TestFontMancante(unittest.TestCase):
+    """Il ramo che avvisa quando un font non c'e'.
+
+    Esiste apposta per non fallire in silenzio - il difetto piu' caro di
+    questo progetto - e invece alzava NameError: QgsMessageLog era usato ma
+    non importato. Nessuna prova ci passava, perche' nessuna provava a
+    caricare un font inesistente."""
+
+    def test_un_font_inesistente_avvisa_e_non_alza(self):
+        import simbologia
+        simbologia._load_font_file(r"C:\non\esiste\mai\font.ttf")
+
+    def test_un_file_che_non_e_un_font(self):
+        import os
+        import tempfile
+        import simbologia
+        percorso = os.path.join(tempfile.mkdtemp(), "finto.ttf")
+        with open(percorso, "wb") as f:
+            f.write(b"non sono un font")
+        simbologia._load_font_file(percorso)
+
+
 class TestContenutoDelPiano153(unittest.TestCase):
     """Quali temi finiscono sul piano per il registro fondiario (cap. 1.5.3).
 
