@@ -420,5 +420,48 @@ class TestContorno(unittest.TestCase):
         self.assertEqual(trovati[0].contorno, [])
 
 
+class TestBlobCorrotto(unittest.TestCase):
+    """Un blob WKB rotto non deve far cadere il programma.
+
+    n_anelli e n_punti sono numeri LETTI DAL FILE: in un blob corrotto o
+    troncato valgono qualunque cosa fino a 4 miliardi. La stringa di formato
+    veniva composta prima di guardare quanti byte restassero, quindi struct
+    provava ad allocare per quel numero di punti - e il risultato non era un
+    errore di lettura ma un MemoryError, cioe' un guasto che sembra del
+    programma invece che del dato."""
+
+    def _poligono_che_promette_troppo(self, punti_dichiarati):
+        import struct
+        # WKB little-endian: tipo 3 (Polygon), 1 anello, N punti dichiarati,
+        # e poi NIENTE.
+        return (struct.pack("<BI", 1, 3) + struct.pack("<I", 1)
+                + struct.pack("<I", punti_dichiarati))
+
+    def test_un_conteggio_assurdo_non_alza_memoryerror(self):
+        b = self._poligono_che_promette_troppo(4000000000)
+        fuori = []
+        C._leggi_anelli(b, 5, "<", fuori)
+        self.assertEqual(fuori, [], "non c'era nessun punto da leggere")
+
+    def test_un_blob_troncato_a_meta(self):
+        b = self._poligono_che_promette_troppo(3)[:-2]
+        fuori = []
+        C._leggi_anelli(b, 5, "<", fuori)
+        self.assertEqual(fuori, [])
+
+    def test_un_poligono_sano_si_legge_ancora(self):
+        """L'altra meta': un controllo troppo stretto scarterebbe le
+        geometrie buone, e la ricerca non troverebbe piu' niente."""
+        import struct
+        b = (struct.pack("<BI", 1, 3) + struct.pack("<I", 1)
+             + struct.pack("<I", 2)
+             + struct.pack("<dddd", 2718000.0, 1082000.0, 2718100.0, 1082100.0))
+        fuori = []
+        C._leggi_anelli(b, 5, "<", fuori)
+        self.assertEqual(fuori, [(2718000.0, 1082000.0),
+                                 (2718100.0, 1082100.0)])
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

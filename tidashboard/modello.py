@@ -39,6 +39,11 @@ NON_TROVATO = "non_trovato"
 NON_LEGGIBILE = "non_leggibile"
 
 _MODL = re.compile(r"^MODL\s+(\S+)", re.M)
+# L'intestazione di un XTF (INTERLIS 2): <MODEL NAME="..." VERSION="...">.
+_MODEL_XTF = re.compile(r"<MODEL[^>]*\bNAME\s*=\s*[\"']([^\"']+)", re.I)
+# Come si nomina un XTF di cui non si riesce a leggere il modello: serve a
+# dire all'utente che cosa ha in mano, invece di un messaggio vuoto.
+FORMATO_XTF = "INTERLIS 2 (XTF)"
 
 # L'intestazione INTERLIS 1 sta nelle prime righe; i file arrivano a 200 MB e
 # leggerli interi per una riga sarebbe assurdo.
@@ -89,10 +94,53 @@ def modelli_di_gpkg(percorso):
         con.close()
 
 
+def modello_di_xtf(percorso):
+    """Il modello dichiarato da un XTF (INTERLIS 2), o "" se non si trova.
+
+    L'XTF e' XML: il modello sta nell'attributo BID o nel nome del tag di
+    contenitore, ma il posto affidabile e leggibile senza un parser e' l'
+    intestazione <MODEL NAME="..."> del blocco HEADERSECTION."""
+    try:
+        with open(percorso, "rb") as f:
+            testa = f.read(_TESTA).decode("utf-8", "replace")
+    except OSError:
+        return ""
+    m = _MODEL_XTF.search(testa)
+    return m.group(1) if m else ""
+
+
+def e_xtf(percorso):
+    """Il file e' un INTERLIS 2 (XTF)? Si guarda il CONTENUTO oltre
+    all'estensione: un .itf rinominato resta quello che e'."""
+    if (percorso or "").lower().endswith(".xtf"):
+        return True
+    try:
+        with open(percorso, "rb") as f:
+            testa = f.read(512).lstrip()
+    except OSError:
+        return False
+    return testa.startswith(b"<?xml") or b"<TRANSFER" in testa[:512]
+
+
 def controlla_itf(percorso):
-    """(esito, modello) per un ITF."""
+    """(esito, modello) per un file di trasferimento INTERLIS.
+
+    RICONOSCE ANCHE L'XTF, e lo rifiuta. Prima il controllo cercava solo la
+    riga MODL dell'INTERLIS 1: davanti a un .xtf federale non la trovava e
+    rispondeva NON_TROVATO, cioe' "non posso verificare" - un avviso, non un
+    blocco. Ma quel file NON e' un'incertezza nostra: e' un formato che questa
+    catena non importa affatto, e lasciarlo passare significa far girare per
+    minuti un'importazione che non puo' riuscire. Era un varco nel "controllo
+    a ogni porta"."""
     if not percorso or not os.path.isfile(percorso):
         return NON_LEGGIBILE, ""
+    if e_xtf(percorso):
+        # Il formato entra nel nome riportato: e' quello che spiega() legge
+        # per dare il messaggio giusto, ed e' anche l'informazione che serve
+        # a chi guarda ("ho in mano un XTF", non "un modello sconosciuto").
+        dichiarato = modello_di_xtf(percorso)
+        return DIVERSO, ("%s — %s" % (dichiarato, FORMATO_XTF)
+                         if dichiarato else FORMATO_XTF)
     trovato = modello_di_itf(percorso)
     if not trovato:
         return NON_TROVATO, ""
@@ -123,6 +171,11 @@ def spiega(esito, modello, cosa="il file"):
                  "e le mappature DXF del plugin sono scritti sul modello "
                  "cantonale e non riconoscerebbero queste classi."
                  % (cosa[0].upper() + cosa[1:], modello, MODELLO_ATTESO))
+        if FORMATO_XTF in (modello or "") or "ili2" in (modello or "").lower():
+            testo = ("%s e' un file INTERLIS 2 (XTF). La misurazione ufficiale "
+                     "ticinese si consegna in INTERLIS 1 (ITF), ed e' quello "
+                     "che questa catena importa: si scarica dal pulsante "
+                     "\"Cantone...\"." % (cosa[0].upper() + cosa[1:]))
         if MODELLO_FEDERALE in (modello or ""):
             testo += (" %s e' il modello federale pubblicato da geodienste.ch; "
                       "l'equivalente cantonale si scarica dal pulsante "

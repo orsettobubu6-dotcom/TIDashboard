@@ -74,6 +74,33 @@ class TestItf(unittest.TestCase):
         self.assertEqual(esito, M.DIVERSO)
         self.assertNotIn("geodienste", M.spiega(esito, trovato))
 
+    def test_un_xtf_federale_viene_bloccato_non_solo_segnalato(self):
+        """Prima il controllo cercava solo la riga MODL dell'INTERLIS 1:
+        davanti a un .xtf non la trovava e rispondeva NON_TROVATO, cioe' "non
+        posso verificare" - un avviso, non un blocco. Ma quel file non e'
+        un'incertezza nostra: e' un formato che questa catena non importa
+        affatto. Era un varco nel "controllo a ogni porta"."""
+        cartella = tempfile.mkdtemp()
+        percorso = os.path.join(cartella, "consegna.xtf")
+        with io.open(percorso, "wb") as f:
+            f.write(b'<?xml version="1.0"?><TRANSFER><HEADERSECTION>'
+                    b'<MODELS><MODEL NAME="DM01AVCH24LV95D"/></MODELS>'
+                    b"</HEADERSECTION>")
+        esito, trovato = M.controlla_itf(percorso)
+        self.assertEqual(esito, M.DIVERSO)
+        self.assertTrue(M.e_bloccante(esito))
+        self.assertIn("XTF", trovato)
+        self.assertIn("INTERLIS 1", M.spiega(esito, trovato, "il file"))
+
+    def test_un_xtf_rinominato_itf_non_inganna(self):
+        """Si guarda il contenuto, non l'estensione."""
+        cartella = tempfile.mkdtemp()
+        percorso = os.path.join(cartella, "travestito.itf")
+        with io.open(percorso, "wb") as f:
+            f.write(b'<?xml version="1.0"?><TRANSFER><HEADERSECTION>'
+                    b"</HEADERSECTION>")
+        self.assertTrue(M.e_bloccante(M.controlla_itf(percorso)[0]))
+
     def test_senza_riga_modl_avvisa_ma_non_blocca(self):
         """Un'intestazione insolita e' un dubbio nostro, non una colpa del
         file: bloccare su un dubbio toglie all'utente una decisione sua."""

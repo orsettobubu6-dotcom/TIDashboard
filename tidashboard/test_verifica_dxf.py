@@ -233,5 +233,39 @@ class TestRighe(unittest.TestCase):
         self.assertIsInstance(errore, str)
 
 
+class TestSenzaTabellaLayer(unittest.TestCase):
+    """Un DXF con entita' e senza tabella LAYER e' esso stesso non conforme.
+
+    Il controllo lo saltava in silenzio: "nessun layer dichiarato" veniva
+    trattato come "niente da confrontare", e il file passava. Ma e' il caso
+    PEGGIORE di quello che il controllo cerca - colore, spessore e tipo di
+    linea di OGNI entita' li deciderebbe chi apre il file - ed era l'unico a
+    non essere segnalato."""
+
+    def _dxf(self, con_tabella):
+        testo = ""
+        if con_tabella:
+            testo += _tabella_layer(["MU_CS_EDIFICIO"])
+        testo += _coppie("0", "SECTION", "2", "ENTITIES")
+        testo += _punto("MU_CS_EDIFICIO")
+        testo += _coppie("0", "ENDSEC", "0", "EOF")
+        percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
+        with io.open(percorso, "w", encoding="latin-1") as f:
+            f.write(testo)
+        return percorso
+
+    def test_senza_tabella_si_segnala(self):
+        esito = V.verifica(self._dxf(False))
+        self.assertTrue(any("tabella LAYER" in p for p in esito.problemi),
+                        esito.problemi)
+
+    def test_con_la_tabella_non_si_segnala(self):
+        """L'altra meta': l'avviso non deve comparire su un file sano."""
+        esito = V.verifica(self._dxf(True))
+        self.assertFalse(any("non ha la tabella LAYER" in p
+                             for p in esito.problemi), esito.problemi)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

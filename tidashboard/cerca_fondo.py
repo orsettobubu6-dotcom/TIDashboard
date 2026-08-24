@@ -328,12 +328,30 @@ def _contorno(blob):
 
 def _leggi_anelli(b, p, ordine, fuori):
     """Legge gli anelli di un poligono, tiene solo il primo (l'esterno) e
-    ritorna la posizione dopo l'ultimo."""
+    ritorna la posizione dopo l'ultimo.
+
+    IL CONTEGGIO SI CONTROLLA PRIMA DI USARLO. n_anelli e n_punti sono numeri
+    LETTI DAL FILE, e in un blob corrotto (o troncato) possono valere
+    qualunque cosa fino a 4 miliardi. La stringa di formato veniva composta
+    prima di guardare quanti byte restassero davvero: struct provava ad
+    allocare per quel numero di punti, e su un valore assurdo il risultato non
+    e' un errore di lettura ma un MemoryError, cioe' un guasto che sembra del
+    programma e non del dato.
+
+    Qui si confronta con lo spazio residuo del buffer. Un blob che promette
+    piu' punti di quanti ce ne stiano e' rotto, e si smette di leggerlo: la
+    ricerca perde quella geometria, non l'intero processo."""
+    if len(b) - p < 4:
+        return len(b)
     n_anelli = struct.unpack_from(ordine + "I", b, p)[0]
     p += 4
     for i in range(n_anelli):
+        if len(b) - p < 4:
+            return len(b)
         n_punti = struct.unpack_from(ordine + "I", b, p)[0]
         p += 4
+        if 16 * n_punti > len(b) - p:
+            return len(b)       # il blob promette piu' di quanto contiene
         if i == 0:
             valori = struct.unpack_from(ordine + "%dd" % (2 * n_punti), b, p)
             fuori.extend(zip(valori[0::2], valori[1::2]))

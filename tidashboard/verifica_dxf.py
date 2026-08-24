@@ -254,6 +254,17 @@ def verifica(percorso, gdal=None, ogr=None):
                                          len(esito.scarti)))
 
     dichiarati = set(layer_dichiarati(percorso))
+    if not dichiarati and any(lette.values()):
+        # IL CONTROLLO SALTAVA IN SILENZIO. "Nessun layer dichiarato" veniva
+        # trattato come "niente da confrontare", e il file passava: ma un DXF
+        # con entita' e senza tabella LAYER e' esso stesso non conforme -
+        # colore, spessore e tipo di linea di OGNI entita' li deciderebbe chi
+        # apre il file. E' il caso peggiore di quello che il controllo cerca,
+        # ed era l'unico a non essere segnalato.
+        esito.problemi.append(
+            "il file non ha la tabella LAYER: nessuno dei layer usati e' "
+            "dichiarato, quindi colore, spessore e tipo di linea li decide "
+            "chi apre il file. Un DXF cosi' non e' conforme.")
     if dichiarati:
         con_entita = set(n for n, v in lette.items() if v)
         mancanti = sorted(con_entita - dichiarati - set(["(senza layer)"]))
