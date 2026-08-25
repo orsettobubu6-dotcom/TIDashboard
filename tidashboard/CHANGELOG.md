@@ -1,5 +1,51 @@
 # Diario delle versioni
 
+## 1.2.9.2 — 25 agosto 2026 — sperimentale
+
+### Gli archi del DXF erano scritti con troppe poche cifre
+
+Il *bulge* — il numero con cui il DXF descrive un arco — usava la stessa
+precisione delle coordinate LV95: **tre decimali**. Per una coordinata è
+giusta, è il millimetro. Ma il bulge è un rapporto adimensionale fra 0 e 1, e
+vale la relazione esatta `saetta = bulge × corda / 2`: tre decimali lasciano
+passare uno scostamento dell'arco fino a
+
+| corda | prima | ora |
+|---|---|---|
+| 10 m | 2,50 mm | 0,000025 mm |
+| 50 m | 12,50 mm | 0,000125 mm |
+| 150 m | 37,50 mm | 0,000375 mm |
+
+E due archi del comune di prova avevano un bulge sotto `0.0005`, cioè scritti
+come **zero**: due archi diventati segmenti retti.
+
+Ora il bulge si scrive con otto decimali. La precisione delle coordinate resta
+al millimetro: portarle a otto decimali gonfierebbe ogni riga del file per
+descrivere il nanometro su una misura fatta al centimetro.
+
+### `$ANGBASE` era in radianti su un campo in gradi
+
+Il gruppo 50 dell'intestazione DXF è in **gradi**; c'era `1.571`, cioè π/2 in
+radianti. Letto come gradi non dice né est (0) né nord (90), ma un angolo e
+mezzo che non significa niente. Il piano per il registro fondiario misura gli
+azimut da nord: ora è `90`.
+
+### `$TDCREATE` era una data fissa
+
+Ogni DXF prodotto dichiarava di essere nato lo stesso giorno di tutti gli
+altri. Ora è il giorno giuliano del momento in cui il file viene scritto.
+
+### Il controllo del DXF ora guarda anche i numeri
+
+`verifica_dxf` confrontava le entità scritte con quelle rilette da GDAL. È un
+buon secondo parere, ma **cieco su una famiglia di difetti**: GDAL rilegge
+fedelmente anche un numero impreciso, quindi conferma. Il nuovo controllo
+guarda il numero scritto e segnala gli archi le cui cifre non bastano per la
+loro corda, con soglia a un decimo di millimetro sul terreno.
+
+Sul file prodotto prima della correzione trova **1 609 archi imprecisi**, il
+peggiore a 6,15 mm; su quello di adesso, zero.
+
 ## 1.2.9.1 — 25 agosto 2026 — sperimentale
 
 ### Nel DXF, `Base` e `Bottom` erano scambiati

@@ -48,6 +48,7 @@
 #    layer e' "blocks", cioe' le definizioni, e sono 24.
 import collections
 import io
+import math
 import os
 
 # I limiti del sistema di riferimento nazionale MN95/LV95, arrotondati verso
@@ -58,6 +59,86 @@ LV95_EST = (2480000.0, 2840000.0)
 LV95_NORD = (1070000.0, 1300000.0)
 
 SOTTORECORD = ("VERTEX", "SEQEND")
+
+
+# Quanto puo' spostarsi un arco per colpa delle cifre con cui e' scritto,
+# prima che sia un problema. Un decimo di millimetro sul terreno: due ordini
+# di grandezza sotto la tolleranza di un punto di confine, e comunque
+# invisibile su carta a qualunque delle otto scale del cap. 1.5.1.
+SCOSTAMENTO_ARCO_MAX = 0.0001
+
+
+def _cifre_decimali(testo):
+    return len(testo.split(".")[1]) if "." in testo else 0
+
+
+def archi_imprecisi(percorso, soglia=SCOSTAMENTO_ARCO_MAX):
+    """Gli archi scritti con troppe poche cifre per la loro corda.
+
+    COSA SI PUO' CONTROLLARE, e cosa no. Nel DXF non c'e' l'arco di partenza:
+    c'e' solo il bulge, cioe' quello che abbiamo scritto noi. Confrontarlo con
+    "l'originale" e' impossibile da qui. Cio' che invece si controlla dal file
+    da solo e' se le cifre scritte BASTANO per quella corda.
+
+    Il bulge e' tan(theta/4) e vale la relazione esatta
+
+        saetta = bulge * corda / 2
+
+    quindi mezza unita' dell'ultima cifra scritta sposta l'arco di
+    (0.5 * 10^-cifre) * corda / 2. Lineare, e senza le divergenze del raggio -
+    che per un arco dolce tende all'infinito e da' numeri enormi per uno
+    scostamento invisibile.
+
+    PERCHE' ESISTE. Il bulge usava la stessa precisione delle coordinate LV95,
+    tre decimali, che per un metro e' il millimetro e per un rapporto fra 0 e 1
+    e' pochissimo: fino a 37 mm di scostamento su una corda di 150 m, e due
+    archi del comune di prova avevano un bulge sotto 0.0005, cioe' scritti come
+    ZERO - due archi diventati segmenti retti. Il difetto non poteva emergere
+    dal confronto con GDAL, che rilegge fedelmente il numero impreciso che gli
+    abbiamo dato: un secondo parere vede solo cio' che sta nel file.
+
+    Ritorna [(scostamento_m, corda_m, bulge, cifre)], i peggiori per primi."""
+    trovati = []
+    with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+        tipo = None
+        x = y = None
+        bulge = None
+        cifre = 0
+        precedente = None        # (x, y, bulge_testo, cifre) del vertice prima
+        while True:
+            codice = f.readline()
+            if not codice:
+                break
+            valore = f.readline()
+            if not valore:
+                break
+            codice, valore = codice.strip(), valore.strip()
+            if codice == "0":
+                if tipo == "VERTEX" and x is not None and y is not None:
+                    if precedente is not None and precedente[2]:
+                        corda = math.hypot(x - precedente[0], y - precedente[1])
+                        errore = 0.5 * 10 ** (-precedente[3]) * corda / 2.0
+                        if errore > soglia:
+                            trovati.append((errore, corda, precedente[2],
+                                            precedente[3]))
+                    precedente = (x, y, bulge, cifre)
+                elif valore != "VERTEX":
+                    precedente = None    # la polilinea e' finita
+                tipo = valore
+                x = y = None
+                bulge = None
+                cifre = 0
+            elif tipo == "VERTEX":
+                if codice == "10":
+                    x = float(valore)
+                elif codice == "20":
+                    y = float(valore)
+                elif codice == "42":
+                    if abs(float(valore)) > 1e-12:
+                        bulge = valore
+                        cifre = _cifre_decimali(valore)
+    trovati.sort(reverse=True)
+    return trovati
 
 
 class Esito(object):
@@ -252,6 +333,19 @@ def verifica(percorso, gdal=None, ogr=None):
             "Un'entita' che un lettore indipendente scarta e' un'entita' che "
             "AutoCAD non disegnera'." % (esito.lette, esito.scritte, persi,
                                          len(esito.scarti)))
+
+    # Gli archi scritti con troppe poche cifre per la loro corda: un
+    # controllo sul NUMERO che abbiamo messo nel file, non sull'entita' che
+    # GDAL rilegge. E' l'unica famiglia di difetti che il secondo parere non
+    # puo' vedere - GDAL rilegge fedelmente anche un bulge impreciso.
+    imprecisi = archi_imprecisi(percorso)
+    if imprecisi:
+        peggiore, corda, bulge, cifre = imprecisi[0]
+        esito.problemi.append(
+            "%d archi scritti con troppe poche cifre: il peggiore si sposta di "
+            "%.1f mm (bulge %s, %d decimali, corda %.1f m). Con quel numero di "
+            "cifre l'arco che il CAD ricostruisce non e' quello misurato."
+            % (len(imprecisi), peggiore * 1000, bulge, cifre, corda))
 
     dichiarati = set(layer_dichiarati(percorso))
     if not dichiarati and any(lette.values()):

@@ -267,5 +267,66 @@ class TestSenzaTabellaLayer(unittest.TestCase):
 
 
 
+class TestArchiImprecisi(unittest.TestCase):
+    """Il bulge scritto con troppe poche cifre per la sua corda.
+
+    E' l'unica famiglia di difetti che il confronto con GDAL non puo' vedere:
+    GDAL rilegge fedelmente anche un numero impreciso, quindi il secondo
+    parere conferma il primo. Qui si guarda il NUMERO, non l'entita'.
+
+    Vale la relazione esatta saetta = bulge * corda / 2, quindi mezza unita'
+    dell'ultima cifra sposta l'arco di (0.5 * 10^-cifre) * corda / 2."""
+
+    def _polilinea(self, bulge, corda=100.0):
+        """Due vertici a distanza nota, il primo con il bulge dato."""
+        testo = _tabella_layer(["MU_CS_EDIFICIO"])
+        testo += _coppie("0", "SECTION", "2", "ENTITIES")
+        testo += _coppie("0", "POLYLINE", "8", "MU_CS_EDIFICIO", "66", "1")
+        testo += _coppie("0", "VERTEX", "8", "MU_CS_EDIFICIO",
+                         "10", "%.3f" % CX, "20", "%.3f" % CY, "30", "0.0",
+                         "42", bulge)
+        testo += _coppie("0", "VERTEX", "8", "MU_CS_EDIFICIO",
+                         "10", "%.3f" % (CX + corda), "20", "%.3f" % CY,
+                         "30", "0.0")
+        testo += _coppie("0", "SEQEND", "8", "MU_CS_EDIFICIO")
+        testo += _coppie("0", "ENDSEC", "0", "EOF")
+        percorso = os.path.join(tempfile.mkdtemp(), "arco.dxf")
+        with io.open(percorso, "w", encoding="latin-1") as f:
+            f.write(testo)
+        return percorso
+
+    def test_tre_decimali_su_una_corda_lunga_si_segnalano(self):
+        """Com'era prima: 0.5e-3 * 100 / 2 = 25 mm di scostamento."""
+        trovati = V.archi_imprecisi(self._polilinea("0.170", corda=100.0))
+        self.assertEqual(len(trovati), 1, trovati)
+        scostamento, corda, bulge, cifre = trovati[0]
+        self.assertAlmostEqual(scostamento, 0.025, places=4)
+        self.assertEqual(cifre, 3)
+        self.assertAlmostEqual(corda, 100.0, places=3)
+
+    def test_otto_decimali_vanno_bene(self):
+        """Com'e' adesso: lo stesso arco si sposta di 2.5 decimillesimi di
+        millimetro."""
+        self.assertEqual(V.archi_imprecisi(self._polilinea("0.17012345",
+                                                           corda=100.0)), [])
+
+    def test_una_polilinea_dritta_non_ha_archi(self):
+        """Il bulge zero non e' un arco impreciso: e' un segmento."""
+        self.assertEqual(V.archi_imprecisi(self._polilinea("0.0")), [])
+
+    def test_la_corda_conta_quanto_le_cifre(self):
+        """Le stesse tre cifre su una corda corta stanno sotto la soglia: il
+        controllo non e' sul numero di decimali, e' sullo scostamento."""
+        self.assertEqual(V.archi_imprecisi(self._polilinea("0.170", corda=0.2)),
+                         [])
+        self.assertTrue(V.archi_imprecisi(self._polilinea("0.170", corda=10.0)))
+
+    def test_la_verifica_lo_riporta_fra_i_problemi(self):
+        esito = V.verifica(self._polilinea("0.170", corda=100.0))
+        self.assertTrue(any("archi scritti con troppe poche cifre" in p
+                            for p in esito.problemi), esito.problemi)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
