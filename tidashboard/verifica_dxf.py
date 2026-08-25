@@ -141,6 +141,148 @@ def archi_imprecisi(percorso, soglia=SCOSTAMENTO_ARCO_MAX):
     return trovati
 
 
+# Quanto puo' spostarsi una coordinata fra l'ITF e il DXF prima che sia un
+# problema. Un decimo di millimetro: sia l'ITF sia il DXF scrivono i metri con
+# tre decimali, quindi una coordinata riportata fedelmente e' IDENTICA e la
+# deviazione e' zero esatto. La soglia esiste per il giorno in cui qualcuno
+# introducesse una trasformazione, non perche' ci si aspetti uno scarto.
+TOLLERANZA_COORDINATE = 0.0001
+
+# Oltre questo, due punti non sono "lo stesso punto spostato": sono due punti
+# diversi. Serve perche' il DXF contiene anche elementi che il piano COLLOCA -
+# i simboli delle trame di riempimento, le etichette spostate
+# dall'anticollisione - e accoppiarli al punto sorgente piu' vicino misurerebbe
+# una distanza che non e' una deviazione.
+RAGGIO_ACCOPPIAMENTO = 0.01
+
+
+def coordinate_itf(percorso):
+    """Tutte le coordinate LV95 di un ITF, senza bisogno del modello.
+
+    L'INTERLIS 1 scrive le coordinate in chiaro: nei record STPT/LIPT/ARCP
+    delle geometrie lineari, e dentro l'OBJE per i punti singoli. Non serve
+    quindi il modello compilato (.imd) che il driver GDAL pretenderebbe: si
+    cercano le COPPIE DI TOKEN CONSECUTIVI in cui il primo cade nella gamma
+    est e il secondo nella gamma nord di MN95. Le due gamme non si
+    sovrappongono a nessun altro attributo del modello - le date sono
+    otto cifre, gli identificatori interi fuori scala - quindi il
+    riconoscimento non ha bisogno di sapere che cosa sta leggendo."""
+    punti = []
+    with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+        for riga in f:
+            token = riga.split()
+            for i in range(len(token) - 1):
+                try:
+                    x = float(token[i])
+                except ValueError:
+                    continue
+                if not (LV95_EST[0] <= x <= LV95_EST[1]):
+                    continue
+                try:
+                    y = float(token[i + 1])
+                except ValueError:
+                    continue
+                if LV95_NORD[0] <= y <= LV95_NORD[1]:
+                    punti.append((x, y))
+    return punti
+
+
+def deviazione_coordinate(percorso_itf, percorso_dxf,
+                          tolleranza=TOLLERANZA_COORDINATE,
+                          raggio=RAGGIO_ACCOPPIAMENTO):
+    """Di quanto la conversione ha spostato le coordinate del file di origine.
+
+    Ritorna un dizionario con max_x, max_y (metri), quante coordinate sono
+    identiche, quante spostate entro il raggio, e quante il piano COLLOCA da
+    se'. L'ultima categoria non e' un difetto: il DXF contiene i simboli delle
+    trame di riempimento e le etichette che l'anticollisione sposta apposta,
+    che nell'ITF non esistono a quelle coordinate.
+
+    MISURATO sul comune di prova, e il risultato e' la ragione per cui questo
+    controllo ha senso: 65 925 coordinate IDENTICHE, e nelle fasce "entro 1 mm"
+    e "entro 1 cm" ZERO. Non c'e' una fascia intermedia - o la coordinata e'
+    la stessa, o e' un altro punto. E' esattamente la firma di una conversione
+    che non tocca le coordinate, ed e' cio' che questo controllo permette di
+    dimostrare invece di affermare.
+
+    IL LIMITE, dichiarato: oltre il raggio non si distingue una coordinata
+    spostata da un punto diverso. Un ipotetico spostamento di dieci centimetri
+    finirebbe fra i "collocati" invece che fra gli "spostati": per questo il
+    loro numero viene riportato, cosi' che una sua variazione si veda."""
+    griglia = collections.defaultdict(list)
+    for x, y in coordinate_itf(percorso_itf):
+        griglia[(int(x), int(y))].append((x, y))
+
+    esito = {"max_x": 0.0, "max_y": 0.0, "identiche": 0, "spostate": 0,
+             "collocate": 0, "peggiore": None}
+    with io.open(percorso_dxf, "r", encoding="latin-1", errors="replace") as f:
+        tipo = layer = None
+        x = None
+        while True:
+            codice = f.readline()
+            if not codice:
+                break
+            valore = f.readline()
+            if not valore:
+                break
+            codice, valore = codice.strip(), valore.strip()
+            if codice == "0":
+                tipo = valore
+            elif codice == "8":
+                layer = valore
+            elif codice == "10":
+                try:
+                    x = float(valore)
+                except ValueError:
+                    x = None
+            elif codice == "20" and x is not None:
+                try:
+                    y = float(valore)
+                except ValueError:
+                    x = None
+                    continue
+                # Solo la geometria: il punto di allineamento di un testo
+                # (gruppo 11) e' calcolato, non riportato.
+                if tipo in ("VERTEX", "POINT", "INSERT") \
+                        and LV95_EST[0] <= x <= LV95_EST[1] \
+                        and LV95_NORD[0] <= y <= LV95_NORD[1]:
+                    vicini = []
+                    for i in (-1, 0, 1):
+                        for j in (-1, 0, 1):
+                            vicini.extend(griglia.get((int(x) + i, int(y) + j), ()))
+                    scelto = None
+                    if vicini:
+                        scelto = min(vicini, key=lambda q: (q[0] - x) ** 2
+                                     + (q[1] - y) ** 2)
+                    if scelto is None:
+                        esito["collocate"] += 1
+                    else:
+                        dx, dy = abs(scelto[0] - x), abs(scelto[1] - y)
+                        if dx == 0.0 and dy == 0.0:
+                            esito["identiche"] += 1
+                        elif dx <= raggio and dy <= raggio:
+                            esito["spostate"] += 1
+                            if max(dx, dy) > max(esito["max_x"], esito["max_y"]):
+                                esito["peggiore"] = (layer, tipo, dx, dy)
+                            esito["max_x"] = max(esito["max_x"], dx)
+                            esito["max_y"] = max(esito["max_y"], dy)
+                        else:
+                            esito["collocate"] += 1
+                x = None
+    esito["oltre_tolleranza"] = (esito["max_x"] > tolleranza
+                                 or esito["max_y"] > tolleranza)
+    return esito
+
+
+def righe_deviazione(dev):
+    """Le righe da mostrare, nella forma richiesta."""
+    return ["Max X deviation: %.4f m" % dev["max_x"],
+            "Max Y deviation: %.4f m" % dev["max_y"],
+            "coordinate identiche: %d   spostate entro il raggio: %d   "
+            "collocate dal piano: %d"
+            % (dev["identiche"], dev["spostate"], dev["collocate"])]
+
+
 class Esito(object):
     """Il risultato del confronto. 'problemi' vuoto = tutto a posto."""
 

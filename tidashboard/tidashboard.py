@@ -5494,6 +5494,30 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return
         for riga in _verifica_dxf.righe_di_esito(esito):
             self.log(riga, Qgis.Critical if riga.strip().startswith("❌") else Qgis.Info)
+
+        # PRECISIONE ITF -> DXF: l'unico controllo che confronta l'uscita con
+        # l'INGRESSO, e non il DXF con se stesso. Serve a DIMOSTRARE che la
+        # conversione non ha toccato le coordinate, invece di affermarlo.
+        # Costa mezzo secondo su un comune intero, quindi resta nel thread
+        # dell'interfaccia insieme al resto del riassunto.
+        itf_convertito = self.txt_geobau_itf.text().strip()
+        if os.path.isfile(itf_convertito):
+            try:
+                dev = _verifica_dxf.deviazione_coordinate(itf_convertito,
+                                                          str(dxf_path))
+            except Exception as e:              # un ITF illeggibile non e' un
+                self.log("   ⚠️ Deviazione delle coordinate non misurata: %s"
+                         % e, Qgis.Warning)     # motivo per bocciare il DXF
+            else:
+                livello = Qgis.Critical if dev["oltre_tolleranza"] else Qgis.Info
+                for riga in _verifica_dxf.righe_deviazione(dev):
+                    self.log("   📏 %s" % riga, livello)
+                if dev["oltre_tolleranza"]:
+                    esito.problemi.append(
+                        "le coordinate del DXF non coincidono con quelle "
+                        "dell'ITF: scarto massimo %.4f m in X, %.4f m in Y"
+                        % (dev["max_x"], dev["max_y"]))
+
         if esito.ok:
             self.log("✅ Esportazione DXF completata e riletta!", Qgis.Success)
             self._segna_scheda_fatta(self.pagina_dxf, "2. Conversione DXF")

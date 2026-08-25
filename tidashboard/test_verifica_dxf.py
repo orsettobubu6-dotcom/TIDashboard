@@ -328,5 +328,77 @@ class TestArchiImprecisi(unittest.TestCase):
 
 
 
+class TestDeviazioneCoordinate(unittest.TestCase):
+    """Di quanto la conversione ha spostato le coordinate dell'ITF.
+
+    E' l'unico controllo che confronta l'uscita con l'INGRESSO: gli altri
+    guardano il DXF da solo. Serve a dimostrare - non ad affermare - che la
+    conversione non tocca le coordinate."""
+
+    def _itf(self, punti):
+        percorso = os.path.join(tempfile.mkdtemp(), "prova.itf")
+        with io.open(percorso, "w", encoding="latin-1") as f:
+            f.write("SCNT\nMODL MD01MUTI7MN95\nTABL Punto_di_confine\n")
+            for x, y in punti:
+                f.write("OBJE 1 2 %.3f %.3f 9.0 0\n" % (x, y))
+            f.write("ETAB\n")
+        return percorso
+
+    def _dxf(self, punti, tipo="VERTEX"):
+        testo = _tabella_layer(["MU_PUNTI"])
+        testo += _coppie("0", "SECTION", "2", "ENTITIES")
+        for x, y in punti:
+            testo += _coppie("0", tipo, "8", "MU_PUNTI",
+                             "10", "%.3f" % x, "20", "%.3f" % y, "30", "0.0")
+        testo += _coppie("0", "ENDSEC", "0", "EOF")
+        percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
+        with io.open(percorso, "w", encoding="latin-1") as f:
+            f.write(testo)
+        return percorso
+
+    def test_coordinate_riportate_fedelmente(self):
+        punti = [(CX, CY), (CX + 10, CY + 5), (CX - 3.25, CY + 0.5)]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(punti))
+        self.assertEqual(d["max_x"], 0.0)
+        self.assertEqual(d["max_y"], 0.0)
+        self.assertEqual(d["identiche"], 3)
+        self.assertFalse(d["oltre_tolleranza"])
+
+    def test_una_coordinata_spostata_si_vede(self):
+        """5 mm su un vertice: il controllo deve dirlo, non mediarlo via."""
+        punti = [(CX, CY), (CX + 10, CY + 5)]
+        mossi = [(CX, CY), (CX + 10.005, CY + 5)]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(mossi))
+        self.assertAlmostEqual(d["max_x"], 0.005, places=4)
+        self.assertEqual(d["max_y"], 0.0)
+        self.assertEqual(d["spostate"], 1)
+        self.assertTrue(d["oltre_tolleranza"])
+
+    def test_quello_che_il_piano_colloca_non_e_una_deviazione(self):
+        """I simboli delle trame e le etichette spostate dall'anticollisione
+        stanno dove il piano li mette, non dove sta il dato: contarli come
+        deviazione misurerebbe una cosa che non e' un errore."""
+        punti = [(CX, CY)]
+        lontani = [(CX, CY), (CX + 300, CY + 300)]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(lontani))
+        self.assertEqual(d["identiche"], 1)
+        self.assertEqual(d["collocate"], 1)
+        self.assertFalse(d["oltre_tolleranza"])
+
+    def test_le_coordinate_si_leggono_senza_il_modello(self):
+        """L'ITF le scrive in chiaro: non serve il modello compilato che il
+        driver GDAL pretenderebbe."""
+        punti = [(CX, CY), (CX + 1, CY + 1)]
+        lette = V.coordinate_itf(self._itf(punti))
+        self.assertEqual(sorted(lette), sorted(punti))
+
+    def test_le_righe_hanno_la_forma_chiesta(self):
+        d = V.deviazione_coordinate(self._itf([(CX, CY)]), self._dxf([(CX, CY)]))
+        righe = V.righe_deviazione(d)
+        self.assertEqual(righe[0], "Max X deviation: 0.0000 m")
+        self.assertEqual(righe[1], "Max Y deviation: 0.0000 m")
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
