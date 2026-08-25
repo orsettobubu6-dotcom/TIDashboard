@@ -1,5 +1,49 @@
 # Diario delle versioni
 
+## 1.2.9.1 — 25 agosto 2026 — sperimentale
+
+### Nel DXF, `Base` e `Bottom` erano scambiati
+
+Il gruppo 73 di un testo DXF vale, secondo la specifica: `0` = Baseline,
+`1` = Bottom, `2` = Middle, `3` = Top. Il traduttore mappava `Base` su `1` e
+`Bottom` su `0`: ogni scritta ancorata a quei due valori usciva spostata in
+verticale della profondità dei discendenti del carattere. Sul comune di prova
+sono **97 525 iscrizioni su 135 980**, il 71,7 %.
+
+**Due lettori indipendenti non sono d'accordo su quei due codici.** Scritto un
+DXF con gruppo 73 = 0, 1, 2, 3 e riletto:
+
+| gruppo 73 | ezdxf 1.4.4 | GDAL |
+|---|---|---|
+| 0 | **BASELINE** | bottom |
+| 1 | **BOTTOM** | baseline |
+| 2 | MIDDLE | middle |
+| 3 | TOP | top |
+
+Su 2 e 3 concordano. Si segue la specifica, cioè ezdxf.
+
+Ed è il motivo per cui il difetto non era mai emerso: il controllo del plugin
+rilegge il DXF **con GDAL**, che scambia esattamente gli stessi due codici. I
+due errori si annullavano e il secondo parere confermava il primo.
+
+La correzione è stata verificata **sul binario**: stesso ITF convertito con il
+traduttore vecchio e con quello nuovo, confronto riga per riga di 2 833 520
+righe. Differenze: 6 048 sul solo gruppo 73, più la riga del watermark che
+cambia a ogni esecuzione. Nient'altro si è mosso.
+
+> **Da guardare in un CAD.** ezdxf dice cosa dice la specifica; solo AutoCAD o
+> BricsCAD dicono cosa fa il programma con cui si lavora davvero. Se si
+> comportassero come GDAL, questa correzione andrebbe rifatta al contrario.
+
+### Il DXF non può più sovrascrivere il file da cui nasce
+
+Il traduttore apre il file di destinazione troncandolo. Se il campo DXF
+puntasse all'ITF — un percorso incollato male, una scelta sbagliata nel
+dialogo — la conversione cancellerebbe il dato di consegna del Cantone e poi
+fallirebbe, perché non avrebbe più niente da leggere. Ora la conversione si
+ferma prima di partire se il DXF coincide con l'ITF, con il modello `.ili` o
+con il traduttore stesso, confrontando i percorsi risolti.
+
 ## 1.2.9 — 25 agosto 2026 — sperimentale
 
 Gli ultimi cinque difetti segnalati dalla valutazione esterna. Con questa
