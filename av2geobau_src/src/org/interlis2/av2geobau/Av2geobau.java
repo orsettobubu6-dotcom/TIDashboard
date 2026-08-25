@@ -466,10 +466,24 @@ public class Av2geobau {
         writer.write(DxfUtil.toString(70, "2"));
         writer.write(DxfUtil.toString(9, "$AUPREC"));
         writer.write(DxfUtil.toString(70, "3"));
+        // $TDCREATE: la data di creazione, in giorni giuliani. Era un numero
+        // FISSO - 2461181.513090278 - quindi ogni DXF prodotto dichiarava di
+        // essere nato lo stesso giorno di tutti gli altri. Ora si scrive
+        // quando il file viene scritto davvero. L'ora e' quella LOCALE, come
+        // la scrivono i CAD: 2440587.5 e' il giorno giuliano dell'epoca Unix.
+        long adesso = System.currentTimeMillis();
+        double giornoGiuliano =
+            (adesso + java.util.TimeZone.getDefault().getOffset(adesso))
+            / 86400000.0 + 2440587.5;
         writer.write(DxfUtil.toString(9, "$TDCREATE"));
-        writer.write(DxfUtil.toString(40, "2461181.5130902780219913"));
+        writer.write(DxfUtil.toString(40, giornoGiuliano, 8));
+        // $ANGBASE: la direzione dell'angolo zero, sul gruppo 50, che in DXF
+        // e' in GRADI. C'era 1.571, cioe' pi/2 in RADIANTI: un'unita' sbagliata
+        // che, letta come gradi, non dice ne' est (0) ne' nord (90) ma un
+        // angolo di un grado e mezzo che non significa niente. Il piano per il
+        // registro fondiario misura gli azimut da NORD.
         writer.write(DxfUtil.toString(9, "$ANGBASE"));
-        writer.write(DxfUtil.toString(50, "1.571"));
+        writer.write(DxfUtil.toString(50, "90"));
         writer.write(DxfUtil.toString(9, "$ANGDIR"));
         writer.write(DxfUtil.toString(70, "1"));
         writer.write(DxfUtil.toString(9, "$PLINEGEN"));

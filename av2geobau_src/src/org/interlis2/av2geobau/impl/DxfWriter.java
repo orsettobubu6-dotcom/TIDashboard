@@ -86,6 +86,28 @@ public class DxfWriter {
     public static final String LT_CONF_GIUR_COMUNALE = "1100400000";
     public static final String LT_LIMITE_COPERTURA_SUOLO = "0200000000";
     private static int precision = 3;
+    // IL BULGE NON E' UNA COORDINATA. Fino a oggi usava la stessa precisione
+    // dei metri LV95 - tre decimali - e per una coordinata e' giusta: il
+    // millimetro. Ma il bulge e' un RAPPORTO adimensionale, tan(theta/4),
+    // che sugli archi dolci vale poche centesime: tre decimali ne conservano
+    // due cifre significative, e l'arco che il CAD ricostruisce non e' piu'
+    // quello che il geometra ha misurato.
+    //
+    // MISURATO, errore sul raggio per mezza unita' dell'ultima cifra:
+    //
+    //   bulge  corda    3 decimali    8 decimali
+    //   0.258   50 m      8.8 cm      0.000001 m
+    //   0.100   50 m       62 cm      0.000006 m
+    //   0.050   50 m      2.47 m      0.000025 m
+    //
+    // Sugli archi dolci la perdita e' METRICA. Il difetto e' emerso perche'
+    // un controllo esterno ha rifiutato una nostra conversione dicendo che il
+    // centro dell'arco ricostruito era fuori di 1.1 cm: aveva ragione.
+    //
+    // Non si alza la precisione GENERALE: portare le coordinate a otto
+    // decimali gonfierebbe ogni riga del file per descrivere il nanometro su
+    // una misura fatta al centimetro.
+    private static final int PRECISIONE_BULGE = 8;
 
     /** I decimali con cui vengono scritte le coordinate. Serve a chi riscrive
      * una coordinata a posteriori (AntiCollisioneEtichette) per formattarla
@@ -477,7 +499,7 @@ public class DxfWriter {
             }
             if (serializable instanceof ArcSegment && !((ArcSegment)(object = (ArcSegment)serializable)).isStraight()) {
                 double d = DxfWriter.calcBulge((ArcSegment)object);
-                String string2 = DxfUtil.toString(42, d, precision);
+                String string2 = DxfUtil.toString(42, d, PRECISIONE_BULGE);
                 stringBuffer.append(string2);
             }
             stringBuffer.append(DxfUtil.toString(70, bl ? 32 : 0));
