@@ -155,6 +155,28 @@ TOLLERANZA_COORDINATE = 0.0001
 # una distanza che non e' una deviazione.
 RAGGIO_ACCOPPIAMENTO = 0.01
 
+# Quota minima di coordinate riportate IDENTICHE perche' la conversione sia
+# credibile.
+#
+# PERCHE' SERVE, e non basta lo scarto massimo. Provando a ingannare il
+# controllo con guasti veri, uno scostamento GRANDE gli sfugge: se tutte le
+# coordinate si spostano di un metro, nessuna trova piu' il proprio punto di
+# origine entro il raggio, tutte finiscono fra le "collocate dal piano" e lo
+# scarto massimo torna 0.0010 m - un numero rassicurante e falso. Il segnale
+# vero non e' lo scarto: e' il CROLLO delle coordinate identiche.
+#
+# La soglia non e' scelta a occhio. Misurata su due comuni interi:
+#     5112000101   65 925 su  90 735 = 72.7%
+#     5251000201   98 731 su 130 949 = 75.4%
+# contro i casi guasti costruiti apposta:
+#     tutto spostato di 5 mm            0.0%
+#     tutto spostato di 1 m             0.6%
+#     arrotondato al centimetro         0.7%
+#     arrotondato al decimetro          0.008%
+# Fra il 73% del sano e l'1% del rotto c'e' un abisso: meta' e' lontana da
+# tutt'e due.
+QUOTA_IDENTICHE_MINIMA = 0.5
+
 
 def coordinate_itf(percorso):
     """Tutte le coordinate LV95 di un ITF, senza bisogno del modello.
@@ -269,18 +291,51 @@ def deviazione_coordinate(percorso_itf, percorso_dxf,
                         else:
                             esito["collocate"] += 1
                 x = None
+    confrontate = esito["identiche"] + esito["spostate"] + esito["collocate"]
+    esito["confrontate"] = confrontate
+    esito["quota_identiche"] = (float(esito["identiche"]) / confrontate
+                                if confrontate else 0.0)
     esito["oltre_tolleranza"] = (esito["max_x"] > tolleranza
                                  or esito["max_y"] > tolleranza)
+    # Il secondo verdetto, indipendente dal primo: vedi QUOTA_IDENTICHE_MINIMA.
+    #
+    # E VALE ANCHE QUANDO NON C'E' NIENTE DA CONFRONTARE. La prima versione
+    # chiedeva "confrontate > 0", e scambiando X con Y nel DXF - una prova
+    # costruita apposta per ingannarlo - i punti uscivano dalle gamme di MN95,
+    # non ne restava nessuno, e "zero confronti" usciva come "Max deviation
+    # 0.0000 m": una misura VUOTA riportata come esito buono, sul file piu'
+    # rotto di tutti. Un controllo che non ha potuto controllare niente non ha
+    # trovato niente di buono.
+    esito["troppe_non_coincidono"] = \
+        esito["quota_identiche"] < QUOTA_IDENTICHE_MINIMA
     return esito
 
 
 def righe_deviazione(dev):
     """Le righe da mostrare, nella forma richiesta."""
-    return ["Max X deviation: %.4f m" % dev["max_x"],
-            "Max Y deviation: %.4f m" % dev["max_y"],
-            "coordinate identiche: %d   spostate entro il raggio: %d   "
-            "collocate dal piano: %d"
-            % (dev["identiche"], dev["spostate"], dev["collocate"])]
+    righe = ["Max X deviation: %.4f m" % dev["max_x"],
+             "Max Y deviation: %.4f m" % dev["max_y"],
+             "coordinate identiche: %d di %d (%.1f%%)   spostate: %d   "
+             "collocate dal piano: %d"
+             % (dev["identiche"], dev.get("confrontate", 0),
+                100.0 * dev.get("quota_identiche", 0.0), dev["spostate"],
+                dev["collocate"])]
+    if not dev.get("confrontate"):
+        righe.append(
+            "ATTENZIONE: nessuna coordinata confrontabile. Nel DXF non c'e' "
+            "un solo punto nelle gamme di MN95, oppure nell'ITF non ce n'e' "
+            "nessuna: il controllo non ha potuto verificare niente, e questo "
+            "NON vuol dire che sia tutto a posto.")
+    elif dev.get("troppe_non_coincidono"):
+        # Si dice la cosa vera, non lo scarto massimo: quando quasi nulla
+        # coincide, quel numero e' calcolato su una manciata di accoppiamenti
+        # casuali e vale meno di zero, perche' rassicura.
+        righe.append(
+            "ATTENZIONE: solo il %.1f%% delle coordinate si ritrova identico "
+            "nel DXF. Lo scarto massimo qui sopra e' calcolato sui pochi punti "
+            "accoppiati e NON misura lo spostamento vero."
+            % (100.0 * dev["quota_identiche"]))
+    return righe
 
 
 class Esito(object):

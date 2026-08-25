@@ -392,6 +392,35 @@ class TestDeviazioneCoordinate(unittest.TestCase):
         lette = V.coordinate_itf(self._itf(punti))
         self.assertEqual(sorted(lette), sorted(punti))
 
+    def test_uno_spostamento_GRANDE_non_passa_per_piccolo(self):
+        """LA DEBOLEZZA DEL METODO, trovata provando a ingannarlo. Se TUTTE le
+        coordinate si spostano di un metro, nessuna ritrova la propria origine
+        entro il raggio: finiscono fra le "collocate", e lo scarto massimo
+        torna un numero minuscolo calcolato su accoppiamenti casuali. Il
+        segnale vero non e' lo scarto, e' il CROLLO delle identiche - misurato
+        sul sano al 72.7% e 75.4% su due comuni, contro lo 0.6% del guasto."""
+        # I punti sono distanziati di 7 m e non di 1: spostandoli di un metro
+        # ognuno finirebbe esattamente sopra il successivo, e il controllo li
+        # troverebbe tutti "identici" per un accidente della prova.
+        punti = [(CX + 7 * i, CY + 7 * i) for i in range(20)]
+        mossi = [(x + 1.0, y + 1.0) for x, y in punti]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(mossi))
+        self.assertTrue(d["troppe_non_coincidono"])
+        self.assertLess(d["quota_identiche"], 0.1)
+        self.assertTrue(any("NON misura lo spostamento vero" in r
+                            for r in V.righe_deviazione(d)))
+
+    def test_zero_confronti_non_e_un_esito_buono(self):
+        """L'altra trappola: scambiando X con Y i punti escono dalle gamme di
+        MN95, non ne resta nessuno da confrontare, e "0.0000 m" usciva come
+        esito buono sul file piu' rotto di tutti. Un controllo che non ha
+        potuto controllare niente non ha trovato niente di buono."""
+        d = V.deviazione_coordinate(self._itf([(CX, CY)]), self._dxf([(5.0, 7.0)]))
+        self.assertEqual(d["confrontate"], 0)
+        self.assertTrue(d["troppe_non_coincidono"])
+        self.assertTrue(any("non ha potuto verificare niente" in r
+                            for r in V.righe_deviazione(d)))
+
     def test_le_righe_hanno_la_forma_chiesta(self):
         d = V.deviazione_coordinate(self._itf([(CX, CY)]), self._dxf([(CX, CY)]))
         righe = V.righe_deviazione(d)

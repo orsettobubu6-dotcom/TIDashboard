@@ -5509,10 +5509,18 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 self.log("   ⚠️ Deviazione delle coordinate non misurata: %s"
                          % e, Qgis.Warning)     # motivo per bocciare il DXF
             else:
-                livello = Qgis.Critical if dev["oltre_tolleranza"] else Qgis.Info
+                storto = (dev["oltre_tolleranza"]
+                          or dev["troppe_non_coincidono"])
                 for riga in _verifica_dxf.righe_deviazione(dev):
-                    self.log("   📏 %s" % riga, livello)
-                if dev["oltre_tolleranza"]:
+                    self.log("   📏 %s" % riga,
+                             Qgis.Critical if storto else Qgis.Info)
+                if dev["troppe_non_coincidono"]:
+                    esito.problemi.append(
+                        "solo il %.1f%% delle coordinate dell'ITF si ritrova "
+                        "identico nel DXF: la conversione le ha spostate, e di "
+                        "quanto non si puo' dire dallo scarto massimo"
+                        % (100.0 * dev["quota_identiche"]))
+                elif dev["oltre_tolleranza"]:
                     esito.problemi.append(
                         "le coordinate del DXF non coincidono con quelle "
                         "dell'ITF: scarto massimo %.4f m in X, %.4f m in Y"
