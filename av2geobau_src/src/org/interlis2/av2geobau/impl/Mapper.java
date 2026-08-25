@@ -385,11 +385,28 @@ public class Mapper {
         if (string.equals("Half")) {
             return "2";
         }
+        // BASE E BOTTOM ERANO SCAMBIATI. Il gruppo 73 del TEXT vale, secondo
+        // la specifica DXF: 0 = Baseline, 1 = Bottom, 2 = Middle, 3 = Top.
+        // Qui Base finiva su 1 (bottom) e Bottom su 0 (baseline), cioe' ogni
+        // scritta ancorata a quei due valori usciva spostata in verticale
+        // della profondita' dei discendenti del carattere. Sul comune di
+        // prova sono 97 525 iscrizioni su 135 980, il 71.7%.
+        //
+        // MISURATO CON DUE LETTORI, e non sono d'accordo fra loro: scritto un
+        // DXF con gruppo 73 = 0,1,2,3 e riletto,
+        //     ezdxf 1.4.4   0 -> BASELINE, 1 -> BOTTOM   (la specifica)
+        //     GDAL          0 -> bottom,   1 -> baseline (scambiati)
+        // Su 2 e 3 concordano. Si segue la specifica.
+        //
+        // E' anche il motivo per cui il difetto non era mai emerso: il
+        // controllo del plugin (verifica_dxf.py) rilegge il DXF con GDAL, che
+        // scambia esattamente gli stessi due codici - i due errori si
+        // annullavano e il secondo parere confermava il primo.
         if (string.equals("Base")) {
-            return "1";
+            return "0";
         }
         if (string.equals("Bottom")) {
-            return "0";
+            return "1";
         }
         return null;
     }
