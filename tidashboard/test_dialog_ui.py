@@ -903,6 +903,60 @@ class TestLocalitaMaiuscolo(unittest.TestCase):
                          'upper("nomenclatura_nome_di_localita_nome")')
 
 
+class TestDxfNonSovrascriveLOriginale(unittest.TestCase):
+    """av2geobau apre il DXF con un FileOutputStream, che TRONCA il file di
+    destinazione: se il campo DXF puntasse all'ITF, la conversione
+    cancellerebbe il dato di consegna del Cantone e poi fallirebbe, perche'
+    non avrebbe piu' niente da leggere. Ne' il jar ne' il plugin lo
+    impedivano."""
+
+    def _dlg(self, itf, dxf):
+        dlg = TIDashboardDialog()
+        dlg.txt_geobau_itf.setText(itf)
+        dlg.txt_geobau_dxf.setText(dxf)
+        return dlg
+
+    def test_dxf_uguale_all_itf_viene_rifiutato(self):
+        cartella = tempfile.mkdtemp()
+        itf = os.path.join(cartella, "consegna.itf")
+        with open(itf, "wb") as f:
+            f.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n")
+        prima = os.path.getsize(itf)
+        dlg = self._dlg(itf, itf)
+        chiamate = []
+        vecchio = cd.QMessageBox.critical
+        cd.QMessageBox.critical = staticmethod(
+            lambda *a, **k: chiamate.append(a[2] if len(a) > 2 else ""))
+        try:
+            dlg.run_geobau()
+        finally:
+            cd.QMessageBox.critical = vecchio
+        self.assertTrue(chiamate, "non ha avvisato")
+        self.assertIn("sovrascriverebbe", chiamate[0])
+        self.assertEqual(os.path.getsize(itf), prima,
+                         "il file di partenza e' stato toccato")
+
+    def test_lo_stesso_file_scritto_in_due_modi(self):
+        """Lo stesso file scritto con un percorso relativo e uno assoluto e'
+        sempre lo stesso file: il confronto va fatto sui percorsi RISOLTI,
+        non sul testo che l'utente ha digitato."""
+        cartella = tempfile.mkdtemp()
+        itf = os.path.join(cartella, "consegna.itf")
+        with open(itf, "wb") as f:
+            f.write(b"SCNT\r\n")
+        storto = os.path.join(cartella, "sotto", "..", "consegna.itf")
+        os.makedirs(os.path.join(cartella, "sotto"), exist_ok=True)
+        dlg = self._dlg(itf, storto)
+        chiamate = []
+        vecchio = cd.QMessageBox.critical
+        cd.QMessageBox.critical = staticmethod(lambda *a, **k: chiamate.append(1))
+        try:
+            dlg.run_geobau()
+        finally:
+            cd.QMessageBox.critical = vecchio
+        self.assertTrue(chiamate, "il percorso equivalente non e' stato visto")
+
+
 class TestPulsanteConsegna(unittest.TestCase):
     """La consegna per QGIS Server: c'e' sempre, e si accende quando c'e'
     qualcosa da consegnare."""

@@ -5308,6 +5308,38 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log("   ❌ Campi mancanti!")
             return
 
+        # IL FILE DA SCRIVERE NON PUO' ESSERE UNO DI QUELLI DA LEGGERE.
+        # av2geobau apre il DXF con un FileOutputStream, che TRONCA il file di
+        # destinazione: se il campo DXF puntasse all'ITF - un percorso
+        # incollato male, una scelta sbagliata nel dialogo - la conversione
+        # cancellerebbe il file di partenza e poi fallirebbe, perche' non ha
+        # piu' niente da leggere. Il dato di consegna del Cantone sparirebbe
+        # per un errore di battitura, e non c'e' modo di recuperarlo dal
+        # programma. Ne' il jar ne' il plugin lo impedivano.
+        #
+        # Si confrontano i percorsi RISOLTI: "..\\dati\\a.itf" e
+        # "C:\\dati\\a.itf" sono lo stesso file scritti in due modi.
+        letti = {"l'ITF da convertire": itf_path,
+                 "il modello INTERLIS": ili_path,
+                 "il traduttore av2geobau": jar_path}
+        for cosa, percorso in letti.items():
+            try:
+                stesso = (os.path.normcase(os.path.abspath(str(dxf_path)))
+                          == os.path.normcase(os.path.abspath(str(percorso))))
+            except (OSError, ValueError):
+                continue
+            if stesso:
+                QMessageBox.critical(
+                    self, "Conversione DXF",
+                    "Il file DXF da scrivere è lo stesso file di %s:\n%s\n\n"
+                    "La conversione lo sovrascriverebbe e perderesti "
+                    "l'originale. Scegli un altro nome per il DXF."
+                    % (cosa, dxf_path))
+                self.log("   ❌ DXF e %s sono lo stesso file: conversione "
+                         "annullata per non sovrascrivere l'originale" % cosa,
+                         Qgis.Critical)
+                return
+
         # La conversione DXF puo' lavorare su un ITF diverso da quello
         # importato (la spunta "ITF diverso"): e' il caso in cui un modello
         # sbagliato passerebbe piu' facilmente inosservato, perche' quel file
