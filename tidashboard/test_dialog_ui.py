@@ -2735,6 +2735,24 @@ class TestComuneAttivo(unittest.TestCase):
         dlg.aggiorna_comuni_da_dati()
         self.assertEqual(dlg._origine_data, "estrazione ITF")
 
+    def test_cambiare_comune_dalla_TENDINA_aggiorna_anche_la_data(self):
+        """Visto solo aprendo la finestra: cambiando comune la mappa si
+        filtrava, ma il cartiglio continuava a portare la data del comune di
+        prima. La tendina era agganciata al filtro dei dati e NON alla
+        rilettura della data - lo stesso difetto appena corretto, rientrato da
+        un'altra porta.
+
+        Qui non si chiama aggiorna_comuni_da_dati a mano: si tocca solo la
+        tendina, come fa chi usa il plugin."""
+        g = self._archivio()
+        dlg = self._dialog(g)
+        dlg.aggiorna_comuni_da_dati()
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        self.assertEqual(dlg._data_dai_dati, "20.05.2026")
+        dlg.combo_comune.setCurrentText("Lavertezzo")
+        self.assertEqual(dlg._data_dai_dati, "17.06.2026",
+                         "la data e' rimasta su Coldrerio")
+
     def test_la_data_segue_il_comune_scelto(self):
         g = self._archivio()
         dlg = self._dialog(g)

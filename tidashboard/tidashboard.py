@@ -727,6 +727,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._falliti_in_coda = []
         self._piano_import = None
         self._zorder_layers = []
+        self._sto_cambiando_comune = False
         self.product_mode = "gb"  # 'gb' o 'bp'
         self.plugin_dir = Path(__file__).parent
         self._java_path_cache = None  # vedi find_java(): None = mai cercato, "" = cercato e non trovato
@@ -2342,15 +2343,30 @@ class TIDashboardDialog(StiliMixin, QDialog):
         return None
 
     def _al_cambio_di_comune(self, _testo=None):
-        """La tendina del comune e' stata toccata.
+        """La tendina del comune e' stata toccata: si filtrano i dati E SI
+        RILEGGE LA DATA.
 
-        Si protegge tutto: e' agganciata a currentTextChanged, che scatta
-        anche mentre la tendina si ripopola da sola, e un errore qui
-        romperebbe il riempimento invece di cambiare un filtro."""
+        La data era rimasta fuori, e il risultato si vedeva solo aprendo la
+        finestra: cambiando comune la mappa si filtrava ma il cartiglio
+        continuava a portare la data del comune di prima - cioe' proprio il
+        difetto che avevamo appena corretto, ricomparso da un'altra porta.
+
+        Si protegge tutto: currentTextChanged scatta anche mentre la tendina
+        si ripopola da sola, e un errore qui romperebbe il riempimento invece
+        di cambiare un filtro.
+
+        La guardia contro il rientro serve perche' aggiorna_comuni_da_dati
+        riscrive la tendina, che riemette currentTextChanged."""
+        if getattr(self, "_sto_cambiando_comune", False):
+            return
+        self._sto_cambiando_comune = True
         try:
             self._applica_comune_attivo()
+            self.aggiorna_comuni_da_dati()
         except Exception as e:
-            self.log("   ⚠️ Filtro del comune non applicato: %s" % e, Qgis.Warning)
+            self.log("   ⚠️ Cambio di comune non applicato: %s" % e, Qgis.Warning)
+        finally:
+            self._sto_cambiando_comune = False
 
     def _applica_comune_attivo(self):
         """Riduce i layer caricati al comune scelto, e rilegge la data.
