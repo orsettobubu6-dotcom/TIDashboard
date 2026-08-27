@@ -2,6 +2,7 @@
 
 | versione | data | stato |
 |---|---|---|
+| [1.3.0](tidashboard/CHANGELOG.md) | 27 agosto 2026 | sperimentale |
 | [1.2.9.3](tidashboard/CHANGELOG.md) | 27 agosto 2026 | sperimentale |
 | [1.2.9.2](tidashboard/CHANGELOG.md) | 25 agosto 2026 | sperimentale |
 | [1.2.9.1](tidashboard/CHANGELOG.md) | 25 agosto 2026 | sperimentale |

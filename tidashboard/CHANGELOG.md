@@ -1,5 +1,142 @@
 # Diario delle versioni
 
+## 1.3.0 — 27 agosto 2026 — sperimentale
+
+Fino a qui il plugin lavorava su **un comune per volta**: un file ITF, un
+GeoPackage, un piano. Questa versione porta l'**archivio a più comuni**, e con
+esso tutto ciò che ne deriva.
+
+Prima di scrivere una riga ho provato l'architettura sui dati veri, importando
+Lavertezzo e Coldrerio in un GeoPackage solo. Le misure hanno deciso il
+progetto:
+
+| prova | esito |
+|---|---|
+| due comuni in un GeoPackage | riuscito, `--dataset` li tiene separati |
+| `T_datasetname` su ogni tabella | sì, e l'indice lo crea `ili2gpkg` da solo |
+| `--replace` di un comune | gli altri restano intatti |
+| costo per comune | **11 s, 6,5 MB** |
+
+Undici secondi e sei megabyte per comune vogliono dire che un archivio
+cantonale sta sotto il gigabyte e si carica in mezz'ora: **il GeoPackage
+regge, PostGIS non serve**. E siccome SQLite usa l'indice su `T_datasetname`
+(`SEARCH`, non `SCAN`), filtrare per comune resta immediato anche a 106.
+
+Non ho invece fuso gli ITF a monte con ITFCOPY, che sarebbe stata la
+scorciatoia: unire i comuni prima dell'importazione distrugge l'identità del
+comune, cioè proprio quello che serve per esportare il DXF di uno solo.
+
+### L'importazione aggiunge invece di distruggere
+
+Era il difetto peggiore che il plugin avesse. `run_import` cancellava il
+GeoPackage a ogni giro: con un comune solo era accettabile, con l'archivio a
+più comuni significa che **importare il secondo buttava via il primo**. E la
+conferma parlava di «sovrascrittura del file», non di «perdi i comuni già
+dentro», quindi rispondere *sì* era ragionevole e distruttivo. Nessuna delle
+159 prove dell'interfaccia lo copriva.
+
+Ora la decisione la prende un pianificatore che sta fuori dalla finestra:
+
+| caso | cosa fa |
+|---|---|
+| archivio assente | schema + dati, con `--createDatasetCol` |
+| comune nuovo | `--import --dataset`, schema **saltato** |
+| comune già dentro | `--replace --dataset`, gli altri intatti |
+| tutto il resto | rifiuto, con il motivo scritto |
+
+I rifiuti contano più del resto. Il più importante è l'archivio **senza
+`T_datasetname`** — uno creato da una versione precedente: aggiungendoci un
+comune, le righe già dentro resterebbero senza proprietario e nessun filtro
+potrebbe più separarle. Danno che non si vede al momento e non si disfa.
+
+### Una cartella intera, che riprende invece di ricominciare
+
+106 comuni uno alla volta non li carica nessuno. Un pulsante nuovo prende una
+cartella di `.itf` e li importa in coda. I comuni già dentro si **saltano**:
+un giro da mezz'ora interrotto a metà riprende da dove si era fermato.
+
+Un comune andato male non ferma gli altri — su cento consegne, fermarsi al
+primo file storto vorrebbe dire rifare tutto il giro dopo averlo tolto — e
+quali siano falliti si dice alla fine.
+
+Due file per lo **stesso** comune sono un rifiuto per il secondo, non una
+sovrascrittura silenziosa: quale dei due valga non lo può decidere il
+programma.
+
+### Il piano segue il comune scelto
+
+Due difetti trovati misurando l'archivio vero, ed erano lo stesso difetto
+visto da due lati: il codice leggeva l'archivio **intero** dove il piano parla
+di **un** comune.
+
+**La data era quella di un altro comune.** Il piano di Coldrerio dichiarava
+«stato al 17.06.2026» — la data di Lavertezzo — mentre i dati di Coldrerio
+erano fermi al 20.05.2026. «Stato al» è una delle nove iscrizioni
+obbligatorie (circ154_allegato2 cap. 1.5.7): era un'affermazione falsa su un
+atto ufficiale.
+
+**Il foglio si centrava sull'unione dei comuni**: 10 101 × 37 213 m invece di
+1 549 × 902 m, e nessuna delle otto scale di norma poteva contenerla — il
+piano non era producibile.
+
+Rimedio unico: filtrare per `T_datasetname`. Cambiando comune nella tendina
+ora si riducono anche i dati, non solo l'intestazione. Con **un comune solo**
+— il caso di gran lunga più frequente — nessun filtro viene applicato e il
+comportamento resta identico a prima.
+
+### Il contorno del fondo si legge anche quando è curvo (e lo è sempre)
+
+Difetto preesistente, e non piccolo. Il lettore conosceva `POLYGON` e
+`MULTIPOLYGON`, ma i fondi ticinesi non sono né l'uno né l'altro: misurato sui
+dati veri, **500 geometrie su 500 sono `CURVEPOLYGON`**, ogni anello è un
+`COMPOUNDCURVE`, e il 15% dei pezzi di confine è un arco.
+
+Il contorno usciva quindi **sempre vuoto**, e con esso la sola cosa che sappia
+dire se un fondo lungo e stretto ci starebbe nel foglio *girandolo*. Le prove
+non se ne accorgevano perché costruivano poligoni dritti, un formato che in
+questi dati non compare mai.
+
+Ora si leggono anche `CURVEPOLYGON` e `MULTISURFACE`, e gli archi si
+infittiscono ricostruendo il cerchio per i tre punti — tenere solo quei tre
+darebbe una spezzata che taglia la curva con un errore pari alla saetta, la
+stessa grandezza che ci aveva morso sul *bulge* del DXF. Sui dati veri: 2000
+contorni su 2000, 16 vertici in media, 0,01 ms per geometria.
+
+### La ricerca dice quando non ha potuto cercare
+
+Un GeoPackage senza le tabelle dei fondi, uno danneggiato e un percorso
+inesistente davano tutti e tre la lista vuota: **la stessa risposta di una
+ricerca riuscita e senza esiti**. Si leggeva «Nessun fondo trovato. Controlla
+numero, sezione e comune» e si andava a controllare dei dati che erano giusti.
+
+È lo stesso principio già applicato al controllo di deviazione del DXF: un
+controllo che non ha potuto controllare niente non ha trovato niente di buono.
+Il caso legittimo — la ricerca c'è stata e non ha trovato nulla — resta
+invariato, che è la distinzione che serviva.
+
+### Il manifest della legenda trova l'ITF giusto
+
+Il lato Java lo cerca accanto all'ITF che riceve. Si scriveva solo accanto a
+quello dell'**importazione**: due campi indipendenti, e con più comuni quasi
+mai lo stesso file. Il DXF usciva senza legenda, senza un errore. Ora si
+riscrive al momento della conversione, e se nessuno stile è stato applicato lo
+si **dice**.
+
+### Ricominciare da capo
+
+Avendo tolto la cancellazione automatica, serviva un modo esplicito di
+ripartire da zero. La conferma **nomina i comuni** che sta per buttare, invece
+di parlare genericamente di sovrascrittura, e non si cancella un file che non
+sia un nostro archivio — nemmeno rispondendo di sì.
+
+### In breve
+
+- 658 prove, undici suite. Ogni correzione è stata fatta girare contro il
+  codice precedente per verificare che fallisse davvero.
+- Chi ha un GeoPackage creato con una versione precedente deve **rifarlo**: le
+  sue tabelle non hanno la colonna che tiene separati i comuni. Il plugin lo
+  riconosce e lo dice, invece di rovinarlo.
+
 ## 1.2.9.3 — 27 agosto 2026 — sperimentale
 
 ### Si misura che la conversione non ha spostato le coordinate
