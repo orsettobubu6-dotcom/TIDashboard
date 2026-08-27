@@ -421,6 +421,46 @@ class TestDeviazioneCoordinate(unittest.TestCase):
         self.assertTrue(any("non ha potuto verificare niente" in r
                             for r in V.righe_deviazione(d)))
 
+    def test_la_ripartizione_per_layer_dice_dove(self):
+        """Il per-layer NON fa scattare allarmi: c'era un allarme suo, tarato
+        su una banda 10%-99.5%, e l'ho tolto perche' il margine misurato era di
+        due decimi di punto (il layer sano piu' basso sta al 99.7%) su due soli
+        comuni. Un allarme cosi' stretto sbaglia su una consegna buona.
+
+        Resta come RIPARTIZIONE, ordinata dal peggiore: serve a dire DOVE,
+        quando qualcos'altro ha gia' detto CHE COSA."""
+        punti = [(CX + 7 * i, CY) for i in range(100)]
+        mossi = [(x + (0.5 if i < 30 else 0.0), y)
+                 for i, (x, y) in enumerate(punti)]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(mossi))
+        self.assertEqual(d["per_layer"][0][0], "MU_PUNTI")
+        self.assertAlmostEqual(d["per_layer"][0][1], 0.70, places=2)
+        self.assertEqual(d["per_layer"][0][2], 100)
+
+    def test_un_layer_di_pochi_punti_non_entra_nella_ripartizione(self):
+        """Sotto le 20 coordinate una percentuale non dice niente, e messa in
+        fila con le altre sembrerebbe che dica qualcosa."""
+        punti = [(CX + 7 * i, CY) for i in range(5)]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(punti))
+        self.assertEqual(d["per_layer"], [])
+
+    def test_a_referto_sano_la_ripartizione_non_si_stampa(self):
+        """Sarebbero decine di righe tutte al 100.0%, e chi le vede una volta
+        smette di leggere anche quelle che contano."""
+        punti = [(CX + 7 * i, CY) for i in range(100)]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(punti))
+        righe = V.righe_deviazione(d)
+        self.assertTrue(d["per_layer"], "la ripartizione e' comunque calcolata")
+        self.assertFalse([r for r in righe if "layer MU_PUNTI" in r])
+
+    def test_quando_un_allarme_e_scattato_la_ripartizione_si_stampa(self):
+        punti = [(CX + 7 * i, CY) for i in range(100)]
+        mossi = [(x + 0.005, y) for x, y in punti]
+        d = V.deviazione_coordinate(self._itf(punti), self._dxf(mossi))
+        self.assertTrue(d["oltre_tolleranza"])
+        righe = V.righe_deviazione(d)
+        self.assertTrue([r for r in righe if "layer MU_PUNTI" in r], righe)
+
     def test_le_righe_hanno_la_forma_chiesta(self):
         d = V.deviazione_coordinate(self._itf([(CX, CY)]), self._dxf([(CX, CY)]))
         righe = V.righe_deviazione(d)

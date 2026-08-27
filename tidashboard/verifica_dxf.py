@@ -237,6 +237,8 @@ def deviazione_coordinate(percorso_itf, percorso_dxf,
 
     esito = {"max_x": 0.0, "max_y": 0.0, "identiche": 0, "spostate": 0,
              "collocate": 0, "peggiore": None}
+    per_layer = collections.Counter()
+    identiche_layer = collections.Counter()
     with io.open(percorso_dxf, "r", encoding="latin-1", errors="replace") as f:
         tipo = layer = None
         x = None
@@ -276,12 +278,14 @@ def deviazione_coordinate(percorso_itf, percorso_dxf,
                     if vicini:
                         scelto = min(vicini, key=lambda q: (q[0] - x) ** 2
                                      + (q[1] - y) ** 2)
+                    per_layer[layer] += 1
                     if scelto is None:
                         esito["collocate"] += 1
                     else:
                         dx, dy = abs(scelto[0] - x), abs(scelto[1] - y)
                         if dx == 0.0 and dy == 0.0:
                             esito["identiche"] += 1
+                            identiche_layer[layer] += 1
                         elif dx <= raggio and dy <= raggio:
                             esito["spostate"] += 1
                             if max(dx, dy) > max(esito["max_x"], esito["max_y"]):
@@ -308,6 +312,28 @@ def deviazione_coordinate(percorso_itf, percorso_dxf,
     # trovato niente di buono.
     esito["troppe_non_coincidono"] = \
         esito["quota_identiche"] < QUOTA_IDENTICHE_MINIMA
+
+    # La ripartizione per layer, dal peggiore in giu'. Serve a DIRE DOVE quando
+    # un allarme e' gia' scattato, non a farne scattare uno suo.
+    #
+    # Ci avevo messo un allarme autonomo: fuori dalla banda 10%-99.5% il layer
+    # e' "a meta'", quindi sospetto. L'idea veniva da una misura vera - su due
+    # comuni interi i layer stanno o in alto o in basso, mai in mezzo - ma il
+    # margine e' risultato di due decimi di punto: il layer sano piu' basso sta
+    # al 99.7% e la soglia al 99.5%, tarati su due soli comuni. Un allarme
+    # cosi' stretto, il giorno che sbaglia, sbaglia su una consegna buona, e un
+    # controllo che grida al lupo lo si spegne - portandosi via anche la parte
+    # che funziona. Il caso che quell'allarme copriva (una PARTE dei punti di
+    # un layer spostata di molto, il resto esatto) non ha nemmeno un meccanismo
+    # noto che lo produca: gli errori veri del convertitore sono sistematici,
+    # e quelli si vedono nello scarto massimo.
+    quote = []
+    for nome, quanti in per_layer.items():
+        if quanti < 20:
+            continue                 # troppo pochi per dire qualcosa
+        quote.append((nome, identiche_layer[nome] / float(quanti), quanti))
+    quote.sort(key=lambda t: t[1])
+    esito["per_layer"] = quote
     return esito
 
 
@@ -335,6 +361,12 @@ def righe_deviazione(dev):
             "nel DXF. Lo scarto massimo qui sopra e' calcolato sui pochi punti "
             "accoppiati e NON misura lo spostamento vero."
             % (100.0 * dev["quota_identiche"]))
+    if dev.get("oltre_tolleranza") or dev.get("troppe_non_coincidono"):
+        # Solo qui: a referto sano queste righe sarebbero una parete di numeri
+        # tutti uguali a 100.0%, e nessuno le leggerebbe piu'.
+        for nome, quota, quanti in dev.get("per_layer", [])[:5]:
+            righe.append("   layer %s: %.1f%% identiche su %d coordinate"
+                         % (nome, 100.0 * quota, quanti))
     return righe
 
 
