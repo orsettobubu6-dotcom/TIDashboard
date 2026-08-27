@@ -192,5 +192,128 @@ class TestDisallineamento(unittest.TestCase):
         self.assertEqual(A.dataset_nel_gpkg(self.g), ["422", "611"])
 
 
+class TestPianificazione(unittest.TestCase):
+    """La decisione davanti a un ITF e a un archivio. I casi che RIFIUTANO
+    contano piu' degli altri: sono quelli che, passando, lascerebbero un
+    archivio da cui non si torna indietro."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.g = os.path.join(self.d, "archivio.gpkg")
+
+    def _itf_di(self, *comuni):
+        righe = ["OBJE %d %s %s %s" % (i, n, b, nr)
+                 for i, (n, b, nr) in enumerate(comuni, 1)]
+        return _itf(self.d, _tabella("Comune", *righe),
+                    nome="c%d.itf" % len(comuni))
+
+    def _archivio(self, dataset=(), modello="MD01MUTI7MN95", con_colonna=True):
+        """Un GeoPackage con quel tanto di ili2gpkg che serve a decidere."""
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        if modello:
+            con.execute("INSERT INTO T_ILI2DB_MODEL VALUES (?)", (modello,))
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        for i, n in enumerate(dataset, 1):
+            con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (?, ?)", (i, n))
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        colonna = ", T_datasetname TEXT" if con_colonna else ""
+        con.execute("CREATE TABLE mu_fondo (T_Id INTEGER, numero TEXT%s)" % colonna)
+        con.execute("INSERT INTO gpkg_contents VALUES ('mu_fondo', 'features')")
+        con.commit()
+        con.close()
+
+    # --- si procede ---
+
+    def test_archivio_che_non_c_e_ancora(self):
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.NUOVO)
+        self.assertTrue(p.serve_schema)
+        self.assertIn("--createDatasetCol", p.flag_schema)
+        self.assertEqual(p.flag_dati, ["--import", "--dataset", "422"])
+
+    def test_un_comune_nuovo_dentro_un_archivio_che_c_e(self):
+        self._archivio(dataset=("611",))
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.AGGIUNGI)
+        self.assertFalse(p.serve_schema, "lo schema non va rifatto: cancellerebbe")
+        self.assertEqual(p.flag_dati, ["--import", "--dataset", "422"])
+        self.assertEqual(p.presenti, ["611"])
+
+    def test_un_comune_gia_presente_si_sostituisce(self):
+        self._archivio(dataset=("422", "611"))
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.SOSTITUISCI)
+        self.assertEqual(p.flag_dati, ["--replace", "--dataset", "422"])
+
+    # --- si rifiuta ---
+
+    def test_un_ITF_con_due_comuni_dentro(self):
+        """Passando, i due comuni finirebbero sotto un nome solo e il DXF
+        dell'uno conterrebbe l'altro."""
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422"),
+                                             ("Coldrerio", "5251", "611")))
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("2 comuni", p.motivo)
+        self.assertEqual(p.flag_dati, [])
+
+    def test_un_ITF_che_non_dichiara_il_comune(self):
+        vuoto = _itf(self.d, _tabella("Fondo", "OBJE 1 TI42200 12"), nome="v.itf")
+        p = A.pianifica(self.g, vuoto)
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("nessun comune", p.motivo)
+
+    def test_un_archivio_SENZA_la_colonna_dataset(self):
+        """IL RIFIUTO PIU' IMPORTANTE: un GeoPackage fatto dal plugin vecchio.
+        Aggiungendoci un comune, le righe gia' dentro resterebbero senza
+        proprietario e nessun filtro potrebbe piu' separarle - un danno che
+        non si vede al momento e che non si disfa."""
+        self._archivio(dataset=("611",), con_colonna=False)
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("T_datasetname", p.motivo)
+        self.assertIn("rifatto", p.motivo)
+
+    def test_un_file_che_non_e_un_GeoPackage(self):
+        with io.open(self.g, "w", encoding="ascii") as f:
+            f.write("questo non e' un database")
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("SQLite", p.motivo)
+
+    def test_un_GeoPackage_di_qualcun_altro(self):
+        """Un GeoPackage vero ma non fatto da ili2gpkg: importarci dentro
+        rovinerebbe il file di un altro lavoro."""
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        con.commit(); con.close()
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("ili2gpkg", p.motivo)
+
+    def test_due_modelli_nello_stesso_archivio(self):
+        self._archivio(dataset=("611",), modello="MD01MUCH24MN95I")
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")),
+                        modello_atteso="MD01MUTI7MN95")
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("MD01MUCH24MN95I", p.motivo)
+
+    def test_il_modello_giusto_passa(self):
+        self._archivio(dataset=("611",), modello="MD01MUTI7MN95")
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")),
+                        modello_atteso="MD01MUTI7MN95")
+        self.assertEqual(p.azione, A.AGGIUNGI)
+
+    def test_ogni_rifiuto_porta_un_motivo(self):
+        """Un rifiuto senza motivo e' indistinguibile da un guasto."""
+        casi = [A.pianifica("", self._itf_di(("L", "5112", "422"))),
+                A.pianifica(self.g, "C:\mai\esistito.itf"),
+                A.pianifica(self.g, self._itf_di(("L", "5112", "422"),
+                                                 ("C", "5251", "611")))]
+        for p in casi:
+            self.assertEqual(p.azione, A.RIFIUTA)
+            self.assertTrue(p.motivo and len(p.motivo) > 20, repr(p.motivo))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

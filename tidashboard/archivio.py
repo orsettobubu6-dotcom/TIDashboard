@@ -255,6 +255,179 @@ def dataset_nel_gpkg(percorso_gpkg):
     return sorted(nomi, key=lambda n: (len(n), n))
 
 
+def _e_sqlite(percorso):
+    """Header magico di SQLite. Serve a non scrivere dentro un file che non
+    e' un database solo perche' si chiama .gpkg."""
+    try:
+        with open(str(percorso), "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except (IOError, OSError):
+        return False
+
+
+def porta_la_colonna_dataset(percorso_gpkg):
+    """Vero se le tabelle dei dati hanno T_datasetname.
+
+    E' IL CONTROLLO CHE DISTINGUE UN ARCHIVIO VECCHIO. Un GeoPackage creato
+    prima del multi-comune - senza --createDatasetCol - non ha quella colonna:
+    aggiungerci un secondo comune darebbe un archivio in cui le righe del
+    primo non appartengono a nessuno, e nessun filtro per comune potrebbe piu'
+    separarli. Meglio rifiutare e rifarlo."""
+    con = _apri(percorso_gpkg)
+    if con is None:
+        return False
+    try:
+        tabelle = [r[0] for r in con.execute(
+            "SELECT table_name FROM gpkg_contents WHERE data_type='features'")]
+        for tabella in tabelle[:20]:     # bastano poche: o c'e' ovunque o non c'e'
+            colonne = [str(r[1]).lower()
+                       for r in con.execute('PRAGMA table_info("%s")' % tabella)]
+            if "t_datasetname" in colonne:
+                return True
+        return False
+    except sqlite3.Error:
+        return False
+    finally:
+        con.close()
+
+
+# Le quattro decisioni possibili davanti a un ITF e a un archivio.
+NUOVO = "nuovo"                  # archivio da creare: schema + dati
+AGGIUNGI = "aggiungi"            # comune nuovo dentro un archivio che c'e' gia'
+SOSTITUISCI = "sostituisci"      # comune gia' presente: si riaggiorna
+RIFIUTA = "rifiuta"              # non si procede, e il motivo si dice
+
+
+class Piano(object):
+    """Che cosa fare, e perche'.
+
+    'motivo' e' pieno SOLO quando l'azione e' RIFIUTA, e allora e' una frase
+    da mostrare all'utente: un rifiuto senza motivo e' indistinguibile da un
+    guasto."""
+
+    __slots__ = ("azione", "comune", "motivo", "presenti")
+
+    def __init__(self, azione, comune=None, motivo=None, presenti=None):
+        self.azione = azione
+        self.comune = comune
+        self.motivo = motivo
+        self.presenti = presenti or []
+
+    @property
+    def si_procede(self):
+        return self.azione != RIFIUTA
+
+    @property
+    def serve_schema(self):
+        return self.azione == NUOVO
+
+    @property
+    def flag_dati(self):
+        """I flag di ili2gpkg per la fase dei dati, senza il file."""
+        if not self.si_procede:
+            return []
+        primo = "--replace" if self.azione == SOSTITUISCI else "--import"
+        return [primo, "--dataset", self.comune.dataset]
+
+    @property
+    def flag_schema(self):
+        """I flag della creazione dello schema. --createDatasetCol e'
+        OBBLIGATORIO qui e non un di piu': senza, l'archivio nasce gia'
+        incapace di tenere separati i comuni."""
+        if not self.serve_schema:
+            return []
+        return ["--schemaimport", "--createMetaInfo", "--createBasketCol",
+                "--createDatasetCol", "--dataset", self.comune.dataset]
+
+    def __repr__(self):
+        return "<Piano %s %s>" % (self.azione, self.comune)
+
+
+def pianifica(percorso_gpkg, percorso_itf, modello_atteso=None):
+    """Decide che cosa fare per portare questo ITF dentro questo archivio.
+
+    Non tocca niente: legge e basta. Chi chiama esegue - o mostra il motivo
+    del rifiuto.
+
+    'modello_atteso' se indicato viene confrontato con quello gia' presente
+    nell'archivio: mescolare due modelli nello stesso GeoPackage produce
+    tabelle che nessuno stile sa leggere."""
+    comuni = leggi_comuni_itf(percorso_itf)
+    if not comuni:
+        return Piano(RIFIUTA, motivo=(
+            "L'ITF non dichiara nessun comune (manca la tabella Comune, "
+            "oppure la riga non ha la forma attesa). Senza il comune non si "
+            "puo' dare un nome ai dati dentro l'archivio."))
+    if len(comuni) > 1:
+        return Piano(RIFIUTA, motivo=(
+            "L'ITF dichiara %d comuni (%s). Importarli sotto un nome solo li "
+            "renderebbe indistinguibili, e il DXF di uno conterrebbe anche "
+            "gli altri. Vanno consegnati separati."
+            % (len(comuni), ", ".join(c.etichetta for c in comuni))))
+    comune = comuni[0]
+
+    if not percorso_gpkg:
+        return Piano(RIFIUTA, comune, "Manca il percorso del GeoPackage.")
+
+    if not os.path.isfile(str(percorso_gpkg)):
+        return Piano(NUOVO, comune)       # archivio da creare
+
+    if not _e_sqlite(percorso_gpkg):
+        return Piano(RIFIUTA, comune, (
+            "Il file esiste ma non e' un GeoPackage (manca l'intestazione "
+            "SQLite): %s. Non ci si scrive dentro." % percorso_gpkg))
+
+    presenti = dataset_nel_gpkg(percorso_gpkg)
+    modelli = _modelli_gpkg(percorso_gpkg)
+    if not modelli:
+        return Piano(RIFIUTA, comune, (
+            "Il GeoPackage non e' stato prodotto da ili2gpkg (manca "
+            "T_ILI2DB_MODEL): potrebbe essere il file di qualcun altro, e "
+            "importarci dentro lo rovinerebbe."))
+    if modello_atteso and modello_atteso not in modelli:
+        return Piano(RIFIUTA, comune, (
+            "L'archivio contiene il modello %s, l'importazione porterebbe %s. "
+            "Due modelli nello stesso GeoPackage danno tabelle che gli stili "
+            "non sanno leggere." % (", ".join(modelli), modello_atteso)))
+
+    if presenti and not porta_la_colonna_dataset(percorso_gpkg):
+        return Piano(RIFIUTA, comune, (
+            "Questo archivio e' stato creato prima del supporto a piu' "
+            "comuni: le tabelle non hanno la colonna T_datasetname. "
+            "Aggiungendoci un comune, le righe gia' presenti resterebbero "
+            "senza proprietario e nessun filtro potrebbe piu' separarle. "
+            "Va rifatto da zero."))
+
+    if comune.dataset in presenti:
+        return Piano(SOSTITUISCI, comune, presenti=presenti)
+    return Piano(AGGIUNGI, comune, presenti=presenti)
+
+
+def _modelli_gpkg(percorso_gpkg):
+    """I modelli registrati da ili2gpkg. Duplicato leggero di
+    modello.modelli_di_gpkg per non far dipendere il registro da quel modulo:
+    qui serve solo sapere SE ci sono e QUALI, senza il giudizio."""
+    con = _apri(percorso_gpkg)
+    if con is None:
+        return []
+    try:
+        nomi = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND lower(name)='t_ili2db_model'")]
+        if not nomi:
+            return []
+        modelli = []
+        for (valore,) in con.execute("SELECT modelName FROM %s" % nomi[0]):
+            for pezzo in str(valore or "").replace(";", " ").replace(",", " ").split():
+                if pezzo and pezzo not in modelli:
+                    modelli.append(pezzo)
+        return modelli
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+
+
 def disallineati(percorso_gpkg):
     """(nei_dati_non_a_registro, a_registro_non_nei_dati).
 

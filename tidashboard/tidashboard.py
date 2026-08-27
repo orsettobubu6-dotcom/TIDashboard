@@ -56,6 +56,7 @@ try:
     from . import coordinate as _coordinate
     from . import pubblica_progetto as _pubblica
     from . import simbologia as _simbologia
+    from . import archivio as _archivio
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
     from .colori import *          # noqa: F401,F403 - costanti C_*
@@ -90,6 +91,7 @@ except ImportError:
     import coordinate as _coordinate
     import pubblica_progetto as _pubblica
     import simbologia as _simbologia
+    import archivio as _archivio
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
     from colori import *           # noqa: F401,F403
@@ -3221,36 +3223,32 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return
         self.log(f"☕ Java trovato: {java_exe}")
 
-        if gpkg_path.exists():
-            # Prima di cancellare un file esistente, DUE salvaguardie (il
-            # vecchio GPKG veniva sovrascritto senza alcuna conferma ne'
-            # verifica del contenuto):
-            # (a) deve essere DAVVERO un GeoPackage/SQLite (estensione +
-            #     header magico, vedi _looks_like_gpkg): un percorso
-            #     sbagliato digitato nel campo output non deve distruggere
-            #     un file che non e' un precedente output del plugin.
-            if not _looks_like_gpkg(gpkg_path):
-                self.log(f"❌ Il file esistente non e' un GeoPackage valido "
-                          f"(estensione .gpkg e/o header SQLite mancanti): {gpkg_path}. "
-                          "Cancellazione rifiutata - import annullato.", Qgis.Critical)
-                return
-            # (b) conferma esplicita dell'utente (default "No": la scelta
-            #     distruttiva deve essere deliberata).
-            reply = QMessageBox.warning(
-                self, "Sovrascrittura GeoPackage",
-                f"Il file GeoPackage esistente sara' sovrascritto:\n{gpkg_path}\n\n"
-                "Continuare?",
-                _MB_SI | _MB_NO, _MB_NO)
-            if reply != _MB_SI:
-                self.log("⏹️ Import annullato dall'utente (file esistente non sovrascritto).")
-                return
-            try:
-                gpkg_path.unlink()
-                self.log(f"🗑️ Rimosso vecchio GPKG: {gpkg_path.name}")
-            except Exception as e:
-                QMessageBox.critical(self, "Errore", f"Impossibile cancellare il GPKG.\n{e}")
-                self.log(f"❌ Errore cancellazione GPKG: {str(e)}")
-                return
+        # CHE COSA FARE lo decide il pianificatore, non questo metodo: archivio
+        # da creare, comune da aggiungere, comune da riaggiornare, o rifiuto
+        # motivato. La decisione sta in archivio.py perche' e' fatta di regole
+        # che si provano senza QGIS, e perche' sbagliarla rovina un archivio.
+        #
+        # PRIMA QUI SI CANCELLAVA IL GEOPACKAGE a ogni importazione, chiedendo
+        # conferma. Con un comune solo era accettabile; con l'archivio a piu'
+        # comuni era il difetto peggiore possibile, perche' importare il
+        # secondo comune buttava via il primo - e la domanda di conferma
+        # parlava di "sovrascrittura", non di "perdi i comuni gia' dentro".
+        piano = _archivio.pianifica(str(gpkg_path), str(itf_path),
+                                    modello_atteso=_modello.MODELLO_ATTESO)
+        if not piano.si_procede:
+            QMessageBox.warning(self, "Importazione non possibile", piano.motivo)
+            self.log("   ❌ %s" % piano.motivo, Qgis.Critical)
+            return
+        self._piano_import = piano
+        self.log("   🏛️ Comune: %s" % piano.comune.etichetta)
+        if piano.azione == _archivio.NUOVO:
+            self.log("   📦 Archivio nuovo: si crea lo schema e poi si importa.")
+        elif piano.azione == _archivio.AGGIUNGI:
+            self.log("   ➕ Si aggiunge all'archivio, che gia' contiene %d comuni: %s"
+                     % (len(piano.presenti), ", ".join(piano.presenti)))
+        else:
+            self.log("   ♻️ Il comune e' gia' nell'archivio: si riaggiorna "
+                     "(--replace), gli altri non si toccano.")
 
         model_name = ili_path.stem
         model_dir = ili_path.parent
@@ -3271,15 +3269,39 @@ class TIDashboardDialog(StiliMixin, QDialog):
                     "--modeldir", str(model_dir), "--models", model_name,
                     "--defaultSrsCode", "2056", "--nameByTopic"]
 
-        # --createMetaInfo: crea t_ili2db_column_prop, da cui ricaviamo le relazioni
-        # padre/figlio (es. PosFondo -> Fondo) per etichette e join, senza dover
-        # imporre vincoli FK reali (--createFk) che rifiuterebbero l'import in
-        # presenza di riferimenti mancanti/dati tolleranti errori.
-        cmd_schema = base_cmd + ["--schemaimport", "--createMetaInfo"] + tol_params
-        self.log("\n⚙️ FASE 1: Creazione schema database...")
-        self.log(f"   Comando: {' '.join(cmd_schema)}")
+        # Il file .itf va messo per ULTIMO: l'usage di ili2gpkg e'
+        # "[Options] [file.xtf]" e con tol_params non vuoto (es.
+        # --disableValidation) mettere il file prima delle opzioni fa
+        # fallire il parsing della CLI ("invalid placed argument").
+        #
+        # I flag della fase dati (--import o --replace, piu' --dataset) li da'
+        # il piano: e' la stessa decisione presa sopra, non una seconda copia
+        # della regola.
+        self._pending_import_cmd = (base_cmd + piano.flag_dati + tol_params
+                                    + [str(itf_path)])
+
         self.btn_import.setEnabled(False)
         self.btn_geobau.setEnabled(False)
+
+        # LO SCHEMA SI CREA UNA VOLTA SOLA, quando l'archivio nasce. Rifarlo su
+        # un archivio che gia' contiene comuni non e' inutile, e' distruttivo:
+        # --schemaimport ricrea le tabelle. Per questo la fase 1 si salta, e non
+        # si esegue "tanto per".
+        #
+        # --createMetaInfo: crea t_ili2db_column_prop, da cui ricaviamo le
+        # relazioni padre/figlio (es. PosFondo -> Fondo) per etichette e join,
+        # senza dover imporre vincoli FK reali (--createFk) che rifiuterebbero
+        # l'import in presenza di riferimenti mancanti/dati tolleranti errori.
+        # --createDatasetCol: la colonna che tiene separati i comuni.
+        if not piano.serve_schema:
+            self.log("\n⏭️ FASE 1 saltata: lo schema c'e' gia' "
+                     "(rifarlo cancellerebbe i comuni presenti).")
+            self.on_schema_finished(0, "schemaimport")
+            return
+
+        cmd_schema = base_cmd + piano.flag_schema + tol_params
+        self.log("\n⚙️ FASE 1: Creazione schema database...")
+        self.log(f"   Comando: {' '.join(cmd_schema)}")
         self._inizio_lavoro("Fase 1: creazione schema")
 
         self.worker = JavaWorker(cmd_schema, "schemaimport", parent=self)
@@ -3287,12 +3309,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.worker.log_signal.connect(self._on_import_log_line)
         self.worker.finished_signal.connect(self.on_schema_finished)
         self.worker.start()
-
-        # Il file .itf va messo per ULTIMO: l'usage di ili2gpkg e'
-        # "[Options] [file.xtf]" e con tol_params non vuoto (es.
-        # --disableValidation) mettere il file prima delle opzioni fa
-        # fallire il parsing della CLI ("invalid placed argument").
-        self._pending_import_cmd = base_cmd + ["--import"] + tol_params + [str(itf_path)]
 
     def on_schema_finished(self, returncode, task_type):
         self.log(f"\n📊 Risultato FASE 1: Codice ritorno = {returncode}")
@@ -3318,6 +3334,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_geobau.setEnabled(True)
         if returncode == 0:
             self.log("✅ Importazione dati completata!")
+            self._annota_a_registro()
             self.log("\n🔎 Verifica GeoPackage (GDAL)...")
             self._validate_gpkg_with_gdal(self.txt_gpkg.text().strip())
             self.log("\n" + "=" * 60)
@@ -3330,6 +3347,30 @@ class TIDashboardDialog(StiliMixin, QDialog):
             if self._import_unique_errors:
                 self._analyze_import_errors(self._last_itf_path)
         self._fine_lavoro()
+
+    def _annota_a_registro(self):
+        """Scrive nel registro il comune appena importato e da quale ITF.
+
+        SI FA SOLO DOPO IL SUCCESSO: annotare prima lascerebbe, dopo
+        un'importazione fallita, un registro che promette un comune che nei
+        dati non c'e' (vedi archivio.disallineati).
+
+        Un guasto qui non fa fallire l'importazione - i dati ci sono - ma si
+        dice: senza la riga a registro, di quel comune non si potra' fare il
+        DXF, perche' non si sapra' da quale ITF e' venuto."""
+        piano = getattr(self, "_piano_import", None)
+        if piano is None or piano.comune is None:
+            return
+        gpkg = self.txt_gpkg.text().strip()
+        itf = str(getattr(self, "_last_itf_path", "") or "")
+        quando = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if _archivio.registra(gpkg, piano.comune, itf, quando):
+            self.log("   🗒️ A registro: %s, da %s"
+                     % (piano.comune.etichetta, os.path.basename(itf)))
+        else:
+            self.log("   ⚠️ Il comune e' stato importato ma NON annotato a "
+                     "registro: di questo comune non si potra' esportare il "
+                     "DXF finche' non si reimporta.", Qgis.Warning)
 
     def load_and_style_layers(self):
         """Carica i layer dal GeoPackage con approccio robusto per QGIS 4.0."""

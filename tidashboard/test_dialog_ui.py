@@ -2028,6 +2028,173 @@ class TestCartellaDiLavoro(unittest.TestCase):
         self.assertTrue(os.path.isdir(dlg._cartella_di_lavoro()))
 
 
+class TestImportazioneMultiComune(unittest.TestCase):
+    """L'archivio a piu' comuni.
+
+    La prova che conta e' che importare il secondo comune NON distrugga il
+    primo. Era esattamente il comportamento di prima - run_import cancellava
+    il GeoPackage a ogni giro - e non lo copriva nessuna prova: la riga piu'
+    distruttiva del plugin passava sotto silenzio."""
+
+    TESTA = b"SCNT\r\nINTERLIS Export\r\n////\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.avviati = []
+        self._worker_vero = cd.JavaWorker
+        prova = self
+
+        class WorkerFinto(object):
+            """Registra il comando e non lancia niente: qui si prova la
+            DECISIONE, non ili2gpkg."""
+
+            def __init__(self, cmd, tipo, parent=None):
+                prova.avviati.append((tipo, list(cmd)))
+                self.finished = self.log_signal = self.finished_signal = self
+
+            def connect(self, *a, **k):
+                pass
+
+            def start(self):
+                pass
+
+            def isRunning(self):
+                return False
+
+            def deleteLater(self):
+                pass
+
+        cd.JavaWorker = WorkerFinto
+
+    def tearDown(self):
+        cd.JavaWorker = self._worker_vero
+
+    def _itf(self, *comuni):
+        """Un ITF col modello giusto e la tabella Comune dichiarata."""
+        if not comuni:
+            comuni = (("Lavertezzo", "5112", "422"),)
+        corpo = b"TOPI Beni_immobili\r\nTABL Comune\r\n"
+        for i, (nome, bfs, nr) in enumerate(comuni, 1):
+            corpo += ("OBJE %d %s %s %s\r\n" % (i, nome, bfs, nr)).encode("latin-1")
+        corpo += b"ETAB\r\nETOP\r\nENDE\r\n"
+        percorso = os.path.join(tempfile.mkdtemp(), "c.itf")
+        with open(percorso, "wb") as f:
+            f.write(self.TESTA + corpo)
+        return percorso
+
+    def _archivio(self, *dataset):
+        """Un GeoPackage con quel tanto di ili2gpkg che serve a decidere."""
+        percorso = os.path.join(self.tmp, "archivio.gpkg")
+        con = sqlite3.connect(percorso)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        for i, n in enumerate(dataset, 1):
+            con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (?, ?)", (i, n))
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        con.execute("CREATE TABLE mu_fondo (T_Id INTEGER, T_datasetname TEXT)")
+        con.execute("INSERT INTO gpkg_contents VALUES ('mu_fondo', 'features')")
+        con.execute("INSERT INTO mu_fondo VALUES (1, '611')")
+        con.commit()
+        con.close()
+        return percorso
+
+    def _dialog(self, itf, gpkg):
+        dlg = TIDashboardDialog()
+        jar = os.path.join(self.tmp, "ili2gpkg.jar")
+        with open(jar, "wb") as f:
+            f.write(b"x")
+        dlg.txt_jar.setText(jar)
+        dlg.txt_itf.setText(itf)
+        dlg.txt_gpkg.setText(gpkg)
+        dlg.find_java = lambda: "java"      # qui non si cerca Java
+        return dlg
+
+    def test_il_secondo_comune_NON_distrugge_il_primo(self):
+        """LA REGRESSIONE. Prima il GeoPackage veniva cancellato a ogni
+        importazione: il comune 611 gia' dentro spariva senza che nessuno lo
+        dicesse - la conferma parlava di "sovrascrittura", non di "perdi i
+        comuni gia' importati"."""
+        g = self._archivio("611")
+        prima = os.path.getsize(g)
+        self._dialog(self._itf(), g).run_import()
+        # LE DUE COSE INSIEME, e non una sola: il codice vecchio poteva
+        # lasciare l'archivio intatto - bastava rispondere "no" alla conferma
+        # di sovrascrittura - ma allora non importava niente. Chiedere solo
+        # che il file sopravviva sarebbe passato anche prima.
+        self.assertTrue(os.path.isfile(g), "l'archivio e' stato cancellato")
+        self.assertEqual(os.path.getsize(g), prima)
+        self.assertEqual([t for t, _c in self.avviati], ["dataimport"],
+                         "l'archivio e' salvo ma non ha importato niente")
+        con = sqlite3.connect(g)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM mu_fondo").fetchone()[0], 1)
+        con.close()
+
+    def test_un_comune_nuovo_si_aggiunge_col_suo_dataset(self):
+        g = self._archivio("611")
+        self._dialog(self._itf(), g).run_import()
+        (tipo, cmd), = self.avviati
+        self.assertEqual(tipo, "dataimport")
+        self.assertIn("--import", cmd)
+        self.assertEqual(cmd[cmd.index("--dataset") + 1], "422")
+
+    def test_la_fase_dello_schema_si_salta_su_un_archivio_che_c_e(self):
+        """Rifare --schemaimport non e' inutile, e' distruttivo: ricrea le
+        tabelle."""
+        g = self._archivio("611")
+        self._dialog(self._itf(), g).run_import()
+        self.assertEqual([t for t, _c in self.avviati], ["dataimport"])
+
+    def test_un_archivio_nuovo_crea_lo_schema_con_la_colonna_dataset(self):
+        """Senza --createDatasetCol l'archivio nasce gia' incapace di tenere
+        separati i comuni, e non se ne accorge nessuno finche' non se ne
+        importa un secondo."""
+        g = os.path.join(self.tmp, "mai_esistito.gpkg")
+        self._dialog(self._itf(), g).run_import()
+        (tipo, cmd), = self.avviati
+        self.assertEqual(tipo, "schemaimport")
+        self.assertIn("--createDatasetCol", cmd)
+        self.assertIn("--schemaimport", cmd)
+
+    def test_un_comune_gia_presente_si_riaggiorna(self):
+        g = self._archivio("422", "611")
+        self._dialog(self._itf(), g).run_import()
+        (_tipo, cmd), = self.avviati
+        self.assertIn("--replace", cmd)
+        self.assertNotIn("--import", cmd)
+
+    def test_un_ITF_con_due_comuni_avvisa_e_non_avvia_niente(self):
+        """Passando, i due comuni finirebbero sotto un nome solo e il DXF
+        dell'uno conterrebbe l'altro."""
+        g = self._archivio("611")
+        itf = self._itf(("Lavertezzo", "5112", "422"), ("Coldrerio", "5251", "611"))
+        prima = len(_avvisi)
+        self._dialog(itf, g).run_import()
+        self.assertEqual(self.avviati, [], "non deve partire nessun processo")
+        self.assertGreater(len(_avvisi), prima)
+        self.assertIn("2 comuni", _avvisi[-1])
+
+    def test_un_archivio_senza_la_colonna_dataset_si_rifiuta(self):
+        """Un GeoPackage fatto dal plugin vecchio: aggiungendoci un comune, le
+        righe gia' dentro resterebbero senza proprietario."""
+        g = os.path.join(self.tmp, "vecchio.gpkg")
+        con = sqlite3.connect(g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (1, '611')")
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        con.execute("CREATE TABLE mu_fondo (T_Id INTEGER)")   # senza T_datasetname
+        con.execute("INSERT INTO gpkg_contents VALUES ('mu_fondo', 'features')")
+        con.commit()
+        con.close()
+        prima = len(_avvisi)
+        self._dialog(self._itf(), g).run_import()
+        self.assertEqual(self.avviati, [])
+        self.assertGreater(len(_avvisi), prima)
+        self.assertIn("T_datasetname", _avvisi[-1])
+
+
 class TestModelloAOgniPasso(unittest.TestCase):
     """Il modello dei dati va controllato in tutti i passi, non solo allo
     scaricamento: un ITF ricevuto per posta e un GeoPackage importato altrove
