@@ -274,6 +274,33 @@ class TestPianificazione(unittest.TestCase):
         self.assertIn("T_datasetname", p.motivo)
         self.assertIn("rifatto", p.motivo)
 
+    def test_uno_schema_vecchio_con_ZERO_comuni_dentro(self):
+        """IL BUCO CHE AVEVO LASCIATO IO. Il controllo della colonna era
+        legato a "ci sono gia' dei comuni": uno schema del plugin vecchio la
+        cui importazione dei dati era fallita ha zero dataset, e il piano
+        diceva "aggiungi". I dati sarebbero finiti in tabelle incapaci di
+        tenere separati i comuni, e il danno si sarebbe visto solo al comune
+        dopo."""
+        self._archivio(dataset=(), con_colonna=False)
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("T_datasetname", p.motivo)
+
+    def test_uno_schema_senza_nemmeno_le_tabelle(self):
+        """Rifiutare va bene, ma non per il motivo sbagliato: qui la colonna
+        non manca, mancano le tabelle. Dire "manca T_datasetname" parlerebbe
+        di tabelle che non esistono."""
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        con.commit()
+        con.close()
+        p = A.pianifica(self.g, self._itf_di(("Lavertezzo", "5112", "422")))
+        self.assertEqual(p.azione, A.RIFIUTA)
+        self.assertIn("nessuna tabella", p.motivo)
+        self.assertNotIn("T_datasetname", p.motivo)
+
     def test_un_file_che_non_e_un_GeoPackage(self):
         with io.open(self.g, "w", encoding="ascii") as f:
             f.write("questo non e' un database")

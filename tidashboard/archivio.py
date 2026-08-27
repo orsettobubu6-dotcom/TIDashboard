@@ -140,7 +140,11 @@ def _apri(percorso_gpkg, scrittura=False):
     if not percorso_gpkg:
         return None
     percorso = str(percorso_gpkg)
-    if not scrittura and not os.path.isfile(percorso):
+    # Il file deve esistere ANCHE in scrittura: sqlite3.connect lo crea, e
+    # un percorso sbagliato nel campo del GeoPackage lascerebbe in giro un
+    # file vuoto che somiglia a un archivio senza esserlo. L'archivio lo crea
+    # ili2gpkg, non il registro.
+    if not os.path.isfile(percorso):
         return None
     try:
         if scrittura:
@@ -266,19 +270,26 @@ def _e_sqlite(percorso):
 
 
 def porta_la_colonna_dataset(percorso_gpkg):
-    """Vero se le tabelle dei dati hanno T_datasetname.
+    """Le tabelle dei dati hanno T_datasetname?  True / False / None.
 
     E' IL CONTROLLO CHE DISTINGUE UN ARCHIVIO VECCHIO. Un GeoPackage creato
     prima del multi-comune - senza --createDatasetCol - non ha quella colonna:
     aggiungerci un secondo comune darebbe un archivio in cui le righe del
     primo non appartengono a nessuno, e nessun filtro per comune potrebbe piu'
-    separarli. Meglio rifiutare e rifarlo."""
+    separarli. Meglio rifiutare e rifarlo.
+
+    NONE QUANDO NON C'E' NIENTE DA GIUDICARE, cioe' quando di tabelle di dati
+    non ce n'e' nemmeno una. Tornare False li' direbbe "manca la colonna"
+    parlando di tabelle che non esistono, e manderebbe a rifare un archivio
+    per il motivo sbagliato: una misura vuota non e' un esito."""
     con = _apri(percorso_gpkg)
     if con is None:
-        return False
+        return None
     try:
         tabelle = [r[0] for r in con.execute(
             "SELECT table_name FROM gpkg_contents WHERE data_type='features'")]
+        if not tabelle:
+            return None
         for tabella in tabelle[:20]:     # bastano poche: o c'e' ovunque o non c'e'
             colonne = [str(r[1]).lower()
                        for r in con.execute('PRAGMA table_info("%s")' % tabella)]
@@ -286,7 +297,7 @@ def porta_la_colonna_dataset(percorso_gpkg):
                 return True
         return False
     except sqlite3.Error:
-        return False
+        return None
     finally:
         con.close()
 
@@ -390,7 +401,18 @@ def pianifica(percorso_gpkg, percorso_itf, modello_atteso=None):
             "Due modelli nello stesso GeoPackage danno tabelle che gli stili "
             "non sanno leggere." % (", ".join(modelli), modello_atteso)))
 
-    if presenti and not porta_la_colonna_dataset(percorso_gpkg):
+    # SI CONTROLLA SEMPRE, non solo quando ci sono gia' dei comuni dentro.
+    # Legandolo a 'presenti' restava scoperto il caso di uno schema creato dal
+    # plugin vecchio la cui importazione dei dati era fallita: zero dataset,
+    # tabelle senza T_datasetname, e il piano diceva "aggiungi". I dati
+    # sarebbero finiti in tabelle incapaci di tenere separati i comuni, e il
+    # danno si sarebbe visto solo al comune successivo.
+    colonna = porta_la_colonna_dataset(percorso_gpkg)
+    if colonna is None:
+        return Piano(RIFIUTA, comune, (
+            "Il GeoPackage non contiene nessuna tabella di dati: lo schema "
+            "non c'e' o e' incompleto. Va rifatto da zero."))
+    if not colonna:
         return Piano(RIFIUTA, comune, (
             "Questo archivio e' stato creato prima del supporto a piu' "
             "comuni: le tabelle non hanno la colonna T_datasetname. "
