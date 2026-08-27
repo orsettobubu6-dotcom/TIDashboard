@@ -44,6 +44,7 @@ jobs:
           python tidashboard/test_scarica_mu.py
           python tidashboard/test_java_env.py
           python tidashboard/test_coordinate.py
+          python tidashboard/test_archivio.py
 
       - name: ruff sui moduli piccoli
         run: |
