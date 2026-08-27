@@ -2,6 +2,7 @@
 # GeoPackage come file SQLite, quindi i dati di prova si costruiscono qui.
 #   & "C:\Program Files\QGIS 4.2.0\bin\python-qgis.bat" test_cerca_fondo.py
 #   (va anche con un Python qualunque)
+import math
 import os
 import sqlite3
 import struct
@@ -37,6 +38,39 @@ def _blob(xmin, ymin, xmax, ymax, con_envelope=True, punto=False, anello=None):
             corpo += struct.pack(">2d", x, y)
         return testa + corpo
     return testa + b"\x00" + struct.pack(">I", 3)      # tipo POLYGON, tronco
+
+
+def _testa_gp(xmin=0.0, ymin=0.0, xmax=0.0, ymax=0.0, con_envelope=False):
+    flag = 0x02 if con_envelope else 0x00
+    testa = b"GP" + bytes([0, flag]) + struct.pack(">i", 2056)
+    if con_envelope:
+        testa += struct.pack(">4d", xmin, xmax, ymin, ymax)
+    return testa
+
+
+def _wkb_punti(tipo, punti):
+    """Una geometria WKB con la sua intestazione: LINESTRING (2) o
+    CIRCULARSTRING (8)."""
+    corpo = b"\x00" + struct.pack(">I", tipo) + struct.pack(">I", len(punti))
+    for x, y in punti:
+        corpo += struct.pack(">2d", x, y)
+    return corpo
+
+
+def _wkb_compound(pezzi):
+    """COMPOUNDCURVE: un conteggio di pezzi, poi i pezzi con la loro
+    intestazione. E' la forma che hanno TUTTI gli anelli nei dati veri."""
+    corpo = b"\x00" + struct.pack(">I", 9) + struct.pack(">I", len(pezzi))
+    return corpo + b"".join(_wkb_punti(t, p) for t, p in pezzi)
+
+
+def _blob_curvo(anelli, con_envelope=False, env=None):
+    """Blob GeoPackage con un CURVEPOLYGON, la forma che hanno DAVVERO i
+    fondi ticinesi: misurato, 500 geometrie su 500 sono CURVEPOLYGON e ogni
+    anello e' un COMPOUNDCURVE."""
+    testa = _testa_gp(*(env or (0, 0, 0, 0)), con_envelope=con_envelope)
+    corpo = b"\x00" + struct.pack(">I", 10) + struct.pack(">I", len(anelli))
+    return testa + corpo + b"".join(anelli)
 
 
 def _gpkg(fondi, parti=(), posfondo=(), comuni=(("Mendrisio", 5254, 632),),
@@ -461,6 +495,125 @@ class TestBlobCorrotto(unittest.TestCase):
         self.assertEqual(fuori, [(2718000.0, 1082000.0),
                                  (2718100.0, 1082100.0)])
 
+
+
+class TestContornoCurvo(unittest.TestCase):
+    """I fondi ticinesi hanno il contorno CURVO.
+
+    Misurato sui dati veri: 500 geometrie su 500 sono CURVEPOLYGON, ogni
+    anello e' un COMPOUNDCURVE, e dentro ci stanno 354 LINESTRING e 60
+    CIRCULARSTRING - il 15% dei pezzi e' un arco. Il lettore conosceva solo
+    POLYGON e MULTIPOLYGON, quindi il contorno usciva SEMPRE VUOTO sui dati
+    veri, e le prove non se ne accorgevano perche' costruivano poligoni
+    dritti."""
+
+    def test_un_curvepolygon_di_soli_segmenti(self):
+        quadrato = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+        b = _blob_curvo([_wkb_compound([(2, quadrato)])])
+        self.assertEqual(C._contorno(b), [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)])
+
+    def test_un_arco_diventa_una_spezzata_sul_cerchio_vero(self):
+        """Mezzo giro di raggio 10 centrato nell'origine: ogni vertice deve
+        stare sul cerchio, non sulla corda."""
+        b = _blob_curvo([_wkb_compound([(8, [(10, 0), (0, 10), (-10, 0)])])])
+        punti = C._contorno(b)
+        self.assertGreater(len(punti), 10, "l'arco non e' stato infittito")
+        for x, y in punti:
+            self.assertAlmostEqual(math.hypot(x, y), 10.0, places=6)
+        self.assertAlmostEqual(punti[0][0], 10.0, places=6)
+        self.assertAlmostEqual(punti[-1][0], -10.0, places=6)
+
+    def _saetta_peggiore(self, raggio):
+        """Lo scostamento vero fra la spezzata e l'arco: r meno la distanza
+        dal centro al punto di mezzo di ogni corda."""
+        b = _blob_curvo([_wkb_compound(
+            [(8, [(raggio, 0), (0, raggio), (-raggio, 0)])])])
+        punti = C._contorno(b)
+        return max(raggio - math.hypot((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+                   for (x0, y0), (x1, y1) in zip(punti, punti[1:]))
+
+    def test_lo_scostamento_dall_arco_resta_sotto_il_centimetro(self):
+        """E' la promessa di SCOSTAMENTO_ARCO, e va MISURATA sulla spezzata
+        prodotta, non dedotta dalla formula: con il tetto a 64 pezzi la
+        formula era giusta ma il tetto scattava gia' su mezzo giro di raggio
+        50 m - una rotonda - e lo scostamento saliva a 1.5 cm senza che
+        niente lo dicesse."""
+        for raggio in (5.0, 50.0, 200.0, 500.0):
+            self.assertLessEqual(self._saetta_peggiore(raggio),
+                                 C.SCOSTAMENTO_ARCO,
+                                 "raggio %s m" % raggio)
+
+    def test_un_arco_piccolo_non_spreca_vertici(self):
+        """L'altra faccia: infittire un arco di due metri come uno di
+        cinquecento riempirebbe il contorno di punti inutili."""
+        b = _blob_curvo([_wkb_compound([(8, [(2, 0), (0, 2), (-2, 0)])])])
+        self.assertLess(len(C._contorno(b)), 40)
+
+    def test_il_punto_di_mezzo_decide_quale_dei_due_archi(self):
+        """Due archi hanno gli stessi estremi: il corto e il lungo. A
+        distinguerli c'e' solo il punto di mezzo, e prenderlo dalla parte
+        sbagliata darebbe un contorno che gira dall'altra parte."""
+        su = C._contorno(_blob_curvo(
+            [_wkb_compound([(8, [(10, 0), (0, 10), (-10, 0)])])]))
+        giu = C._contorno(_blob_curvo(
+            [_wkb_compound([(8, [(10, 0), (0, -10), (-10, 0)])])]))
+        self.assertGreater(max(y for _x, y in su), 9.0)
+        self.assertLess(min(y for _x, y in giu), -9.0)
+        self.assertLess(max(y for _x, y in giu), 1e-6)
+
+    def test_tre_punti_allineati_restano_un_segmento(self):
+        """Non c'e' nessun cerchio da ricostruire, e la formula del centro
+        divide per zero: deve uscire il segmento, non un'eccezione."""
+        b = _blob_curvo([_wkb_compound([(8, [(0, 0), (5, 0), (10, 0)])])])
+        self.assertEqual(C._contorno(b), [(0, 0), (10, 0)])
+
+    def test_segmenti_e_archi_mescolati_nello_stesso_anello(self):
+        """La forma vera: un COMPOUNDCURVE con dentro tutt'e due."""
+        b = _blob_curvo([_wkb_compound([
+            (2, [(0, 0), (10, 0)]),
+            (8, [(10, 0), (15, 5), (10, 10)]),
+            (2, [(10, 10), (0, 10), (0, 0)])])])
+        punti = C._contorno(b)
+        self.assertEqual(punti[0], (0, 0))
+        self.assertEqual(punti[-1], (0, 0))
+        self.assertGreater(max(x for x, _y in punti), 14.0,
+                           "l'arco verso destra non c'e'")
+
+    def test_i_buchi_non_entrano_nel_contorno(self):
+        """Come per i poligoni dritti si tiene solo l'anello esterno:
+        l'ingombro lo fa quello."""
+        fuori = _wkb_compound([(2, [(0, 0), (100, 0), (100, 100), (0, 100), (0, 0)])])
+        dentro = _wkb_compound([(2, [(40, 40), (60, 40), (60, 60), (40, 60), (40, 40)])])
+        punti = C._contorno(_blob_curvo([fuori, dentro]))
+        self.assertEqual(len(punti), 5)
+        self.assertNotIn((40, 40), punti)
+
+    def test_un_multisurface_di_curvepolygon(self):
+        anello = _wkb_compound([(2, [(0, 0), (10, 0), (10, 10), (0, 0)])])
+        interno = (b"\x00" + struct.pack(">I", 10) + struct.pack(">I", 1) + anello)
+        b = _testa_gp() + b"\x00" + struct.pack(">I", 12) + struct.pack(">I", 1) + interno
+        self.assertEqual(C._contorno(b)[0], (0, 0))
+
+    def test_un_blob_curvo_troncato_non_alza_niente(self):
+        """Stessa disciplina dei poligoni dritti: un conteggio letto dal file
+        puo' valere qualunque cosa, e su un valore assurdo il risultato
+        sarebbe un MemoryError - un guasto che sembra del programma e non del
+        dato."""
+        intero = _blob_curvo([_wkb_compound([(2, [(0, 0), (10, 0), (10, 10)])])])
+        for taglio in range(len(intero) - 1, 8, -3):
+            self.assertIsInstance(C._contorno(intero[:taglio]), list)
+
+    def test_un_conteggio_di_punti_assurdo(self):
+        b = (_testa_gp() + b"\x00" + struct.pack(">I", 10)
+             + struct.pack(">I", 1)
+             + b"\x00" + struct.pack(">I", 9) + struct.pack(">I", 1)
+             + b"\x00" + struct.pack(">I", 2) + struct.pack(">I", 4000000000))
+        self.assertEqual(C._contorno(b), [])
+
+    def test_i_poligoni_dritti_continuano_a_funzionare(self):
+        """La regressione: il lettore vecchio non deve essersi rotto."""
+        b = _blob(0, 0, 10, 10, anello=[(0, 0), (10, 0), (10, 10), (0, 0)])
+        self.assertEqual(C._contorno(b), [(0, 0), (10, 0), (10, 10), (0, 0)])
 
 
 if __name__ == "__main__":

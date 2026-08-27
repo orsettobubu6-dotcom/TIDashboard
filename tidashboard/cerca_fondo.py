@@ -31,6 +31,7 @@
 #    l'estensione e' l'unione delle parti. Se non ce n'e' nessuna si ripiega
 #    su PosFondo, che e' il punto di iscrizione del numero: non e' la
 #    geometria del fondo, ma dice dove si trova, ed e' meglio di niente.
+import math
 import os
 import re
 import sqlite3
@@ -319,6 +320,22 @@ def _contorno(blob):
                 p = _leggi_anelli(b, p, ordine, fuori)
         elif tipo % 1000 == 3:                     # POLYGON
             _leggi_anelli(b, p, ordine, fuori)
+        elif tipo % 1000 == 10:                    # CURVEPOLYGON
+            _leggi_anelli_curvi(b, p, ordine, fuori)
+        elif tipo % 1000 == 12:                    # MULTISURFACE
+            n = struct.unpack_from(ordine + "I", b, p)[0]
+            p += 4
+            if n > len(b) - p:
+                return []
+            for _ in range(n):
+                if len(b) - p < 5:
+                    break
+                ordine = "<" if b[p] else ">"
+                sotto = struct.unpack_from(ordine + "I", b, p + 1)[0]
+                p += 5
+                p = (_leggi_anelli_curvi(b, p, ordine, fuori)
+                     if sotto % 1000 == 10
+                     else _leggi_anelli(b, p, ordine, fuori))
         else:
             return []
     except (struct.error, IndexError):
@@ -356,6 +373,163 @@ def _leggi_anelli(b, p, ordine, fuori):
             valori = struct.unpack_from(ordine + "%dd" % (2 * n_punti), b, p)
             fuori.extend(zip(valori[0::2], valori[1::2]))
         p += 16 * n_punti
+    return p
+
+
+# Scostamento massimo fra l'arco vero e la spezzata che lo sostituisce, in
+# metri. Un centimetro: il contorno serve a decidere se un fondo ci sta nel
+# foglio girandolo, e a 1:500 - la scala piu' grande della norma - un
+# centimetro sul terreno e' due centesimi di millimetro sulla carta.
+SCOSTAMENTO_ARCO = 0.01
+# Quanti pezzi al massimo per un arco solo. E' una valvola di sicurezza contro
+# un arco patologico, non un modo di risparmiare: quando scatta, la tolleranza
+# qui sopra NON e' piu' garantita, e degrada in silenzio.
+#
+# Il valore viene da quanto serve al caso peggiore realistico. Con 64 il tetto
+# scattava gia' su mezzo giro di raggio 50 m - una rotonda, cioe' niente di
+# esotico - e lo scostamento saliva a 1.5 cm invece del centimetro promesso:
+# trovato da una prova che misurava la saetta invece di fidarsi della formula.
+# Mezzo giro di raggio 500 m ne chiede 249, ed e' il piu' grande che abbia
+# senso su un confine di fondo.
+PEZZI_ARCO_MAX = 256
+
+
+def _doppi_per_punto(tipo):
+    """Quante coordinate porta un punto, secondo il tipo WKB.
+
+    1000+ = Z, 2000+ = M, 3000+ = ZM. Serve per saltare i punti della
+    lunghezza giusta: leggerli come XY su una geometria con quota
+    scambierebbe la Z del primo punto per la X del secondo, e ne uscirebbero
+    coordinate verosimili e sbagliate."""
+    return 2 + (1 if 1000 <= tipo < 3000 else 0) + (1 if tipo >= 2000 else 0)
+
+
+def _punti(b, p, ordine, n_punti, doppi):
+    """Legge n punti e ritorna (lista di (x,y), posizione dopo).
+
+    Il conteggio si controlla contro lo spazio residuo prima di usarlo: vedi
+    la nota in _leggi_anelli, e' lo stesso guasto (MemoryError su un blob
+    corrotto)."""
+    passo = 8 * doppi
+    if n_punti < 0 or passo * n_punti > len(b) - p:
+        return None, len(b)
+    valori = struct.unpack_from(ordine + ("%dd" % (doppi * n_punti)), b, p)
+    return [(valori[i * doppi], valori[i * doppi + 1])
+            for i in range(n_punti)], p + passo * n_punti
+
+
+def _densifica_arco(p0, pm, p1, tolleranza=SCOSTAMENTO_ARCO):
+    """I punti che sostituiscono l'arco per p0, pm, p1. Esclude p0, include p1.
+
+    IL CATASTO E' PIENO DI ARCHI e INTERLIS li conserva: sui dati veri il 15%
+    dei pezzi di contorno e' un CIRCULARSTRING. Tenere solo i tre punti
+    darebbe una spezzata che taglia la curva, con un errore pari alla saetta -
+    la stessa grandezza che ci ha morso sul bulge del DXF.
+
+    Se i tre punti sono allineati - o coincidono - non c'e' nessun cerchio da
+    ricostruire e si torna il segmento dritto, che li' e' la risposta giusta."""
+    (x0, y0), (xm, ym), (x1, y1) = p0, pm, p1
+    d = 2.0 * (x0 * (ym - y1) + xm * (y1 - y0) + x1 * (y0 - ym))
+    if abs(d) < 1e-12:
+        return [p1]                       # allineati: e' un segmento
+    q0, qm, q1 = x0 * x0 + y0 * y0, xm * xm + ym * ym, x1 * x1 + y1 * y1
+    cx = (q0 * (ym - y1) + qm * (y1 - y0) + q1 * (y0 - ym)) / d
+    cy = (q0 * (x1 - xm) + qm * (x0 - x1) + q1 * (xm - x0)) / d
+    raggio = math.hypot(x0 - cx, y0 - cy)
+    if raggio <= 0.0:
+        return [p1]
+    a0 = math.atan2(y0 - cy, x0 - cx)
+    am = math.atan2(ym - cy, xm - cx)
+    a1 = math.atan2(y1 - cy, x1 - cx)
+    due = 2.0 * math.pi
+    # Il verso e' quello che PASSA PER IL PUNTO DI MEZZO: e' l'unica cosa che
+    # distingue l'arco corto dall'arco lungo, che hanno gli stessi estremi.
+    giro = (a1 - a0) % due
+    if (am - a0) % due > giro:
+        giro -= due                       # si va dall'altra parte
+    if abs(giro) < 1e-12:
+        return [p1]
+    passo_max = (2.0 * math.acos(max(-1.0, 1.0 - tolleranza / raggio))
+                 if tolleranza < raggio else math.pi)
+    if passo_max <= 0.0:
+        return [p1]
+    pezzi = min(PEZZI_ARCO_MAX, max(1, int(math.ceil(abs(giro) / passo_max))))
+    return [(cx + raggio * math.cos(a0 + giro * i / float(pezzi)),
+             cy + raggio * math.sin(a0 + giro * i / float(pezzi)))
+            for i in range(1, pezzi + 1)]
+
+
+def _leggi_pezzo_di_curva(b, p, fuori):
+    """Un pezzo di contorno - LINESTRING o CIRCULARSTRING - con la sua
+    intestazione. Ritorna la posizione dopo."""
+    if len(b) - p < 5:
+        return len(b)
+    ordine = "<" if b[p] else ">"
+    tipo = struct.unpack_from(ordine + "I", b, p + 1)[0]
+    p += 5
+    if len(b) - p < 4:
+        return len(b)
+    n_punti = struct.unpack_from(ordine + "I", b, p)[0]
+    p += 4
+    punti, p = _punti(b, p, ordine, n_punti, _doppi_per_punto(tipo))
+    if punti is None:
+        return len(b)
+    if tipo % 1000 == 8:                  # CIRCULARSTRING
+        # I punti vanno a terne incatenate: p0 pm p1 pm p2 ... Il primo punto
+        # dell'arco successivo E' l'ultimo del precedente.
+        if not punti:
+            return p
+        if not fuori:
+            fuori.append(punti[0])
+        for i in range(0, len(punti) - 2, 2):
+            fuori.extend(_densifica_arco(punti[i], punti[i + 1], punti[i + 2]))
+    else:                                 # LINESTRING e tutto il resto
+        for punto in punti:
+            if not fuori or fuori[-1] != punto:
+                fuori.append(punto)
+    return p
+
+
+def _leggi_anello_curvo(b, p, fuori):
+    """Un anello di CURVEPOLYGON: e' una geometria a se', con la sua
+    intestazione, e puo' essere LINESTRING, CIRCULARSTRING o COMPOUNDCURVE.
+    Sui dati ticinesi veri e' sempre COMPOUNDCURVE."""
+    if len(b) - p < 5:
+        return len(b)
+    ordine = "<" if b[p] else ">"
+    tipo = struct.unpack_from(ordine + "I", b, p + 1)[0]
+    if tipo % 1000 != 9:                  # non e' un COMPOUNDCURVE
+        return _leggi_pezzo_di_curva(b, p, fuori)
+    p += 5
+    if len(b) - p < 4:
+        return len(b)
+    n_pezzi = struct.unpack_from(ordine + "I", b, p)[0]
+    p += 4
+    if n_pezzi > len(b) - p:              # piu' pezzi che byte residui: rotto
+        return len(b)
+    for _ in range(n_pezzi):
+        p = _leggi_pezzo_di_curva(b, p, fuori)
+        if p >= len(b):
+            break
+    return p
+
+
+def _leggi_anelli_curvi(b, p, ordine, fuori):
+    """Gli anelli di un CURVEPOLYGON: si tiene solo il primo, l'esterno, come
+    per i poligoni dritti."""
+    if len(b) - p < 4:
+        return len(b)
+    n_anelli = struct.unpack_from(ordine + "I", b, p)[0]
+    p += 4
+    if n_anelli > len(b) - p:
+        return len(b)
+    for i in range(n_anelli):
+        if i == 0:
+            p = _leggi_anello_curvo(b, p, fuori)
+        else:
+            p = _leggi_anello_curvo(b, p, [])     # i buchi si saltano
+        if p >= len(b):
+            break
     return p
 
 
