@@ -342,6 +342,91 @@ class TestPianificazione(unittest.TestCase):
             self.assertTrue(p.motivo and len(p.motivo) > 20, repr(p.motivo))
 
 
+class TestDescrizione(unittest.TestCase):
+    """Che cosa c'e' dentro un archivio, per poterlo DIRE prima di buttarlo.
+
+    La conferma di prima diceva "il file GeoPackage esistente sara'
+    sovrascritto": vera, e inutile. Non diceva quanti comuni ci fossero
+    dentro ne' quali, cioe' l'unica cosa che serve per decidere."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.g = os.path.join(self.d, "archivio.gpkg")
+
+    def _archivio(self, *dataset):
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        for i, n in enumerate(dataset, 1):
+            con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (?, ?)", (i, n))
+        con.commit()
+        con.close()
+
+    def test_dice_quanti_e_quali(self):
+        self._archivio("422", "611")
+        A.registra(self.g, A.Comune("422", "Lavertezzo"), "a.itf")
+        A.registra(self.g, A.Comune("611", "Coldrerio"), "b.itf")
+        d = A.descrivi(self.g)
+        self.assertTrue(d.e_archivio)
+        self.assertEqual(d.quanti, 2)
+        self.assertEqual(d.elenco(), ["Lavertezzo", "Coldrerio"])
+        self.assertGreater(d.dimensione, 0)
+
+    def test_un_comune_senza_nome_si_mostra_lo_stesso(self):
+        """Presente nei dati ma non a registro - importato fuori dal plugin.
+        Buttarlo senza nominarlo sarebbe il caso peggiore."""
+        self._archivio("422", "611")
+        A.registra(self.g, A.Comune("422", "Lavertezzo"), "a.itf")
+        self.assertEqual(A.descrivi(self.g).elenco(),
+                         ["Lavertezzo", "comune 611"])
+
+    def test_l_elenco_lungo_si_accorcia_ma_dice_quanti_ne_restano(self):
+        self._archivio(*[str(400 + i) for i in range(20)])
+        righe = A.descrivi(self.g).elenco(quanti_al_massimo=5)
+        self.assertEqual(len(righe), 6)
+        self.assertIn("altri 15", righe[-1])
+
+    # --- i casi in cui NON si deve cancellare ---
+
+    def test_non_si_svuota_un_file_che_non_e_un_GeoPackage(self):
+        """Un percorso sbagliato nel campo non deve distruggere il lavoro di
+        qualcun altro."""
+        with io.open(self.g, "w", encoding="ascii") as f:
+            f.write("una relazione importante")
+        si_puo, motivo = A.si_puo_svuotare(self.g)
+        self.assertFalse(si_puo)
+        self.assertIn("SQLite", motivo)
+
+    def test_non_si_svuota_un_GeoPackage_di_qualcun_altro(self):
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT)")
+        con.commit()
+        con.close()
+        si_puo, motivo = A.si_puo_svuotare(self.g)
+        self.assertFalse(si_puo)
+        self.assertIn("ili2gpkg", motivo)
+
+    def test_non_si_svuota_quello_che_non_c_e(self):
+        si_puo, motivo = A.si_puo_svuotare(self.g)
+        self.assertFalse(si_puo)
+        self.assertTrue(motivo)
+        self.assertFalse(A.si_puo_svuotare("")[0])
+        self.assertFalse(A.si_puo_svuotare(None)[0])
+
+    def test_un_archivio_vero_si_puo_svuotare(self):
+        self._archivio("422")
+        self.assertEqual(A.si_puo_svuotare(self.g), (True, None))
+
+    def test_un_archivio_vuoto_ma_nostro_si_puo_svuotare(self):
+        """Zero comuni ma lo schema c'e': e' il residuo di un'importazione
+        fallita, ed e' proprio il caso in cui si vuole ricominciare."""
+        self._archivio()
+        si_puo, _m = A.si_puo_svuotare(self.g)
+        self.assertTrue(si_puo)
+        self.assertEqual(A.descrivi(self.g).quanti, 0)
+
+
 class TestCartella(unittest.TestCase):
     """L'importazione di una cartella intera.
 

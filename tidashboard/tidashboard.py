@@ -926,6 +926,13 @@ class TIDashboardDialog(StiliMixin, QDialog):
             "fermato invece di ricominciare.")
         self.btn_cartella.clicked.connect(self.importa_cartella)
         layout_import.addWidget(self.btn_cartella)
+
+        # Rosso spento e testo che dice il numero: un pulsante distruttivo
+        # deve sembrare distruttivo, e dire quanto costa premerlo.
+        self.btn_svuota = QPushButton("🗑️ Butta l'archivio")
+        self.btn_svuota.setStyleSheet(_STILE_PULSANTE % "#8E2A2A")
+        self.btn_svuota.clicked.connect(self.svuota_archivio)
+        layout_import.addWidget(self.btn_svuota)
         self.lbl_esito_import = QLabel()
         self.lbl_esito_import.setStyleSheet("color: %s;" % self._rosso_avviso())
         layout_import.addWidget(self.lbl_esito_import)
@@ -1350,6 +1357,11 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # Cambiando il GeoPackage cambia anche il comune da proporre.
         self.txt_gpkg.textChanged.connect(self.aggiorna_comuni_da_dati)
         self.txt_gpkg.textChanged.connect(self.aggiorna_sezioni_da_dati)
+        # Il pulsante distruttivo va tenuto onesto: dice quanti comuni
+        # butterebbe, e quel numero cambia con il percorso e con le
+        # importazioni.
+        self.txt_gpkg.textChanged.connect(
+            lambda _t=None: self._aggiorna_pulsante_svuota())
 
         # Avanzamento: durante ili2gpkg su un comune intero non si muoveva
         # nulla per minuti, solo qualche riga di console. La barra e'
@@ -3436,6 +3448,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log("✅ Importazione dati completata!")
             self._fatti_in_coda += 1
             self._annota_a_registro()
+            self._aggiorna_pulsante_svuota()
         else:
             self.log(f"❌ Importazione dati fallita (Codice: {returncode}).", Qgis.Critical)
             if self._import_unique_errors:
@@ -3552,6 +3565,94 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_geobau.setEnabled(False)
         self._inizio_lavoro("Cartella: 1 di %d" % len(da_fare))
         self._avvia_prossimo_della_coda()
+
+    def svuota_archivio(self):
+        """Butta l'archivio e riparte da zero.
+
+        ESISTE PERCHE' L'HO TOLTO IO. Prima ogni importazione cancellava il
+        GeoPackage - un difetto, con piu' comuni - e togliendolo e' sparito
+        anche l'unico modo di ricominciare da capo. Ma la cancellazione
+        automatica e quella chiesta sono due cose diverse: quella di prima
+        avveniva mentre l'utente credeva di importare, e la sua conferma
+        diceva "il file esistente sara' sovrascritto" senza mai dire QUANTI
+        comuni ci fossero dentro."""
+        gpkg = self.txt_gpkg.text().strip()
+        si_puo, motivo = _archivio.si_puo_svuotare(gpkg)
+        if not si_puo:
+            QMessageBox.warning(self, "Niente da svuotare", motivo)
+            self.log("   ℹ️ Archivio non svuotato: %s" % motivo)
+            return
+        d = _archivio.descrivi(gpkg)
+
+        elenco = "\n".join("   • %s" % n for n in d.elenco())
+        risposta = QMessageBox.warning(
+            self, "Buttare l'archivio?",
+            "Stai per cancellare l'archivio con %d comuni (%.1f MB):\n\n%s\n\n"
+            "%s\n\nL'operazione non si annulla. I file .itf restano dove sono, "
+            "quindi si puo' rifare l'archivio reimportandoli."
+            % (d.quanti, d.dimensione / 1048576.0, elenco, d.percorso),
+            _MB_SI | _MB_NO, _MB_NO)
+        if risposta != _MB_SI:
+            self.log("   ⏹️ Archivio non svuotato.")
+            return
+
+        # I LAYER PRIMA DEL FILE: su Windows un GeoPackage con dei layer
+        # aperti sopra e' bloccato, e la cancellazione fallisce con un errore
+        # di permessi che sembra un problema di diritti e non lo e'.
+        quanti = self._chiudi_layer_dell_archivio(gpkg)
+        if quanti:
+            self.log("   🧹 Chiusi %d layer che tenevano aperto l'archivio."
+                     % quanti)
+        try:
+            os.remove(gpkg)
+        except OSError as e:
+            QMessageBox.critical(
+                self, "Archivio non cancellato",
+                "Non si e' potuto cancellare il file:\n%s\n\n%s\n\nPuo' essere "
+                "ancora aperto da QGIS o da un altro programma." % (gpkg, e))
+            self.log("   ❌ Archivio non cancellato: %s" % e, Qgis.Critical)
+            return
+        self.log("   🗑️ Archivio buttato: %d comuni, %s"
+                 % (d.quanti, os.path.basename(gpkg)), Qgis.Success)
+        self.combo_comune.clear()
+        self._aggiorna_pulsante_svuota()
+
+    def _chiudi_layer_dell_archivio(self, gpkg):
+        """Toglie dal progetto i layer che leggono da quel GeoPackage.
+
+        Si guardano TUTTI i layer del progetto e non solo self.loaded_layers:
+        l'utente puo' averne aggiunti a mano, e basta uno di quelli a tenere
+        il file bloccato."""
+        atteso = os.path.normcase(os.path.abspath(str(gpkg)))
+        da_togliere = []
+        for lyr in list(QgsProject.instance().mapLayers().values()):
+            try:
+                sorgente = lyr.source()
+            except (AttributeError, RuntimeError):
+                continue
+            percorso = str(sorgente).split("|")[0]
+            if os.path.normcase(os.path.abspath(percorso)) == atteso:
+                da_togliere.append(lyr.id())
+        if da_togliere:
+            QgsProject.instance().removeMapLayers(da_togliere)
+        self.loaded_layers = []
+        self._zorder_layers = []
+        return len(da_togliere)
+
+    def _aggiorna_pulsante_svuota(self):
+        """Il pulsante dice quanti comuni butterebbe, e si spegne se non c'e'
+        niente da buttare: un pulsante distruttivo sempre acceso invita a
+        premerlo per vedere cosa fa."""
+        if getattr(self, "btn_svuota", None) is None:
+            return
+        d = _archivio.descrivi(self.txt_gpkg.text().strip())
+        self.btn_svuota.setEnabled(d.e_archivio)
+        if d.e_archivio:
+            self.btn_svuota.setText("🗑️ Butta l'archivio (%d comuni)" % d.quanti)
+            self.btn_svuota.setToolTip("\n".join(d.elenco()))
+        else:
+            self.btn_svuota.setText("🗑️ Butta l'archivio")
+            self.btn_svuota.setToolTip(d.motivo or "Nessun archivio indicato.")
 
     def _avvia_prossimo_della_coda(self):
         """Prende il primo Lavoro rimasto e lo avvia."""

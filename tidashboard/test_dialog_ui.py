@@ -2298,6 +2298,168 @@ class TestManifestLegenda(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(buona, dlg.NOME_MANIFEST)))
 
 
+class TestSvuotaArchivio(unittest.TestCase):
+    """Buttare l'archivio per ricominciare.
+
+    Esiste perche' la cancellazione automatica e' stata TOLTA - era un difetto
+    con piu' comuni - e con essa era sparito l'unico modo di ripartire da
+    zero. Ma le due cose sono diverse: quella di prima avveniva mentre
+    l'utente credeva di importare.
+
+    Su una funzione che cancella, le prove che contano sono quelle in cui NON
+    deve cancellare."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.g = os.path.join(self.tmp, "archivio.gpkg")
+        self.risposte = []
+        self._warning_vero = QMessageBox.warning
+        prova = self
+
+        def finta(*a, **k):
+            _avvisi.append(a[2] if len(a) > 2 else "")
+            return prova.risposte.pop(0) if prova.risposte else cd._MB_NO
+
+        QMessageBox.warning = staticmethod(finta)
+
+    def tearDown(self):
+        QMessageBox.warning = self._warning_vero
+
+    def _archivio(self, *dataset):
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        for i, n in enumerate(dataset, 1):
+            con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (?, ?)", (i, n))
+        con.commit()
+        con.close()
+        cd._archivio.registra(self.g, cd._archivio.Comune("422", "Lavertezzo"),
+                              "a.itf")
+        return self.g
+
+    def _dialog(self, percorso=None):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(percorso if percorso is not None else self.g)
+        return dlg
+
+    def test_rispondendo_NO_il_file_resta(self):
+        self._archivio("422", "611")
+        self.risposte = [cd._MB_NO]
+        self._dialog().svuota_archivio()
+        self.assertTrue(os.path.isfile(self.g))
+
+    def test_rispondendo_SI_il_file_sparisce(self):
+        self._archivio("422", "611")
+        self.risposte = [cd._MB_SI]
+        self._dialog().svuota_archivio()
+        self.assertFalse(os.path.isfile(self.g))
+
+    def test_la_conferma_NOMINA_i_comuni(self):
+        """La conferma di prima diceva "il file esistente sara' sovrascritto"
+        senza mai dire quanti comuni ci fossero dentro: vera, e inutile."""
+        self._archivio("422", "611")
+        self.risposte = [cd._MB_NO]
+        del _avvisi[:]
+        self._dialog().svuota_archivio()
+        testo = _avvisi[-1]
+        self.assertIn("2 comuni", testo)
+        self.assertIn("Lavertezzo", testo)
+        self.assertIn("comune 611", testo, "il non registrato va nominato lo stesso")
+
+    def test_un_file_che_non_e_nostro_non_si_tocca_NEMMENO_dicendo_SI(self):
+        """Un percorso sbagliato nel campo non deve distruggere il lavoro di
+        qualcun altro: qui la domanda non si pone proprio."""
+        altrui = os.path.join(self.tmp, "relazione.gpkg")
+        with open(altrui, "wb") as f:
+            f.write(b"documento importante di qualcun altro")
+        self.risposte = [cd._MB_SI, cd._MB_SI]
+        self._dialog(altrui).svuota_archivio()
+        self.assertTrue(os.path.isfile(altrui))
+        self.assertEqual(open(altrui, "rb").read(),
+                         b"documento importante di qualcun altro")
+
+    def test_un_GeoPackage_di_un_altro_programma_non_si_tocca(self):
+        estraneo = os.path.join(self.tmp, "altro.gpkg")
+        con = sqlite3.connect(estraneo)
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT)")
+        con.commit()
+        con.close()
+        self.risposte = [cd._MB_SI, cd._MB_SI]
+        self._dialog(estraneo).svuota_archivio()
+        self.assertTrue(os.path.isfile(estraneo))
+
+    def _archivio_vero(self):
+        """Un GeoPackage VERO - scritto da OGR, quindi apribile da QGIS - con
+        dentro anche le tabelle che lo rendono un nostro archivio."""
+        memoria = QgsVectorLayer("Point?crs=EPSG:2056&field=n:string", "punti",
+                                 "memory")
+        dp = memoria.dataProvider()
+        f = QgsFeature(memoria.fields())
+        f.setAttribute(0, "x")
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(CX, CY)))
+        dp.addFeature(f)
+        memoria.updateExtents()
+        opzioni = QgsVectorFileWriter.SaveVectorOptions()
+        opzioni.driverName = "GPKG"
+        opzioni.layerName = "punti"
+        QgsVectorFileWriter.writeAsVectorFormatV3(
+            memoria, self.g, QgsProject.instance().transformContext(), opzioni)
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (1, '422')")
+        con.commit()
+        con.close()
+
+    def test_i_layer_APERTI_SUL_FILE_si_chiudono_prima(self):
+        """Su Windows un GeoPackage con dei layer aperti sopra e' BLOCCATO, e
+        la cancellazione fallisce con un errore di permessi che sembra un
+        problema di diritti e non lo e'.
+
+        Il layer qui e' VERO e legge davvero dal file: con un layer di memoria
+        la prova passerebbe comunque, perche' loaded_layers viene azzerato in
+        ogni caso, e non direbbe niente sull'aggancio per sorgente."""
+        self._archivio_vero()
+        lyr = QgsVectorLayer("%s|layername=punti" % self.g, "punti", "ogr")
+        self.assertTrue(lyr.isValid(), "serve un layer vero per questa prova")
+        QgsProject.instance().addMapLayer(lyr)
+        identificativo = lyr.id()
+        dlg = self._dialog()
+        dlg.loaded_layers = [lyr]
+        self.assertEqual(dlg._chiudi_layer_dell_archivio(self.g), 1,
+                         "non ha riconosciuto il layer aperto sul file")
+        self.assertIsNone(QgsProject.instance().mapLayer(identificativo))
+        self.assertEqual(dlg.loaded_layers, [])
+
+    def test_un_layer_di_UN_ALTRO_file_non_si_chiude(self):
+        """Chiudere i layer di un altro progetto sarebbe un danno collaterale
+        silenzioso."""
+        self._archivio("422")
+        altro = QgsVectorLayer("Point?crs=EPSG:2056", "altro", "memory")
+        QgsProject.instance().addMapLayer(altro)
+        identificativo = altro.id()
+        self.assertEqual(self._dialog()._chiudi_layer_dell_archivio(self.g), 0)
+        self.assertIsNotNone(QgsProject.instance().mapLayer(identificativo))
+        QgsProject.instance().removeMapLayer(identificativo)
+
+    def test_il_pulsante_dice_quanti_ne_butterebbe(self):
+        self._archivio("422", "611")
+        dlg = self._dialog()
+        dlg._aggiorna_pulsante_svuota()
+        self.assertTrue(dlg.btn_svuota.isEnabled())
+        self.assertIn("2 comuni", dlg.btn_svuota.text())
+
+    def test_il_pulsante_e_spento_se_non_c_e_niente_da_buttare(self):
+        """Un pulsante distruttivo sempre acceso invita a premerlo per vedere
+        cosa fa."""
+        dlg = self._dialog(os.path.join(self.tmp, "mai_esistito.gpkg"))
+        dlg._aggiorna_pulsante_svuota()
+        self.assertFalse(dlg.btn_svuota.isEnabled())
+        self.assertNotIn("comuni", dlg.btn_svuota.text())
+
+
 class TestCodaCartella(unittest.TestCase):
     """L'importazione di una cartella intera, nella finestra.
 

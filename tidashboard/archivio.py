@@ -650,6 +650,86 @@ def comune_attivo_dei_layer(layers):
     return visti.pop() if len(visti) == 1 else None
 
 
+class Descrizione(object):
+    """Che cosa contiene un archivio. Serve a poterlo DIRE prima di buttarlo.
+
+    La conferma di prima diceva "il file GeoPackage esistente sara'
+    sovrascritto": vera, e inutile. Non diceva quanti comuni ci fossero
+    dentro ne' quali, cioe' proprio l'unica cosa che serve per decidere."""
+
+    __slots__ = ("percorso", "esiste", "e_archivio", "motivo", "comuni",
+                 "dimensione")
+
+    def __init__(self, percorso, esiste=False, e_archivio=False, motivo=None,
+                 comuni=None, dimensione=0):
+        self.percorso = percorso
+        self.esiste = esiste
+        self.e_archivio = e_archivio
+        self.motivo = motivo
+        self.comuni = comuni or []
+        self.dimensione = dimensione
+
+    @property
+    def quanti(self):
+        return len(self.comuni)
+
+    def elenco(self, quanti_al_massimo=12):
+        """I comuni, per esteso. Un comune presente nei dati ma non a registro
+        si mostra col solo numero: e' un'informazione, non un dettaglio da
+        nascondere."""
+        nomi = [c["nome"] or ("comune %s" % c["numero"]) for c in self.comuni]
+        if len(nomi) > quanti_al_massimo:
+            resto = len(nomi) - quanti_al_massimo
+            nomi = nomi[:quanti_al_massimo] + ["... e altri %d" % resto]
+        return nomi
+
+
+def descrivi(percorso_gpkg):
+    """Che cosa c'e' dentro l'archivio, per poterlo dire prima di toccarlo."""
+    if not percorso_gpkg:
+        return Descrizione(percorso_gpkg, motivo="Nessun percorso indicato.")
+    percorso = str(percorso_gpkg)
+    if not os.path.isfile(percorso):
+        return Descrizione(percorso, motivo="Il file non esiste.")
+    try:
+        dimensione = os.path.getsize(percorso)
+    except OSError:
+        dimensione = 0
+    if not _e_sqlite(percorso):
+        return Descrizione(percorso, esiste=True, dimensione=dimensione,
+                           motivo=("Non e' un GeoPackage: manca l'intestazione "
+                                   "SQLite."))
+    if not _modelli_gpkg(percorso):
+        return Descrizione(percorso, esiste=True, dimensione=dimensione,
+                           motivo=("Non e' stato prodotto da ili2gpkg (manca "
+                                   "T_ILI2DB_MODEL): potrebbe essere il file "
+                                   "di qualcun altro."))
+    # Le due fonti si UNISCONO invece di sceglierne una: il registro da' i
+    # nomi, i dati dicono che cosa c'e' davvero. Un dataset presente nei dati
+    # ma non a registro va mostrato lo stesso - col solo numero - perche'
+    # buttarlo senza nominarlo sarebbe il caso peggiore.
+    per_numero = dict((r["numero"], r) for r in registrati(percorso))
+    comuni = []
+    for numero in dataset_nel_gpkg(percorso):
+        riga = per_numero.get(numero)
+        comuni.append({"numero": numero,
+                       "nome": riga["nome"] if riga else None})
+    return Descrizione(percorso, esiste=True, e_archivio=True,
+                       comuni=comuni, dimensione=dimensione)
+
+
+def si_puo_svuotare(percorso_gpkg):
+    """(si_puo, motivo). Non si cancella un file che non e' il nostro
+    archivio: un percorso sbagliato nel campo non deve distruggere il lavoro
+    di qualcun altro."""
+    d = descrivi(percorso_gpkg)
+    if not d.esiste:
+        return False, "Non c'e' nessun archivio da svuotare: %s" % (d.motivo or "")
+    if not d.e_archivio:
+        return False, d.motivo
+    return True, None
+
+
 def disallineati(percorso_gpkg):
     """(nei_dati_non_a_registro, a_registro_non_nei_dati).
 
