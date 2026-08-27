@@ -2701,6 +2701,40 @@ class TestComuneAttivo(unittest.TestCase):
         dlg.txt_itf.setText("")          # se no la data verrebbe dal file ITF
         return dlg
 
+    def test_con_piu_comuni_la_data_dell_ITF_si_ignora(self):
+        """IL DIFETTO CHE HANNO PRESO SOLO QGIS APERTO E DUE COMUNI VERI.
+
+        Il campo ITF e' uno solo, i comuni sono molti: la sua data di modifica
+        finiva in cartiglio per TUTTI. Nella sessione vera il campo era rimasto
+        pieno dalle impostazioni precedenti, e i due comuni dichiaravano
+        entrambi "stato al 20.08.2026" - la data di un file scaricato mesi
+        dopo, che non apparteneva a nessuno dei due.
+
+        Le prove di prima non potevano prenderlo: svuotavano il campo apposta,
+        per arrivare al ramo che stavano provando."""
+        g = self._archivio()
+        itf = os.path.join(tempfile.mkdtemp(), "vecchio.itf")
+        with open(itf, "wb") as f:
+            f.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n")
+        dlg = self._dialog(g)
+        dlg.txt_itf.setText(itf)          # com'era nella sessione vera
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg.aggiorna_comuni_da_dati()
+        self.assertEqual(dlg._data_dai_dati, "20.05.2026")
+        self.assertEqual(dlg._origine_data, "ultima mutazione nei dati")
+
+    def test_con_UN_comune_la_data_dell_ITF_vale_ancora(self):
+        """Non e' stata tolta: con un archivio a comune solo l'ITF e' quello,
+        e la sua data di estrazione resta la fonte migliore."""
+        g = self._archivio(quanti=1)
+        itf = os.path.join(tempfile.mkdtemp(), "solo.itf")
+        with open(itf, "wb") as f:
+            f.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n")
+        dlg = self._dialog(g)
+        dlg.txt_itf.setText(itf)
+        dlg.aggiorna_comuni_da_dati()
+        self.assertEqual(dlg._origine_data, "estrazione ITF")
+
     def test_la_data_segue_il_comune_scelto(self):
         g = self._archivio()
         dlg = self._dialog(g)

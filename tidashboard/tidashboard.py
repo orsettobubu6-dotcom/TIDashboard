@@ -2271,8 +2271,21 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # timestamp del file. Se l'ITF non e' disponibile (es. si e' aperto
         # solo un GeoPackage) si ripiega sulla mutazione piu' recente presente
         # nei dati, che e' la migliore approssimazione ricavabile.
-        data = _dati_comune.data_estrazione_itf(self.txt_itf.text().strip())
-        self._origine_data = "estrazione ITF" if data else ""
+        numero = self._numero_comune_attivo(percorso)
+        # CON PIU' COMUNI LA DATA DELL'ITF NON VUOL DIRE NIENTE, e va saltata.
+        # Il campo ITF e' uno solo, mentre i comuni sono molti: la sua data di
+        # modifica finiva in cartiglio per TUTTI. Trovato aprendo QGIS davvero,
+        # dove il campo era rimasto pieno dalle impostazioni della sessione
+        # precedente: i due comuni dichiaravano "stato al 20.08.2026", che era
+        # la data di un file scaricato mesi dopo e non apparteneva a nessuno
+        # dei due (i loro dati sono del 17.06 e del 20.05).
+        #
+        # Le prove non potevano prenderlo: svuotavano il campo apposta, per
+        # arrivare al ramo che stavano provando.
+        data = ""
+        if not numero:
+            data = _dati_comune.data_estrazione_itf(self.txt_itf.text().strip())
+            self._origine_data = "estrazione ITF" if data else ""
         if not data:
             # IL NUMERO DEL COMUNE, non solo il percorso: in un archivio a piu'
             # comuni la data va letta da quello scelto. Senza, si prendeva la
@@ -2281,8 +2294,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             # mentre i suoi dati erano fermi al 20.05.2026. "Stato al" e' una
             # delle nove iscrizioni obbligatorie (circ154_allegato2 cap.1.5.7):
             # era un'affermazione falsa su un atto ufficiale.
-            data = _dati_comune.leggi_data_validita(
-                percorso, self._numero_comune_attivo(percorso))
+            data = _dati_comune.leggi_data_validita(percorso, numero)
             self._origine_data = "ultima mutazione nei dati" if data else ""
         if data:
             # _data_dai_dati va assegnata PRIMA di setDate: setDate emette
