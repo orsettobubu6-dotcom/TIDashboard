@@ -2195,6 +2195,109 @@ class TestImportazioneMultiComune(unittest.TestCase):
         self.assertIn("T_datasetname", _avvisi[-1])
 
 
+class TestManifestLegenda(unittest.TestCase):
+    """Il manifest che il lato Java legge per disegnare la legenda nel DXF.
+
+    Lo cerca ACCANTO ALL'ITF CHE RICEVE (Av2geobau.doConversion). Prima si
+    scriveva solo alla fine dello stile, accanto all'ITF del campo di
+    IMPORTAZIONE: sono due campi indipendenti, e con l'archivio a piu' comuni
+    quasi mai lo stesso file. Il DXF usciva senza legenda, senza un errore e
+    senza niente da leggere nel registro."""
+
+    def setUp(self):
+        self._worker_vero = cd.JavaWorker
+        prova = self
+
+        class WorkerFinto(object):
+            def __init__(self, cmd, tipo, parent=None):
+                prova.lanciato = list(cmd)
+                self.finished = self.log_signal = self.finished_signal = self
+
+            def connect(self, *a, **k):
+                pass
+
+            def start(self):
+                pass
+
+            def isRunning(self):
+                return False
+
+            def deleteLater(self):
+                pass
+
+        cd.JavaWorker = WorkerFinto
+        self.lanciato = None
+
+    def tearDown(self):
+        cd.JavaWorker = self._worker_vero
+
+    def _layer_stilizzato(self):
+        lyr = QgsVectorLayer("Point?crs=EPSG:2056", "confini", "memory")
+        QgsProject.instance().addMapLayer(lyr)
+        return [(lyr, "beni_immobili_punto_di_confine")]
+
+    def test_il_manifest_finisce_accanto_all_ITF_CHE_SI_CONVERTE(self):
+        """LA REGRESSIONE: due cartelle diverse, come con piu' comuni."""
+        cartella_import = tempfile.mkdtemp()
+        cartella_dxf = tempfile.mkdtemp()
+        itf_dxf = os.path.join(cartella_dxf, "altro_comune.itf")
+        with open(itf_dxf, "wb") as f:
+            f.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n")
+
+        dlg = TIDashboardDialog()
+        dlg._zorder_layers = self._layer_stilizzato()
+        dlg.txt_itf.setText(os.path.join(cartella_import, "importato.itf"))
+        dlg.chk_itf_diverso.setChecked(True)
+        dlg.txt_geobau_itf.setText(itf_dxf)
+        dlg.txt_geobau_dxf.setText(os.path.join(cartella_dxf, "uscita.dxf"))
+        dlg.txt_jar.setText(itf_dxf)          # un file qualunque che esista
+        dlg.find_java = lambda: "java"
+        dlg.run_geobau()
+
+        # Il nome scritto per esteso, non dlg.NOME_MANIFEST: cosi' la prova
+        # misura il COMPORTAMENTO e non l'esistenza di una costante nuova, e
+        # contro il codice di prima fallisce per il motivo giusto.
+        atteso = os.path.join(cartella_dxf, "legenda_manifest.txt")
+        self.assertTrue(os.path.isfile(atteso),
+                        "il manifest non e' accanto all'ITF che si converte")
+
+    def test_senza_stile_lo_dice_invece_di_tacere(self):
+        """Nessuna legenda applicata: il DXF uscira' senza legenda, e va detto
+        - prima spariva in silenzio."""
+        cartella = tempfile.mkdtemp()
+        itf = os.path.join(cartella, "c.itf")
+        with open(itf, "wb") as f:
+            f.write(b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n")
+        dlg = TIDashboardDialog()
+        dlg._zorder_layers = []
+        dlg.chk_itf_diverso.setChecked(True)
+        dlg.txt_geobau_itf.setText(itf)
+        dlg.txt_geobau_dxf.setText(os.path.join(cartella, "u.dxf"))
+        dlg.txt_jar.setText(itf)
+        dlg.find_java = lambda: "java"
+        dlg.run_geobau()
+        self.assertFalse(os.path.isfile(os.path.join(cartella, dlg.NOME_MANIFEST)))
+        testo = dlg.txt_log.toPlainText()
+        self.assertIn("senza legenda", testo)
+
+    def test_la_stessa_cartella_non_si_scrive_due_volte(self):
+        dlg = TIDashboardDialog()
+        dlg._zorder_layers = self._layer_stilizzato()
+        cartella = tempfile.mkdtemp()
+        scritte = dlg._scrivi_manifest_legenda(
+            [cartella, os.path.join(cartella, "."), cartella])
+        self.assertEqual(scritte, 1)
+
+    def test_una_cartella_che_non_esiste_non_ferma_le_altre(self):
+        dlg = TIDashboardDialog()
+        dlg._zorder_layers = self._layer_stilizzato()
+        buona = tempfile.mkdtemp()
+        scritte = dlg._scrivi_manifest_legenda(
+            [os.path.join(tempfile.mkdtemp(), "mai", "esistita"), None, buona])
+        self.assertEqual(scritte, 1)
+        self.assertTrue(os.path.isfile(os.path.join(buona, dlg.NOME_MANIFEST)))
+
+
 class TestComuneAttivo(unittest.TestCase):
     """La catena intera: scelgo un comune nella tendina, e la data del
     cartiglio e i dati dei layer seguono quello.

@@ -441,6 +441,32 @@ def sezioni_disponibili(percorso_gpkg):
         con.close()
 
 
+class Risultati(list):
+    """I fondi trovati, e - quando non se ne sono potuti cercare - il perche'.
+
+    E' UNA LISTA, cosi' chi la usa non cambia: si itera, si conta, e vale []
+    quando e' vuota. Ma porta anche 'problema', che distingue "quel fondo non
+    c'e'" da "non ho potuto cercare".
+
+    Serviva perche' la distinzione era sparita: un GeoPackage senza le tabelle
+    dei fondi, uno corrotto e un percorso inesistente davano tutti e tre la
+    lista vuota, cioe' la stessa risposta di una ricerca andata a buon fine e
+    senza esiti. L'utente leggeva "Nessun fondo trovato. Controlla numero,
+    sezione e comune" e andava a controllare dei dati che erano giusti.
+
+    E' lo stesso principio gia' applicato al controllo di deviazione del DXF:
+    un controllo che non ha potuto controllare niente non ha trovato niente di
+    buono."""
+
+    def __init__(self, iterabile=(), problema=None):
+        list.__init__(self, iterabile)
+        self.problema = problema
+
+    @property
+    def cercato_davvero(self):
+        return self.problema is None
+
+
 def _apri(percorso_gpkg):
     if not percorso_gpkg or not os.path.isfile(str(percorso_gpkg)):
         return None
@@ -466,14 +492,25 @@ def cerca(percorso_gpkg, numero=None, sezione=None, comune=None, egrid=None,
     'solo_in_vigore' esclude i fondi contestati
     'includi_prog'   include gli oggetti in progetto (per difetto no)
     """
+    if not percorso_gpkg:
+        return Risultati(problema="Non e' indicato nessun GeoPackage in cui "
+                                  "cercare.")
+    if not os.path.isfile(str(percorso_gpkg)):
+        return Risultati(problema="Il GeoPackage non esiste: %s"
+                                  % percorso_gpkg)
     con = _apri(percorso_gpkg)
     if con is None:
-        return []
+        return Risultati(problema="Il GeoPackage non si e' potuto aprire: %s"
+                                  % percorso_gpkg)
     try:
         return _cerca(con, numero, sezione, comune, egrid, solo_in_vigore,
                       includi_prog, limite)
-    except sqlite3.Error:
-        return []
+    except sqlite3.Error as e:
+        # SI DICE, non si ingoia. Prima qui usciva una lista vuota, che
+        # l'interfaccia mostrava come "Nessun fondo trovato": un errore di
+        # lettura diventava indistinguibile da un fondo che non c'e'.
+        return Risultati(problema="Errore leggendo il GeoPackage: %s. I dati "
+                                  "potrebbero essere danneggiati." % e)
     finally:
         con.close()
 
@@ -482,7 +519,11 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
            limite):
     t = _trova_tabelle(con, includi_prog)
     if not t["fondo"]:
-        return []
+        return Risultati(problema=(
+            "In questo GeoPackage non c'e' la tabella dei fondi: o non e' un "
+            "archivio della misurazione ufficiale, o l'importazione non e' "
+            "arrivata in fondo. Non e' che il fondo non ci sia: non si e' "
+            "potuto cercare."))
     col_fondo = _colonne(con, t["fondo"])
 
     # Il numero puo' portarsi dietro la sezione ("452-01"): si divide qui, e
@@ -498,7 +539,10 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
     # (bastava il filtro sulla validita' a rendere la clausola non vuota) e
     # restituiva i primi 50 fondi del comune, come se li avesse trovati.
     if not (numero and str(numero).strip()) and not (egrid and str(egrid).strip()):
-        return []
+        return Risultati(problema=(
+            "Non e' stato chiesto niente: serve il numero del fondo oppure "
+            "l'EGRID. Sezione, comune e validita' restringono una ricerca, "
+            "non ne fanno una."))
 
     dove, valori = [], []
     if egrid and "egris_egrid" in col_fondo:
@@ -529,7 +573,13 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
         valori += [str(n) for n in numeri]
 
     if not dove:
-        return []
+        # Criterio dato ma nessuna clausola costruita: succede quando si cerca
+        # per EGRID e la colonna egris_egrid in questi dati non c'e'. Non e'
+        # "non trovato", e' "qui non si puo' cercare cosi'".
+        return Risultati(problema=(
+            "Con i criteri dati non si e' potuta costruire nessuna ricerca su "
+            "questi dati: se hai cercato per EGRID, questo GeoPackage non "
+            "porta la colonna egris_egrid."))
 
     sql = ('SELECT T_Id, identan, numero, %s, %s, %s, %s, %s FROM "%s" WHERE %s '
            'ORDER BY identan, numero LIMIT ?'
@@ -541,7 +591,9 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
               t["fondo"], " AND ".join(dove)))
     righe = con.execute(sql, valori + [int(limite)]).fetchall()
     if not righe:
-        return []
+        # QUESTO SI' E' UN "non c'e'": la ricerca e' stata fatta davvero e non
+        # ha trovato niente. Nessun problema da segnalare.
+        return Risultati()
 
     nomi = _nomi_comune(con, t["comune"])
     nomi_sez = _nomi_sezione(con, t.get("localita"))
@@ -568,7 +620,7 @@ def _cerca(con, numero, sezione, comune, egrid, solo_in_vigore, includi_prog,
             integralita=integ, genere=gen, superficie=sup,
             extent=est, centro=centro, origine_geometria=origine,
             n_parti=quante.get(tid, 0), contorno=contorni.get(tid) or []))
-    return fuori
+    return Risultati(fuori)
 
 
 def _estensioni_parti(con, parti, ids):

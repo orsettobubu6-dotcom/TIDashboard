@@ -3418,6 +3418,53 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 self._analyze_import_errors(self._last_itf_path)
         self._fine_lavoro()
 
+    NOME_MANIFEST = "legenda_manifest.txt"
+
+    @staticmethod
+    def _cartella_itf(campo):
+        """La cartella dell'ITF di un campo, o None se il campo e' vuoto."""
+        testo = campo.text().strip()
+        return Path(testo).parent if testo else None
+
+    def _scrivi_manifest_legenda(self, cartelle):
+        """Scrive il manifest della legenda nelle cartelle indicate.
+
+        IL LATO JAVA LO CERCA ACCANTO ALL'ITF CHE STA CONVERTENDO
+        (Av2geobau.doConversion), non accanto al GeoPackage. Scriverlo solo
+        nella cartella del GPKG lo rendeva invisibile ogni volta che ITF e
+        GPKG stanno in cartelle diverse - sono due campi indipendenti - e la
+        legenda spariva senza alcun errore.
+
+        Con piu' comuni il problema si allarga: il manifest finiva accanto
+        all'ITF DELL'IMPORTAZIONE, che non e' quello che si converte. Per
+        questo lo si riscrive anche al momento della conversione, accanto
+        all'ITF vero (vedi run_geobau). Il file e' di pochi KB.
+
+        Ritorna il numero di cartelle scritte. Un guasto qui non ferma niente:
+        senza manifest il DXF esce senza legenda, che e' una funzione
+        facoltativa - ma si dice, invece di lasciarlo sparire in silenzio."""
+        zorder = getattr(self, "_zorder_layers", None)
+        if not zorder:
+            return 0
+        viste, scritte = set(), 0
+        for cartella in cartelle:
+            if cartella is None:
+                continue
+            chiave = os.path.normcase(os.path.abspath(str(cartella)))
+            if chiave in viste:
+                continue
+            viste.add(chiave)
+            percorso = Path(cartella) / self.NOME_MANIFEST
+            try:
+                n_voci = write_legend_manifest(zorder, percorso)
+            except Exception as e:
+                self.log("   ⚠️ Manifest legenda non scritto in %s: %s"
+                         % (cartella, e), Qgis.Warning)
+                continue
+            self.log("   ✅ %d voci scritte in %s" % (n_voci, percorso))
+            scritte += 1
+        return scritte
+
     def _annota_a_registro(self):
         """Scrive nel registro il comune appena importato e da quale ITF.
 
@@ -3955,27 +4002,13 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # collegamento live tra i due programmi, va rigenerato rilanciando lo
         # stile e poi l'export, in quest'ordine.
         if zorder_layers:
+            # Tenuto da parte per riscriverlo al momento della conversione,
+            # accanto all'ITF che si converte davvero (vedi
+            # _scrivi_manifest_legenda).
+            self._zorder_layers = list(zorder_layers)
             self.log("\n🗒️ Fase 4quater: Manifest legenda per il DXF...")
-            # Il lato Java cerca il manifest ACCANTO AL FILE ITF che sta
-            # convertendo (Av2geobau.doConversion), non accanto al GeoPackage:
-            # scriverlo solo nella cartella del GPKG lo rendeva invisibile
-            # all'export ogni volta che ITF e GPKG stanno in cartelle diverse
-            # (sono 2 campi indipendenti nella dialog) - la legenda spariva
-            # senza alcun errore. Si scrive quindi in ENTRAMBE le cartelle
-            # quando differiscono (il file e' di pochi KB).
-            try:
-                dest_dirs = [gpkg_path.parent]
-                itf_txt = self.txt_itf.text().strip()
-                if itf_txt:
-                    itf_dir = Path(itf_txt).parent
-                    if itf_dir != gpkg_path.parent:
-                        dest_dirs.append(itf_dir)
-                for dest_dir in dest_dirs:
-                    manifest_path = dest_dir / "legenda_manifest.txt"
-                    n_voci = write_legend_manifest(zorder_layers, manifest_path)
-                    self.log(f"   ✅ {n_voci} voci scritte in {manifest_path}")
-            except Exception as e:
-                self.log(f"   ⚠️ Errore scrittura manifest legenda: {str(e)}", Qgis.Warning)
+            self._scrivi_manifest_legenda([gpkg_path.parent,
+                                           self._cartella_itf(self.txt_itf)])
 
         # Layout PB-MU
         if self.product_mode == "bp" and loaded_layers:
@@ -4826,9 +4859,21 @@ class TIDashboardDialog(StiliMixin, QDialog):
             # accanto a un messaggio di ricerca fallita e' un modo sicuro di
             # far guardare il fondo sbagliato.
             self._evidenzia_risultati([])
-            self._esito_fondo("Nessun fondo trovato. Controlla numero, sezione "
-                              "e comune; se il fondo è contestato, togli la "
-                              "spunta «Solo fondi in vigore».", errore=True)
+            # PRIMA SI GUARDA SE LA RICERCA E' STATA FATTA DAVVERO. Un
+            # GeoPackage senza le tabelle dei fondi, uno danneggiato e un
+            # percorso inesistente davano tutti e tre l'elenco vuoto, cioe' la
+            # stessa risposta di una ricerca riuscita e senza esiti: l'utente
+            # leggeva "controlla numero, sezione e comune" e andava a
+            # controllare dei dati che erano giusti.
+            problema = getattr(risultati, "problema", None)
+            if problema:
+                self.log("   ❌ Ricerca non eseguita: %s" % problema, Qgis.Critical)
+                self._esito_fondo(problema, errore=True)
+            else:
+                self._esito_fondo(
+                    "Nessun fondo trovato. Controlla numero, sezione "
+                    "e comune; se il fondo è contestato, togli la "
+                    "spunta «Solo fondi in vigore».", errore=True)
             return
 
         for f in risultati:
@@ -5492,6 +5537,24 @@ class TIDashboardDialog(StiliMixin, QDialog):
                                    "https://models.interlis.ch/"])
         cmd = [java_exe, "-jar", str(jar_path), "--modeldir", ilidirs, str(itf_path), str(dxf_path)]
         self.log(f"   Comando: {' '.join(cmd)}")
+
+        # IL MANIFEST DELLA LEGENDA VA SCRITTO ORA, accanto all'ITF CHE SI STA
+        # CONVERTENDO. Prima si scriveva solo alla fine dello stile, accanto
+        # all'ITF del campo di IMPORTAZIONE: due campi indipendenti, e con
+        # l'archivio a piu' comuni quasi mai lo stesso file. Il lato Java lo
+        # cerca accanto all'ITF che riceve (Av2geobau.doConversion), quindi non
+        # lo trovava e il DXF usciva senza legenda - senza un errore, senza
+        # niente da leggere nel registro.
+        #
+        # Qui e' anche il posto piu' giusto nel tempo: il manifest si rigenera
+        # dai layer come sono ADESSO, non come erano quando si e' stilizzato.
+        if getattr(self, "_zorder_layers", None):
+            if not self._scrivi_manifest_legenda([Path(itf_path).parent]):
+                self.log("   ⚠️ Manifest della legenda non scritto: il DXF "
+                         "uscira' senza legenda.", Qgis.Warning)
+        else:
+            self.log("   ℹ️ Nessuno stile applicato in questa sessione: il DXF "
+                     "uscira' senza legenda (applica la legenda e riconverti).")
 
         self.btn_import.setEnabled(False)
         self.btn_geobau.setEnabled(False)
