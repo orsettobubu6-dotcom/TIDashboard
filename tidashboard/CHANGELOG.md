@@ -1,5 +1,73 @@
 # Diario delle versioni
 
+## 1.2.9.3 — 27 agosto 2026 — sperimentale
+
+### Si misura che la conversione non ha spostato le coordinate
+
+Finora il plugin *affermava* che ITF e DXF portano le stesse coordinate. Ora lo
+**misura**: legge le coordinate dall'ITF, le ricerca nel DXF e riporta lo
+scarto massimo.
+
+```
+Max X deviation: 0.0000 m
+Max Y deviation: 0.0000 m
+coordinate identiche: 65925 di 90735 (72.7%)   spostate: 0   collocate dal piano: 24810
+```
+
+Va detto subito che cosa questa misura **non** è: non è un cercatore di bachi.
+Il convertitore le coordinate le passa così come sono, quindi quella riga dirà
+`0.0000 m` praticamente sempre, e non avrebbe preso nessuno dei tre difetti
+veri corretti nel jar (ancoraggio del testo, precisione del *bulge*, valori
+d'intestazione). È una **prova documentale** per la consegna. Costa 0,8 s su un
+comune intero (ITF 3,4 MB, DXF 16,5 MB).
+
+Quello che prende davvero, verificato costruendo apposta i file rotti:
+
+| caso | esito |
+|---|---|
+| uno spostamento di 5 mm | rilevato |
+| uno spostamento uniforme di tutti i punti | rilevato |
+| arrotondamento al centimetro | rilevato (0,7% di identiche) |
+| arrotondamento al decimetro | rilevato (0,008%) |
+| scambio di X con Y | «nessuna coordinata confrontabile» |
+| una manciata di punti spostati | **non** rilevato |
+
+L'ultima riga è un limite dichiarato, non un difetto nascosto.
+
+Lo scambio X/Y merita una nota, perché la prima versione lo riportava come
+`Max deviation: 0.0000 m`, cioè come un esito buono sul file più rotto di
+tutti: scambiate le coordinate, nessun punto cade più nelle gamme di MN95,
+non restava niente da confrontare e una misura **vuota** usciva come promossa.
+Un controllo che non ha potuto controllare niente non ha trovato niente di
+buono, e adesso lo dice.
+
+### Un allarme che avevo costruito, e che ho tolto prima di collegarlo
+
+Sopra quella misura avevo aggiunto un secondo allarme, per layer: fuori dalla
+banda 10%-99,5% di coordinate identiche un layer è «a metà», quindi sospetto.
+L'idea veniva da una misura vera — su due comuni interi i layer stanno o in
+alto o in basso, mai in mezzo.
+
+Rileggendola prima di collegarla, il margine è risultato di **due decimi di
+punto**: il layer sano più basso sta al 99,7%, la soglia al 99,5%, tarati su
+due soli comuni. Un allarme così stretto, il giorno che sbaglia, sbaglia su una
+consegna buona — e un controllo che grida al lupo lo si spegne, portandosi via
+anche la parte che funziona. Il caso che copriva non ha nemmeno un meccanismo
+noto che lo produca: gli errori veri del convertitore sono sistematici, e
+quelli si vedono nello scarto massimo.
+
+La ripartizione per layer è rimasta come **dettaglio su un allarme già
+scattato**: dice *dove*, quando qualcos'altro ha già detto *che cosa*. A
+referto sano non si stampa.
+
+### Gli archi si controllano anche da fermi
+
+Il controllo del *bulge* introdotto nella 1.2.9.2 correggeva la scrittura degli
+archi nel jar. Ora il plugin **rilegge** quello che il jar ha scritto e segnala
+gli archi il cui scostamento supera 0,1 mm, senza dover riconvertire nulla.
+Serve perché il secondo parere abituale non basta: GDAL rilegge fedelmente un
+*bulge* impreciso, e quindi non se ne accorge.
+
 ## 1.2.9.2 — 25 agosto 2026 — sperimentale
 
 ### Gli archi del DXF erano scritti con troppe poche cifre
