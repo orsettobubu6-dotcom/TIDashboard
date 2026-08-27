@@ -450,6 +450,130 @@ def _modelli_gpkg(percorso_gpkg):
         con.close()
 
 
+# Un comune che nell'archivio c'e' gia' e che non si rifa'. NON e' un rifiuto:
+# e' il modo in cui un'importazione interrotta riprende invece di ricominciare.
+GIA_FATTO = "gia_fatto"
+
+ESTENSIONE_ITF = ".itf"
+
+
+class Lavoro(object):
+    """Un file della cartella, e che cosa farne."""
+
+    __slots__ = ("itf", "comune", "azione", "motivo")
+
+    def __init__(self, itf, comune=None, azione=RIFIUTA, motivo=None):
+        self.itf = itf
+        self.comune = comune
+        self.azione = azione
+        self.motivo = motivo
+
+    @property
+    def da_fare(self):
+        return self.azione in (NUOVO, AGGIUNGI, SOSTITUISCI)
+
+    def __repr__(self):
+        return "<Lavoro %s %s>" % (self.azione, os.path.basename(str(self.itf)))
+
+
+def itf_nella_cartella(cartella, ricorsivo=False):
+    """I file .itf di una cartella, in ordine alfabetico.
+
+    L'ordine e' alfabetico e non quello che da' il sistema: un'importazione di
+    cento comuni che si interrompe va ripresa, e per capire dove si era
+    arrivati serve un ordine che non cambi fra un giro e l'altro."""
+    if not cartella or not os.path.isdir(str(cartella)):
+        return []
+    trovati = []
+    if ricorsivo:
+        for radice, _dirs, file in os.walk(str(cartella)):
+            trovati += [os.path.join(radice, f) for f in file
+                        if f.lower().endswith(ESTENSIONE_ITF)]
+    else:
+        trovati = [os.path.join(str(cartella), f)
+                   for f in os.listdir(str(cartella))
+                   if f.lower().endswith(ESTENSIONE_ITF)
+                   and os.path.isfile(os.path.join(str(cartella), f))]
+    return sorted(trovati, key=lambda p: (os.path.basename(p).lower(), p))
+
+
+def pianifica_cartella(percorso_gpkg, cartella, modello_atteso=None,
+                       rifai=False, ricorsivo=False):
+    """Che cosa fare di ogni .itf della cartella. Lista di Lavoro, in ordine.
+
+    NON BASTA CHIAMARE pianifica() PER OGNI FILE. pianifica guarda l'archivio
+    com'e' ADESSO: su un archivio che non esiste ancora, tutti i file
+    risulterebbero "nuovo", e si rifarebbe lo schema cento volte - cioe' si
+    cancellerebbe tutto a ogni giro. Qui si tiene il conto di come l'archivio
+    CAMBIA man mano, cosi' il primo file lo crea e gli altri si aggiungono.
+
+    'rifai' False - il modo normale - SALTA i comuni gia' dentro: e' cosi' che
+    un'importazione interrotta a meta' riprende invece di ricominciare da capo.
+    Con True li riaggiorna tutti con --replace.
+
+    Due file per lo STESSO comune sono un rifiuto per il secondo, non una
+    sovrascrittura silenziosa: quale dei due debba vincere non lo puo' decidere
+    il programma."""
+    lavori = []
+    presenti = set(dataset_nel_gpkg(percorso_gpkg))
+    esiste = bool(presenti) or os.path.isfile(str(percorso_gpkg))
+    visti = {}                       # numero -> file che lo ha portato
+
+    for itf in itf_nella_cartella(cartella, ricorsivo):
+        piano = pianifica(percorso_gpkg, itf, modello_atteso)
+        if not piano.si_procede:
+            lavori.append(Lavoro(itf, piano.comune, RIFIUTA, piano.motivo))
+            continue
+        numero = piano.comune.dataset
+        if numero in visti:
+            lavori.append(Lavoro(itf, piano.comune, RIFIUTA, (
+                "Il comune %s arriva anche da %s. Quale dei due file valga non "
+                "lo puo' decidere il programma: tienine uno solo."
+                % (piano.comune.etichetta, os.path.basename(visti[numero])))))
+            continue
+        visti[numero] = itf
+
+        if numero in presenti and not rifai:
+            lavori.append(Lavoro(itf, piano.comune, GIA_FATTO,
+                                 "Gia' nell'archivio."))
+            continue
+        if numero in presenti:
+            azione = SOSTITUISCI
+        elif esiste:
+            azione = AGGIUNGI
+        else:
+            azione = NUOVO
+            esiste = True            # da qui in poi l'archivio c'e'
+        presenti.add(numero)
+        lavori.append(Lavoro(itf, piano.comune, azione))
+    return lavori
+
+
+def flag_di(lavoro):
+    """I flag di ili2gpkg per un Lavoro: (schema, dati).
+
+    Passa dal Piano invece di rifare la regola: e' la stessa decisione, e
+    averla in due posti vorrebbe dire vederla divergere."""
+    piano = Piano(lavoro.azione, lavoro.comune)
+    return piano.flag_schema, piano.flag_dati
+
+
+def riassunto(lavori):
+    """Una riga per l'utente: quanti se ne fanno, quanti si saltano, quanti
+    non si possono fare."""
+    conta = {}
+    for l in lavori:
+        conta[l.azione] = conta.get(l.azione, 0) + 1
+    pezzi = []
+    for azione, etichetta in ((NUOVO, "da creare"), (AGGIUNGI, "da aggiungere"),
+                              (SOSTITUISCI, "da riaggiornare"),
+                              (GIA_FATTO, "gia' dentro"),
+                              (RIFIUTA, "non importabili")):
+        if conta.get(azione):
+            pezzi.append("%d %s" % (conta[azione], etichetta))
+    return ", ".join(pezzi) if pezzi else "nessun file .itf nella cartella"
+
+
 # Il filtro che riduce un layer al comune attivo. Si usa il nome della colonna
 # come lo scrive ili2gpkg (maiuscole comprese): l'espressione va a QGIS, non a
 # sqlite, e li' il confronto e' sensibile alle maiuscole.

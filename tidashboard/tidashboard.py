@@ -717,6 +717,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._iface = iface
         self.worker = None
         self.loaded_layers = []
+        # La coda dell'importazione di una cartella. Dichiarata QUI e non
+        # creata al volo: un attributo che nasce a meta' del lavoro obbliga
+        # ogni metodo a difendersi con getattr, ed e' cosi' che questa classe
+        # si e' riempita di settanta difese contro il proprio stato.
+        self._coda_import = []
+        self._avviati_in_coda = 0
+        self._fatti_in_coda = 0
+        self._falliti_in_coda = []
+        self._piano_import = None
+        self._zorder_layers = []
         self.product_mode = "gb"  # 'gb' o 'bp'
         self.plugin_dir = Path(__file__).parent
         self._java_path_cache = None  # vedi find_java(): None = mai cercato, "" = cercato e non trovato
@@ -903,6 +913,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_import.setStyleSheet(_STILE_PULSANTE % "#2E7D32")
         self.btn_import.clicked.connect(self.run_import)
         layout_import.addWidget(self.btn_import)
+
+        # L'archivio e' cantonale: 106 comuni uno alla volta non li carica
+        # nessuno. Colore piu' spento del pulsante sopra perche' quello resta
+        # il gesto normale - un ITF per volta - e questo e' l'eccezione.
+        self.btn_cartella = QPushButton("📦 Importa una CARTELLA di file .itf")
+        self.btn_cartella.setStyleSheet(_STILE_PULSANTE % "#00695C")
+        self.btn_cartella.setToolTip(
+            "Importa tutti i file .itf di una cartella nello stesso archivio, "
+            "un comune per volta.\n\nI comuni gia' presenti si saltano: se il "
+            "giro si interrompe, rilanciandolo riprende da dove si era "
+            "fermato invece di ricominciare.")
+        self.btn_cartella.clicked.connect(self.importa_cartella)
+        layout_import.addWidget(self.btn_cartella)
         self.lbl_esito_import = QLabel()
         self.lbl_esito_import.setStyleSheet("color: %s;" % self._rosso_avviso())
         layout_import.addWidget(self.lbl_esito_import)
@@ -3310,6 +3333,13 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log("   ❌ %s" % piano.motivo, Qgis.Critical)
             return
         self._piano_import = piano
+        # Un'importazione singola non e' una coda: azzerarla evita che i
+        # contatori di un giro di cartella precedente facciano parlare il
+        # riassunto finale di comuni che qui non c'entrano.
+        self._coda_import = []
+        self._avviati_in_coda = 1        # questa importazione, e nessun'altra
+        self._fatti_in_coda = 0
+        self._falliti_in_coda = []
         self.log("   🏛️ Comune: %s" % piano.comune.etichetta)
         if piano.azione == _archivio.NUOVO:
             self.log("   📦 Archivio nuovo: si crea lo schema e poi si importa.")
@@ -3404,7 +3434,23 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_geobau.setEnabled(True)
         if returncode == 0:
             self.log("✅ Importazione dati completata!")
+            self._fatti_in_coda += 1
             self._annota_a_registro()
+        else:
+            self.log(f"❌ Importazione dati fallita (Codice: {returncode}).", Qgis.Critical)
+            if self._import_unique_errors:
+                self._analyze_import_errors(self._last_itf_path)
+            self._falliti_in_coda.append(str(self._last_itf_path or ""))
+
+        # C'E' ANCORA CODA? Con una cartella si va avanti, e un comune andato
+        # male NON ferma gli altri: su cento consegne, fermarsi al primo file
+        # storto vorrebbe dire rifare tutto il giro dopo averlo tolto. Quali
+        # siano falliti si dice alla fine.
+        if self._coda_import:
+            self._avvia_prossimo_della_coda()
+            return
+
+        if self._chiusa_la_coda():
             self.log("\n🔎 Verifica GeoPackage (GDAL)...")
             self._validate_gpkg_with_gdal(self.txt_gpkg.text().strip())
             self.log("\n" + "=" * 60)
@@ -3412,11 +3458,173 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log("=" * 60)
             self.lbl_fase.setText("Fase 3: legenda e stili")
             self.load_and_style_layers()
-        else:
-            self.log(f"❌ Importazione dati fallita (Codice: {returncode}).", Qgis.Critical)
-            if self._import_unique_errors:
-                self._analyze_import_errors(self._last_itf_path)
         self._fine_lavoro()
+
+    def _chiusa_la_coda(self):
+        """Riassume la fine di un'importazione di cartella. Vero se ha senso
+        proseguire con la legenda, cioe' se almeno un comune e' entrato."""
+        fatti = self._fatti_in_coda
+        falliti = self._falliti_in_coda
+        if self._avviati_in_coda <= 1:
+            return not falliti           # importazione singola: come prima
+        self.log("\n" + "=" * 60)
+        self.log("📦 CARTELLA: %d comuni importati, %d falliti"
+                 % (fatti, len(falliti)),
+                 Qgis.Warning if falliti else Qgis.Success)
+        for percorso in falliti:
+            self.log("   ❌ %s" % os.path.basename(percorso), Qgis.Warning)
+        if falliti:
+            QMessageBox.warning(
+                self, "Importazione della cartella",
+                "%d comuni importati, %d falliti:\n\n%s\n\nGli altri sono "
+                "nell'archivio: rilanciando la cartella si riprende da dove "
+                "si e' fermata, senza rifare quelli gia' dentro."
+                % (fatti, len(falliti),
+                   "\n".join(os.path.basename(p) for p in falliti[:10])))
+        return fatti > 0
+
+    # --- IMPORTAZIONE DI UNA CARTELLA ---------------------------------------
+    #
+    # L'archivio e' cantonale: 106 comuni uno alla volta non li carica nessuno.
+    # La coda e' una lista di Lavoro (vedi archivio.pianifica_cartella), e si
+    # consuma un file per volta riusando la stessa catena dell'importazione
+    # singola - schema (solo il primo) poi dati - senza caricare i layer
+    # finche' non e' finita.
+
+    def importa_cartella(self):
+        cartella = QFileDialog.getExistingDirectory(
+            self, "Cartella con i file .itf da importare",
+            self._cartella_di_lavoro())
+        if not cartella:
+            return
+        gpkg = self.txt_gpkg.text().strip()
+        if not gpkg:
+            QMessageBox.warning(self, "Manca il GeoPackage",
+                                "Indica prima il GeoPackage dell'archivio.")
+            return
+        if _vivo(getattr(self, "worker", None)) and self.worker.isRunning():
+            QMessageBox.warning(self, "Operazione in corso",
+                                "Un processo e' gia' in esecuzione.")
+            return
+
+        self.log("\n" + "=" * 60)
+        self.log("📦 CARTELLA: %s" % cartella)
+        lavori = _archivio.pianifica_cartella(
+            gpkg, cartella, modello_atteso=_modello.MODELLO_ATTESO)
+        self.log("   %s" % _archivio.riassunto(lavori))
+        for l in lavori:
+            if l.azione == _archivio.RIFIUTA:
+                self.log("   ❌ %s: %s" % (os.path.basename(l.itf), l.motivo),
+                         Qgis.Warning)
+            elif l.azione == _archivio.GIA_FATTO:
+                self.log("   ⏭️ %s: gia' nell'archivio."
+                         % (l.comune.etichetta if l.comune else
+                            os.path.basename(l.itf)))
+
+        da_fare = [l for l in lavori if l.da_fare]
+        if not da_fare:
+            QMessageBox.information(
+                self, "Niente da importare",
+                "Nella cartella non c'e' niente di nuovo da importare.\n\n%s"
+                % _archivio.riassunto(lavori))
+            return
+
+        elenco = "\n".join("   %s  (%s)" % (l.comune.etichetta, l.azione)
+                           for l in da_fare[:15])
+        if len(da_fare) > 15:
+            elenco += "\n   ... e altri %d" % (len(da_fare) - 15)
+        # La conferma dice QUANTI e QUALI: un giro da cento comuni dura
+        # un'ora, e avviarlo per sbaglio non deve essere facile.
+        risposta = QMessageBox.question(
+            self, "Importare la cartella?",
+            "Verranno importati %d comuni (circa %d minuti):\n\n%s"
+            % (len(da_fare), max(1, len(da_fare) * 11 // 60), elenco),
+            _MB_SI | _MB_NO, _MB_NO)
+        if risposta != _MB_SI:
+            self.log("   ⏹️ Importazione della cartella annullata.")
+            return
+
+        self._coda_import = list(da_fare)
+        self._avviati_in_coda = 0
+        self._fatti_in_coda = 0
+        self._falliti_in_coda = []
+        self.btn_import.setEnabled(False)
+        self.btn_geobau.setEnabled(False)
+        self._inizio_lavoro("Cartella: 1 di %d" % len(da_fare))
+        self._avvia_prossimo_della_coda()
+
+    def _avvia_prossimo_della_coda(self):
+        """Prende il primo Lavoro rimasto e lo avvia."""
+        if not self._coda_import:
+            return
+        lavoro = self._coda_import.pop(0)
+        # DUE CONTATORI E NON UNO: gli avviati servono per dire "3 di 106",
+        # i fatti per sapere se qualcosa e' davvero entrato. Con un contatore
+        # solo, incrementato all'avvio, una cartella in cui fallivano TUTTI i
+        # comuni si dichiarava riuscita e passava a stilizzare un archivio
+        # vuoto.
+        self._avviati_in_coda += 1
+        totale = self._avviati_in_coda + len(self._coda_import)
+        self.log("\n" + "─" * 60)
+        self.log("📥 %d/%d  %s  (%s)"
+                 % (self._avviati_in_coda, totale, lavoro.comune.etichetta,
+                    lavoro.azione))
+        self.lbl_fase.setText("Cartella: %d di %d — %s"
+                              % (self._avviati_in_coda, totale,
+                                 lavoro.comune.nome or lavoro.comune.numero))
+        # Gli stessi due campi che usa l'importazione singola: cosi' il
+        # registro e i messaggi d'errore trovano il file giusto senza che
+        # nulla debba sapere se siamo in coda o no.
+        self._last_itf_path = Path(lavoro.itf)
+        self._piano_import = _archivio.Piano(lavoro.azione, lavoro.comune)
+        self._import_unique_errors = []
+
+        base = self._comando_base_import()
+        if base is None:
+            self._coda_import = []
+            return
+        schema, dati = _archivio.flag_di(lavoro)
+        tol = self._parametri_tolleranza()
+        self._pending_import_cmd = base + dati + tol + [str(lavoro.itf)]
+        if schema:
+            self._avvia_worker(base + schema + tol, "schemaimport",
+                               self.on_schema_finished)
+        else:
+            self.on_schema_finished(0, "schemaimport")
+
+    def _avvia_worker(self, cmd, tipo, quando_finisce):
+        self.log("   Comando: %s" % " ".join(cmd))
+        self.worker = JavaWorker(cmd, tipo, parent=self)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.log_signal.connect(self._on_import_log_line)
+        self.worker.finished_signal.connect(quando_finisce)
+        self.worker.start()
+
+    def _parametri_tolleranza(self):
+        """I flag di tolleranza scelti nell'interfaccia."""
+        if not self.group_adv.isChecked():
+            return []
+        coppie = ((self.chk_sql_null, "--sqlEnableNull"),
+                  (self.chk_sql_text, "--sqlColsAsText"),
+                  (self.chk_skip_poly, "--skipPolygonBuilding"),
+                  (self.chk_skip_ref, "--skipReferenceErrors"),
+                  (self.chk_skip_geom, "--skipGeometryErrors"),
+                  (self.chk_disable_val, "--disableValidation"))
+        return [flag for spunta, flag in coppie if spunta.isChecked()]
+
+    def _comando_base_import(self):
+        """La parte comune di ogni comando ili2gpkg, o None se manca qualcosa."""
+        jar = self.txt_jar.text().strip()
+        gpkg = self.txt_gpkg.text().strip()
+        ili = Path(MODELLO_ILI)
+        java_exe = self.find_java()
+        if not (jar and gpkg and ili.is_file() and java_exe):
+            self.log("   ❌ Manca il JAR, il GeoPackage, il modello o Java.",
+                     Qgis.Critical)
+            return None
+        return [java_exe, "-jar", jar, "--dbfile", gpkg,
+                "--modeldir", str(ili.parent), "--models", ili.stem,
+                "--defaultSrsCode", "2056", "--nameByTopic"]
 
     NOME_MANIFEST = "legenda_manifest.txt"
 

@@ -2298,6 +2298,196 @@ class TestManifestLegenda(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(buona, dlg.NOME_MANIFEST)))
 
 
+class TestCodaCartella(unittest.TestCase):
+    """L'importazione di una cartella intera, nella finestra.
+
+    Il pezzo delicato non e' il piano - quello si prova in test_archivio - ma
+    la CODA: che i comandi partano uno per volta, che lo schema si faccia solo
+    al primo, che un comune andato male non fermi gli altri, e che i layer si
+    carichino una volta sola alla fine."""
+
+    TESTA = b"SCNT\r\nMTID INTERLIS1\r\nMODL MD01MUTI7MN95\r\n"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cartella = os.path.join(self.tmp, "consegne")
+        os.makedirs(self.cartella)
+        self.avviati = []
+        self.caricato = []
+        self._worker_vero = cd.JavaWorker
+        prova = self
+
+        class WorkerFinto(object):
+            def __init__(self, cmd, tipo, parent=None):
+                prova.avviati.append((tipo, list(cmd)))
+                self.finished = self.log_signal = self.finished_signal = self
+
+            def connect(self, *a, **k):
+                pass
+
+            def start(self):
+                pass
+
+            def isRunning(self):
+                return False
+
+            def deleteLater(self):
+                pass
+
+        cd.JavaWorker = WorkerFinto
+
+    def tearDown(self):
+        cd.JavaWorker = self._worker_vero
+
+    def _itf(self, nome, nome_comune, numero):
+        percorso = os.path.join(self.cartella, nome)
+        corpo = (b"TOPI Beni_immobili\r\nTABL Comune\r\n"
+                 + ("OBJE 1 %s 5000 %s\r\n" % (nome_comune, numero)).encode("latin-1")
+                 + b"ETAB\r\nETOP\r\nENDE\r\n")
+        with open(percorso, "wb") as f:
+            f.write(self.TESTA + corpo)
+        return percorso
+
+    def _dialog(self):
+        dlg = TIDashboardDialog()
+        jar = os.path.join(self.tmp, "ili2gpkg.jar")
+        with open(jar, "wb") as f:
+            f.write(b"x")
+        dlg.txt_jar.setText(jar)
+        dlg.txt_gpkg.setText(os.path.join(self.tmp, "archivio.gpkg"))
+        dlg.find_java = lambda: "java"
+        prova = self
+        dlg.load_and_style_layers = lambda: prova.caricato.append(True)
+        dlg._validate_gpkg_with_gdal = lambda *a, **k: None
+        return dlg
+
+    def _avvia(self, dlg):
+        """Costruisce la coda senza passare dalla finestra di scelta cartella."""
+        lavori = cd._archivio.pianifica_cartella(
+            dlg.txt_gpkg.text().strip(), self.cartella,
+            modello_atteso=cd._modello.MODELLO_ATTESO)
+        dlg._coda_import = [l for l in lavori if l.da_fare]
+        dlg._fatti_in_coda = 0
+        dlg._falliti_in_coda = []
+        dlg._avvia_prossimo_della_coda()
+
+    def _gira(self, dlg, *esiti):
+        """Fa girare la coda fino in fondo, come farebbero i worker veri.
+
+        Il worker finto non emette il segnale di fine, quindi la catena la si
+        percorre a mano: dopo uno schemaimport tocca a on_schema_finished, che
+        avvia i dati; dopo un dataimport tocca a on_data_finished, che passa al
+        comune successivo. 'esiti' sono i codici di ritorno dei DATI, uno per
+        comune, nell'ordine."""
+        esiti = list(esiti)
+        for _ in range(200):
+            if not self.avviati:
+                return
+            tipo, _cmd = self.avviati[-1]
+            if tipo == "schemaimport":
+                dlg.on_schema_finished(0, "schemaimport")
+                continue
+            codice = esiti.pop(0) if esiti else 0
+            prima = len(self.avviati)
+            dlg.on_data_finished(codice, "dataimport")
+            if len(self.avviati) == prima:
+                return                    # la coda e' finita
+
+    def test_lo_schema_si_fa_solo_al_primo(self):
+        """Rifarlo a ogni file cancellerebbe i comuni gia' entrati: di cento
+        comuni ne resterebbe uno."""
+        self._itf("a.itf", "Lavertezzo", "422")
+        self._itf("b.itf", "Coldrerio", "611")
+        self._itf("c.itf", "Arzo", "606")
+        dlg = self._dialog()
+        self._avvia(dlg)
+        self._gira(dlg)
+        tipi = [t for t, _c in self.avviati]
+        self.assertEqual(tipi.count("schemaimport"), 1, tipi)
+        self.assertEqual(tipi.count("dataimport"), 3, tipi)
+
+    def test_ogni_comune_ha_il_suo_dataset(self):
+        self._itf("a.itf", "Lavertezzo", "422")
+        self._itf("b.itf", "Coldrerio", "611")
+        dlg = self._dialog()
+        self._avvia(dlg)
+        self._gira(dlg)
+        dataset = [c[c.index("--dataset") + 1]
+                   for t, c in self.avviati if t == "dataimport"]
+        self.assertEqual(dataset, ["422", "611"])
+
+    def test_i_layer_si_caricano_UNA_VOLTA_alla_fine(self):
+        """Caricarli dopo ogni comune vorrebbe dire rifare lo stile cento
+        volte, e mostrare un archivio a meta'."""
+        self._itf("a.itf", "Lavertezzo", "422")
+        self._itf("b.itf", "Coldrerio", "611")
+        dlg = self._dialog()
+        self._avvia(dlg)
+        dlg.on_schema_finished(0, "schemaimport")
+        dlg.on_data_finished(0, "dataimport")
+        self.assertEqual(self.caricato, [], "caricati a meta' coda")
+        dlg.on_data_finished(0, "dataimport")
+        self.assertEqual(len(self.caricato), 1)
+
+    def test_un_comune_andato_male_non_ferma_gli_altri(self):
+        """Su cento consegne, fermarsi al primo file storto vorrebbe dire
+        rifare tutto il giro dopo averlo tolto."""
+        self._itf("a.itf", "Lavertezzo", "422")
+        self._itf("b.itf", "Coldrerio", "611")
+        self._itf("c.itf", "Arzo", "606")
+        dlg = self._dialog()
+        self._avvia(dlg)
+        self._gira(dlg, 1, 0, 0)                   # il primo fallisce
+        self.assertEqual(len(dlg._falliti_in_coda), 1)
+        self.assertIn("a.itf", dlg._falliti_in_coda[0])
+        self.assertEqual([t for t, _c in self.avviati].count("dataimport"), 3)
+        self.assertEqual(len(self.caricato), 1,
+                         "gli altri due sono entrati: la legenda va applicata")
+
+    def test_se_falliscono_TUTTI_non_si_stilizza_niente(self):
+        self._itf("a.itf", "Lavertezzo", "422")
+        self._itf("b.itf", "Coldrerio", "611")
+        dlg = self._dialog()
+        self._avvia(dlg)
+        self._gira(dlg, 1, 1)
+        self.assertEqual(self.caricato, [])
+
+    def test_i_comuni_gia_dentro_non_entrano_in_coda(self):
+        """La ripresa: e' il motivo per cui un giro da venti minuti
+        interrotto non va rifatto da capo."""
+        self._itf("a.itf", "Lavertezzo", "422")
+        self._itf("b.itf", "Coldrerio", "611")
+        g = os.path.join(self.tmp, "archivio.gpkg")
+        con = sqlite3.connect(g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (1, '422')")
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        con.execute("CREATE TABLE mu_fondo (T_Id INTEGER, T_datasetname TEXT)")
+        con.execute("INSERT INTO gpkg_contents VALUES ('mu_fondo','features')")
+        con.commit()
+        con.close()
+        dlg = self._dialog()
+        self._avvia(dlg)
+        dataset = [c[c.index("--dataset") + 1]
+                   for t, c in self.avviati if t == "dataimport"]
+        self.assertEqual(dataset, ["611"], "ha rifatto un comune gia' dentro")
+
+    def test_un_importazione_singola_non_eredita_la_coda(self):
+        """I contatori di un giro precedente farebbero parlare il riassunto
+        finale di comuni che non c'entrano."""
+        dlg = self._dialog()
+        dlg._avviati_in_coda = 7
+        dlg._fatti_in_coda = 7
+        dlg._falliti_in_coda = ["vecchio.itf"]
+        dlg.txt_itf.setText(self._itf("solo.itf", "Lavertezzo", "422"))
+        dlg.run_import()
+        self.assertEqual(dlg._avviati_in_coda, 1)
+        self.assertEqual(dlg._fatti_in_coda, 0)
+        self.assertEqual(dlg._falliti_in_coda, [])
+
+
 class TestComuneAttivo(unittest.TestCase):
     """La catena intera: scelgo un comune nella tendina, e la data del
     cartiglio e i dati dei layer seguono quello.

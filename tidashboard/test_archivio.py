@@ -342,5 +342,127 @@ class TestPianificazione(unittest.TestCase):
             self.assertTrue(p.motivo and len(p.motivo) > 20, repr(p.motivo))
 
 
+class TestCartella(unittest.TestCase):
+    """L'importazione di una cartella intera.
+
+    Serve perche' l'archivio e' cantonale: 106 comuni uno alla volta non li
+    carica nessuno. E deve poter RIPRENDERE, non ricominciare: un giro da
+    venti minuti che si interrompe a meta' non va rifatto da capo."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.cartella = os.path.join(self.d, "consegne")
+        os.makedirs(self.cartella)
+        self.g = os.path.join(self.d, "archivio.gpkg")
+
+    def _file(self, nome, *comuni):
+        righe = ["OBJE %d %s %s %s" % (i, n, b, nr)
+                 for i, (n, b, nr) in enumerate(comuni, 1)]
+        return _itf(self.cartella, _tabella("Comune", *righe), nome=nome)
+
+    def _archivio(self, *dataset):
+        con = sqlite3.connect(self.g)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        for i, n in enumerate(dataset, 1):
+            con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (?, ?)", (i, n))
+        con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+        con.execute("CREATE TABLE mu_fondo (T_Id INTEGER, T_datasetname TEXT)")
+        con.execute("INSERT INTO gpkg_contents VALUES ('mu_fondo', 'features')")
+        con.commit()
+        con.close()
+
+    def test_solo_il_PRIMO_crea_lo_schema(self):
+        """IL CASO CHE ROVINEREBBE TUTTO. pianifica() guarda l'archivio com'e'
+        adesso: chiamandola per ogni file su un archivio che non esiste
+        ancora, tutti e tre direbbero "nuovo" e si rifarebbe lo schema tre
+        volte - cioe' si cancellerebbe tutto a ogni giro, lasciando solo
+        l'ultimo comune."""
+        self._file("a.itf", ("Lavertezzo", "5112", "422"))
+        self._file("b.itf", ("Coldrerio", "5251", "611"))
+        self._file("c.itf", ("Arzo", "5249", "606"))
+        lavori = A.pianifica_cartella(self.g, self.cartella)
+        self.assertEqual([l.azione for l in lavori],
+                         [A.NUOVO, A.AGGIUNGI, A.AGGIUNGI])
+
+    def test_riprende_invece_di_ricominciare(self):
+        """Il giro precedente si era fermato dopo il primo comune."""
+        self._file("a.itf", ("Lavertezzo", "5112", "422"))
+        self._file("b.itf", ("Coldrerio", "5251", "611"))
+        self._archivio("422")
+        lavori = A.pianifica_cartella(self.g, self.cartella)
+        self.assertEqual([l.azione for l in lavori], [A.GIA_FATTO, A.AGGIUNGI])
+        self.assertEqual([l.da_fare for l in lavori], [False, True])
+
+    def test_con_rifai_si_riaggiornano_tutti(self):
+        self._file("a.itf", ("Lavertezzo", "5112", "422"))
+        self._file("b.itf", ("Coldrerio", "5251", "611"))
+        self._archivio("422")
+        lavori = A.pianifica_cartella(self.g, self.cartella, rifai=True)
+        self.assertEqual([l.azione for l in lavori], [A.SOSTITUISCI, A.AGGIUNGI])
+
+    def test_due_file_per_lo_stesso_comune(self):
+        """Quale dei due valga non lo puo' decidere il programma, e lasciare
+        vincere l'ultimo letto sarebbe una sovrascrittura silenziosa."""
+        self._file("vecchio.itf", ("Lavertezzo", "5112", "422"))
+        self._file("nuovo.itf", ("Lavertezzo", "5112", "422"))
+        lavori = A.pianifica_cartella(self.g, self.cartella)
+        self.assertEqual([l.azione for l in lavori], [A.NUOVO, A.RIFIUTA])
+        # A fermarsi e' il SECONDO in ordine alfabetico, e il motivo NOMINA
+        # l'altro file: non si sceglie il piu' recente ne' il piu' grande,
+        # perche' sarebbe indovinare. Chi guarda deve poter decidere.
+        self.assertIn("nuovo.itf", lavori[0].itf)
+        self.assertIn("vecchio.itf", lavori[1].itf)
+        self.assertIn("nuovo.itf", lavori[1].motivo)
+
+    def test_un_file_guasto_non_ferma_gli_altri(self):
+        self._file("a.itf", ("Lavertezzo", "5112", "422"))
+        _itf(self.cartella, _tabella("Fondo", "OBJE 1 x 2"), nome="b.itf")
+        self._file("c.itf", ("Coldrerio", "5251", "611"))
+        lavori = A.pianifica_cartella(self.g, self.cartella)
+        self.assertEqual([l.azione for l in lavori],
+                         [A.NUOVO, A.RIFIUTA, A.AGGIUNGI])
+
+    def test_l_ordine_non_cambia_fra_un_giro_e_l_altro(self):
+        """Senza un ordine stabile, "dove ero arrivato" non si sa."""
+        for nome in ("zurigo.itf", "Airolo.itf", "biasca.itf"):
+            self._file(nome, ("C" + nome[0], "5000", str(400 + len(nome))))
+        a = [os.path.basename(p) for p in A.itf_nella_cartella(self.cartella)]
+        b = [os.path.basename(p) for p in A.itf_nella_cartella(self.cartella)]
+        self.assertEqual(a, b)
+        self.assertEqual(a, ["Airolo.itf", "biasca.itf", "zurigo.itf"])
+
+    def test_una_cartella_senza_itf(self):
+        self.assertEqual(A.itf_nella_cartella(self.cartella), [])
+        self.assertEqual(A.pianifica_cartella(self.g, self.cartella), [])
+        self.assertIn("nessun file", A.riassunto([]))
+
+    def test_una_cartella_che_non_esiste(self):
+        self.assertEqual(A.itf_nella_cartella(os.path.join(self.d, "mai")), [])
+        self.assertEqual(A.itf_nella_cartella(None), [])
+
+    def test_i_flag_vengono_dal_piano_non_da_una_seconda_regola(self):
+        self._file("a.itf", ("Lavertezzo", "5112", "422"))
+        self._file("b.itf", ("Coldrerio", "5251", "611"))
+        primo, secondo = A.pianifica_cartella(self.g, self.cartella)
+        schema, dati = A.flag_di(primo)
+        self.assertIn("--createDatasetCol", schema)
+        self.assertEqual(dati, ["--import", "--dataset", "422"])
+        schema2, dati2 = A.flag_di(secondo)
+        self.assertEqual(schema2, [], "lo schema si fa una volta sola")
+        self.assertEqual(dati2, ["--import", "--dataset", "611"])
+
+    def test_il_riassunto_conta_tutto(self):
+        self._file("a.itf", ("Lavertezzo", "5112", "422"))
+        self._file("b.itf", ("Coldrerio", "5251", "611"))
+        _itf(self.cartella, _tabella("Fondo", "OBJE 1 x 2"), nome="c.itf")
+        self._archivio("422")
+        testo = A.riassunto(A.pianifica_cartella(self.g, self.cartella))
+        self.assertIn("1 da aggiungere", testo)
+        self.assertIn("1 gia' dentro", testo)
+        self.assertIn("1 non importabili", testo)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
