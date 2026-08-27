@@ -1417,6 +1417,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # Il comune fa parte del percorso di lavoro: se resta vuoto la
         # planimetria e' bloccata, e la riga sopra le schede deve dirlo subito.
         self.combo_comune.currentTextChanged.connect(self._aggiorna_percorso)
+        # Cambiare comune non cambia solo l'intestazione: riduce i dati a quel
+        # comune, e con essi l'estensione su cui si centra il foglio.
+        self.combo_comune.currentTextChanged.connect(self._al_cambio_di_comune)
         self._convalida_percorsi()
         self._aggiorna_conteggio_log()
         self._ripristina_impostazioni()
@@ -2236,7 +2239,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         data = _dati_comune.data_estrazione_itf(self.txt_itf.text().strip())
         self._origine_data = "estrazione ITF" if data else ""
         if not data:
-            data = _dati_comune.leggi_data_validita(percorso)
+            # IL NUMERO DEL COMUNE, non solo il percorso: in un archivio a piu'
+            # comuni la data va letta da quello scelto. Senza, si prendeva la
+            # piu' recente fra TUTTI i comuni - misurato su Lavertezzo e
+            # Coldrerio, il piano di Coldrerio dichiarava "stato al 17.06.2026"
+            # mentre i suoi dati erano fermi al 20.05.2026. "Stato al" e' una
+            # delle nove iscrizioni obbligatorie (circ154_allegato2 cap.1.5.7):
+            # era un'affermazione falsa su un atto ufficiale.
+            data = _dati_comune.leggi_data_validita(
+                percorso, self._numero_comune_attivo(percorso))
             self._origine_data = "ultima mutazione nei dati" if data else ""
         if data:
             # _data_dai_dati va assegnata PRIMA di setDate: setDate emette
@@ -2258,6 +2269,65 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # Se l'utente aveva gia' scelto un nome ancora presente, lo si rispetta.
         self.combo_comune.setCurrentText(scelto if scelto in nomi else nomi[0])
         return nomi
+
+    def _numero_comune_attivo(self, percorso=None):
+        """Il numero del comune scelto, o None.
+
+        Il numero sta nel registro dell'archivio, non nella tendina: quella
+        porta i NOMI, perche' e' il nome che va in intestazione. Il numero
+        serve per filtrare i dati, ed e' il nome del dataset.
+
+        NONE QUANDO L'ARCHIVIO HA UN COMUNE SOLO, che e' il caso di gran lunga
+        piu' frequente: li' filtrare non serve, e passare None lascia il
+        comportamento identico a prima del multi-comune - compresi i
+        GeoPackage vecchi, che la colonna del dataset non ce l'hanno."""
+        percorso = percorso or self.txt_gpkg.text().strip()
+        try:
+            registro = _archivio.registrati(percorso)
+        except Exception:
+            return None
+        if len(registro) < 2:
+            return None
+        nome = self.combo_comune.currentText().strip()
+        for riga in registro:
+            if (riga["nome"] or "").strip() == nome:
+                return riga["numero"]
+        return None
+
+    def _al_cambio_di_comune(self, _testo=None):
+        """La tendina del comune e' stata toccata.
+
+        Si protegge tutto: e' agganciata a currentTextChanged, che scatta
+        anche mentre la tendina si ripopola da sola, e un errore qui
+        romperebbe il riempimento invece di cambiare un filtro."""
+        try:
+            self._applica_comune_attivo()
+        except Exception as e:
+            self.log("   ⚠️ Filtro del comune non applicato: %s" % e, Qgis.Warning)
+
+    def _applica_comune_attivo(self):
+        """Riduce i layer caricati al comune scelto, e rilegge la data.
+
+        DA QUI PASSA ANCHE L'ESTENSIONE, che e' meno ovvio: estensione_reale
+        scorre le geometrie con getFeatures(), che rispetta il filtro. Senza,
+        il foglio si centrava sull'unione dei comuni - sui due comuni di prova
+        10 101 x 37 213 m invece di 1 549 x 902 m, e nessuna delle otto scale
+        di norma riusciva a contenerla."""
+        numero = self._numero_comune_attivo()
+        layers = getattr(self, "loaded_layers", None) or []
+        if not layers:
+            return
+        filtrati, saltati, falliti = _archivio.filtra_per_comune(layers, numero)
+        if numero:
+            self.log("   🏛️ Comune attivo %s: %d layer ridotti a quel comune."
+                     % (numero, len(filtrati)))
+        if saltati:
+            self.log("   ℹ️ %d layer senza la colonna del comune: lasciati "
+                     "interi (sarebbero diventati vuoti)." % len(saltati))
+        if falliti:
+            self.log("   ⚠️ %d layer non hanno accettato il filtro del comune: "
+                     "mostrano ancora tutto l'archivio." % len(falliti),
+                     Qgis.Warning)
 
     # --- TRASCINAMENTO DEL FOGLIO -------------------------------------------
     def _colore_ingombro(self, stato):
@@ -3685,6 +3755,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # appena importati: e' un'iscrizione obbligatoria (cap.1.5.7) e il
         # modello la contiene, quindi non ha senso farla digitare.
         comuni = self.aggiorna_comuni_da_dati()
+        # Dopo aver letto il comune: su un archivio a piu' comuni i layer
+        # appena caricati contengono TUTTO l'archivio, e vanno ridotti a quello
+        # scelto prima che qualcuno ne calcoli l'estensione.
+        self._al_cambio_di_comune()
         data = getattr(self, "_data_dai_dati", "")
         if data:
             self.log("   📅 \"Stato al\" %s (%s)"

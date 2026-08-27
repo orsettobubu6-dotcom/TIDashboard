@@ -450,6 +450,82 @@ def _modelli_gpkg(percorso_gpkg):
         con.close()
 
 
+# Il filtro che riduce un layer al comune attivo. Si usa il nome della colonna
+# come lo scrive ili2gpkg (maiuscole comprese): l'espressione va a QGIS, non a
+# sqlite, e li' il confronto e' sensibile alle maiuscole.
+COLONNA_DATASET = "T_datasetname"
+
+
+def _cita(valore):
+    """Un valore per un'espressione QGIS. I numeri di comune sono cifre, ma
+    citarli comunque costa nulla ed evita che un giorno un nome di dataset con
+    un apice spezzi l'espressione."""
+    return "'%s'" % str(valore).replace("'", "''")
+
+
+def espressione_comune(numero):
+    """Il filtro da mettere su un layer per vedere solo quel comune."""
+    return '"%s" = %s' % (COLONNA_DATASET, _cita(numero))
+
+
+def filtra_per_comune(layers, numero):
+    """Riduce i layer al solo comune indicato. (filtrati, saltati, falliti).
+
+    E' IL MECCANISMO DEL PIANO PER COMUNE, e non serve solo a nascondere: da
+    qui passa anche l'estensione. estensione_reale scorre le geometrie con
+    getFeatures(), che rispetta il filtro, quindi senza filtro il foglio si
+    centrava sull'UNIONE dei comuni - misurato su due comuni veri: 10 101 x
+    37 213 m invece di 1 549 x 902 m, e nessuna delle otto scale di norma
+    riusciva a contenerla.
+
+    'numero' vuoto o None TOGLIE il filtro.
+
+    I layer senza la colonna del dataset si SALTANO senza toccarli: sono i
+    layer di un archivio a comune solo, o quelli che l'utente ha aggiunto al
+    progetto per conto suo, e in nessuno dei due casi un filtro su una colonna
+    che non c'e' avrebbe senso - QGIS li renderebbe vuoti."""
+    filtrati, saltati, falliti = [], [], []
+    espressione = espressione_comune(numero) if numero else ""
+    for layer in layers:
+        try:
+            campi = [c.name() for c in layer.fields()]
+        except (AttributeError, RuntimeError):
+            saltati.append(layer)
+            continue
+        # Con il filtro gia' attivo la colonna resta fra i campi, quindi il
+        # controllo vale anche quando si toglie il filtro.
+        if COLONNA_DATASET not in campi:
+            saltati.append(layer)
+            continue
+        try:
+            if layer.setSubsetString(espressione):
+                filtrati.append(layer)
+            else:
+                falliti.append(layer)
+        except (AttributeError, RuntimeError):
+            falliti.append(layer)
+    return filtrati, saltati, falliti
+
+
+def comune_attivo_dei_layer(layers):
+    """Il comune a cui i layer sono filtrati, se sono d'accordo fra loro.
+
+    None quando non c'e' nessun filtro, e None anche quando i layer sono
+    filtrati su comuni DIVERSI: quello e' uno stato incoerente, e riportare
+    uno dei due come "il comune attivo" lo nasconderebbe."""
+    visti = set()
+    atteso = '"%s" = ' % COLONNA_DATASET
+    for layer in layers:
+        try:
+            filtro = layer.subsetString()
+        except (AttributeError, RuntimeError):
+            continue
+        if not filtro or not filtro.startswith(atteso):
+            continue
+        visti.add(filtro[len(atteso):].strip().strip("'").replace("''", "'"))
+    return visti.pop() if len(visti) == 1 else None
+
+
 def disallineati(percorso_gpkg):
     """(nei_dati_non_a_registro, a_registro_non_nei_dati).
 

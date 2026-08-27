@@ -43,18 +43,42 @@ def _colonne(con, tabella):
     return [r[1].lower() for r in con.execute('PRAGMA table_info("%s")' % tabella)]
 
 
-def _valori(con, tabella, colonna):
-    """Valori distinti, non vuoti, nell'ordine in cui compaiono."""
+# La colonna con cui ili2gpkg tiene separati i comuni dentro un archivio.
+COL_DATASET = "t_datasetname"
+
+
+def _valori(con, tabella, colonna, comune=None):
+    """Valori distinti, non vuoti, nell'ordine in cui compaiono.
+
+    'comune' RESTRINGE AL SOLO COMUNE indicato (il numero, che e' il nome del
+    dataset). Serve perche' un archivio puo' contenere piu' comuni e le
+    risposte che ne escono finiscono nell'intestazione e nel cartiglio del
+    piano, che parlano di UN comune: senza il filtro, il piano di Coldrerio
+    dichiarava la data di Lavertezzo.
+
+    Se la colonna del dataset non c'e' - archivio di un comune solo, fatto
+    prima del multi-comune - il filtro si ignora invece di dare zero risultati:
+    li' tutte le righe sono di quell'unico comune, e la risposta senza filtro
+    e' gia' quella giusta."""
+    dove, valori = "", ()
+    if comune and COL_DATASET in _colonne(con, tabella):
+        dove = ' WHERE "%s" = ?' % COL_DATASET
+        valori = (str(comune),)
     visti = []
-    for (v,) in con.execute('SELECT DISTINCT "%s" FROM "%s"' % (colonna, tabella)):
+    for (v,) in con.execute(
+            'SELECT DISTINCT "%s" FROM "%s"%s' % (colonna, tabella, dove), valori):
         testo = (v or "").strip() if isinstance(v, str) else ""
         if testo and testo not in visti:
             visti.append(testo)
     return visti
 
 
-def leggi_comuni(percorso_gpkg):
+def leggi_comuni(percorso_gpkg, comune=None):
     """Nomi di comune trovati nel GeoPackage, i piu' attendibili per primi.
+
+    'comune' e' il numero del comune attivo: indicandolo si legge SOLO quello,
+    che e' cio' che va in intestazione quando l'archivio ne contiene piu' d'uno
+    (senza, l'intestazione diventava "Coldrerio, Lavertezzo").
 
     Ritorna una lista vuota se il file non c'e', non e' leggibile o non
     contiene nessuna delle due fonti: l'assenza del dato non deve impedire di
@@ -76,7 +100,7 @@ def leggi_comuni(percorso_gpkg):
             if tabella.startswith(("gpkg_", "rtree_", "sqlite_")):
                 continue
             if COL_NOME_PIANO in _colonne(con, tabella):
-                for nome in _valori(con, tabella, COL_NOME_PIANO):
+                for nome in _valori(con, tabella, COL_NOME_PIANO, comune):
                     if nome not in nomi:
                         nomi.append(nome)
         # 2) l'elenco dei comuni del perimetro
@@ -85,7 +109,7 @@ def leggi_comuni(percorso_gpkg):
                 continue
             if COL_NOME not in _colonne(con, tabella):
                 continue
-            for nome in _valori(con, tabella, COL_NOME):
+            for nome in _valori(con, tabella, COL_NOME, comune):
                 if nome not in nomi:
                     nomi.append(nome)
     except sqlite3.Error:
@@ -135,7 +159,7 @@ def data_estrazione_itf(percorso_itf):
     return datetime.datetime.fromtimestamp(quando).strftime("%d.%m.%Y")
 
 
-def leggi_data_validita(percorso_gpkg):
+def leggi_data_validita(percorso_gpkg, comune=None):
     """Data di validita' dei dati, letta dalle tabelle di attualizzazione.
 
     "Stato al" nel cartiglio e' la data dei DATI, non quella della stampa: sta
@@ -158,7 +182,7 @@ def leggi_data_validita(percorso_gpkg):
             for nome in COLONNE_DATA:
                 if nome not in colonne:
                     continue
-                for v in _valori(con, tabella, nome):
+                for v in _valori(con, tabella, nome, comune):
                     # ili2gpkg le scrive ISO (aaaa-mm-gg): il confronto fra
                     # stringhe in quel formato e' gia' cronologico.
                     #

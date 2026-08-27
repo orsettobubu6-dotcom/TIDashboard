@@ -21,6 +21,7 @@ _qgs = QgsApplication([], False)
 _qgs.initQgis()
 
 from tidashboard import planimetria as P
+from tidashboard import archivio as A
 
 CX, CY = 2718000.0, 1082000.0
 
@@ -1293,6 +1294,81 @@ class TestRotazioneCheSalvaLaScala(unittest.TestCase):
         self.assertEqual(
             P.rotazione_che_salva_la_scala([QgsPointXY(1, 2)], None, 500),
             (None, None))
+
+
+class TestFiltroPerComune(unittest.TestCase):
+    """Il filtro che riduce i layer al comune attivo.
+
+    Non serve solo a nascondere: da qui passa l'ESTENSIONE. estensione_reale
+    scorre le geometrie con getFeatures(), che rispetta il filtro, quindi
+    senza filtro il foglio si centrava sull'unione dei comuni. Misurato
+    sull'archivio vero di Lavertezzo e Coldrerio: 10 101 x 37 213 m invece di
+    1 549 x 902 m, e nessuna delle scale di norma riusciva a contenerla."""
+
+    def _layer(self, con_colonna=True):
+        campi = "&field=T_datasetname:string" if con_colonna else "&field=x:string"
+        lyr = QgsVectorLayer("Point?crs=EPSG:2056" + campi, "prova", "memory")
+        dp = lyr.dataProvider()
+        # due comuni a 20 km l'uno dall'altro: l'unione e' enorme, ognuno
+        # per se' e' piccolo
+        for ds, x in (("422", 2700000.0), ("422", 2700500.0),
+                      ("611", 2720000.0), ("611", 2720500.0)):
+            f = QgsFeature(lyr.fields())
+            f.setAttribute(0, ds if con_colonna else "y")
+            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, 1100000.0)))
+            dp.addFeature(f)
+        lyr.updateExtents()
+        return lyr
+
+    def test_il_filtro_rimpicciolisce_l_estensione(self):
+        lyr = self._layer()
+        self.assertAlmostEqual(lyr.extent().width(), 20500.0, delta=1.0)
+        filtrati, saltati, falliti = A.filtra_per_comune([lyr], "422")
+        self.assertEqual((len(filtrati), len(saltati), len(falliti)), (1, 0, 0))
+        self.assertAlmostEqual(lyr.extent().width(), 500.0, delta=1.0)
+        self.assertEqual(lyr.featureCount(), 2)
+
+    def test_un_layer_SENZA_la_colonna_si_salta_e_non_si_svuota(self):
+        """IL CASO CHE FAREBBE SPARIRE DEI DATI: un layer di un archivio a
+        comune solo, o uno che l'utente ha aggiunto per conto suo, non ha
+        T_datasetname. Filtrarlo su una colonna che non c'e' lo renderebbe
+        vuoto - dati spariti dalla mappa senza un errore."""
+        lyr = self._layer(con_colonna=False)
+        prima = lyr.featureCount()
+        filtrati, saltati, falliti = A.filtra_per_comune([lyr], "422")
+        self.assertEqual((len(filtrati), len(saltati), len(falliti)), (0, 1, 0))
+        self.assertEqual(lyr.featureCount(), prima)
+        self.assertEqual(lyr.subsetString(), "")
+
+    def test_togliere_il_filtro_restituisce_tutto(self):
+        lyr = self._layer()
+        A.filtra_per_comune([lyr], "422")
+        A.filtra_per_comune([lyr], None)
+        self.assertEqual(lyr.featureCount(), 4)
+        self.assertAlmostEqual(lyr.extent().width(), 20500.0, delta=1.0)
+
+    def test_si_sa_dire_su_che_comune_sono_filtrati(self):
+        lyr = self._layer()
+        self.assertIsNone(A.comune_attivo_dei_layer([lyr]))
+        A.filtra_per_comune([lyr], "611")
+        self.assertEqual(A.comune_attivo_dei_layer([lyr]), "611")
+
+    def test_layer_filtrati_su_comuni_DIVERSI_non_danno_un_comune_attivo(self):
+        """Stato incoerente: riportare uno dei due come "il comune attivo" lo
+        nasconderebbe, e il piano uscirebbe con l'intestazione di uno e la
+        geometria dell'altro."""
+        a, b = self._layer(), self._layer()
+        A.filtra_per_comune([a], "422")
+        A.filtra_per_comune([b], "611")
+        self.assertIsNone(A.comune_attivo_dei_layer([a, b]))
+
+    def test_un_comune_che_non_c_e_da_un_layer_vuoto_non_un_errore(self):
+        """Il filtro riesce comunque: e' QGIS a non avere niente da disegnare.
+        Chi chiama deve poterlo vedere dal conteggio, non da un'eccezione."""
+        lyr = self._layer()
+        filtrati, _s, falliti = A.filtra_per_comune([lyr], "999")
+        self.assertEqual((len(filtrati), len(falliti)), (1, 0))
+        self.assertEqual(lyr.featureCount(), 0)
 
 
 if __name__ == "__main__":

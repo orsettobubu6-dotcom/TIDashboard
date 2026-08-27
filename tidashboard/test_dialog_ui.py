@@ -2195,6 +2195,105 @@ class TestImportazioneMultiComune(unittest.TestCase):
         self.assertIn("T_datasetname", _avvisi[-1])
 
 
+class TestComuneAttivo(unittest.TestCase):
+    """La catena intera: scelgo un comune nella tendina, e la data del
+    cartiglio e i dati dei layer seguono quello.
+
+    Sono i due difetti misurati sull'archivio vero di Lavertezzo e Coldrerio:
+    il piano di Coldrerio dichiarava "stato al 17.06.2026" (la data di
+    Lavertezzo) mentre i suoi dati erano fermi al 20.05.2026, e il foglio si
+    centrava sull'unione dei due comuni - 10 101 x 37 213 m invece di
+    1 549 x 902 m, che nessuna delle otto scale di norma poteva contenere."""
+
+    def _archivio(self, quanti=2):
+        percorso = os.path.join(tempfile.mkdtemp(), "archivio.gpkg")
+        con = sqlite3.connect(percorso)
+        con.execute("CREATE TABLE confini_comunali_comune "
+                    "(nome TEXT, T_datasetname TEXT)")
+        con.execute("CREATE TABLE beni_immobili_tenuta_a_giorno "
+                    "(in_vigore TEXT, T_datasetname TEXT)")
+        con.execute("CREATE TABLE tidashboard_comuni "
+                    "(numero TEXT PRIMARY KEY, nome TEXT, bfs TEXT, itf TEXT,"
+                    " importato TEXT)")
+        righe = [("422", "Lavertezzo", "2026-06-17"),
+                 ("611", "Coldrerio", "2026-05-20")][:quanti]
+        for numero, nome, data in righe:
+            con.execute("INSERT INTO confini_comunali_comune VALUES (?, ?)",
+                        (nome, numero))
+            con.execute("INSERT INTO beni_immobili_tenuta_a_giorno VALUES (?, ?)",
+                        (data, numero))
+            con.execute("INSERT INTO tidashboard_comuni VALUES (?,?,?,?,?)",
+                        (numero, nome, "0000", "x.itf", "2026-08-27"))
+        con.commit()
+        con.close()
+        return percorso
+
+    def _layer(self):
+        lyr = QgsVectorLayer(
+            "Point?crs=EPSG:2056&field=T_datasetname:string", "punti", "memory")
+        dp = lyr.dataProvider()
+        for ds, x in (("422", 2700000.0), ("611", 2720000.0)):
+            f = QgsFeature(lyr.fields())
+            f.setAttribute(0, ds)
+            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, 1100000.0)))
+            dp.addFeature(f)
+        lyr.updateExtents()
+        return lyr
+
+    def _dialog(self, gpkg):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(gpkg)
+        dlg.txt_itf.setText("")          # se no la data verrebbe dal file ITF
+        return dlg
+
+    def test_la_data_segue_il_comune_scelto(self):
+        g = self._archivio()
+        dlg = self._dialog(g)
+        dlg.aggiorna_comuni_da_dati()
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg.aggiorna_comuni_da_dati()
+        self.assertEqual(dlg._numero_comune_attivo(), "611")
+        self.assertEqual(dlg._data_dai_dati, "20.05.2026",
+                         "il piano di Coldrerio dichiara la data di Lavertezzo")
+        dlg.combo_comune.setCurrentText("Lavertezzo")
+        dlg.aggiorna_comuni_da_dati()
+        self.assertEqual(dlg._data_dai_dati, "17.06.2026")
+
+    def test_i_layer_si_riducono_al_comune_scelto(self):
+        g = self._archivio()
+        dlg = self._dialog(g)
+        lyr = self._layer()
+        dlg.loaded_layers = [lyr]
+        dlg.aggiorna_comuni_da_dati()
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg._al_cambio_di_comune()
+        self.assertEqual(lyr.featureCount(), 1)
+        self.assertAlmostEqual(lyr.extent().xMinimum(), 2720000.0, delta=1.0)
+
+    def test_con_UN_comune_solo_non_cambia_niente(self):
+        """Il caso di gran lunga piu' frequente: nessun filtro, comportamento
+        identico a prima del multi-comune."""
+        g = self._archivio(quanti=1)
+        dlg = self._dialog(g)
+        lyr = self._layer()
+        dlg.loaded_layers = [lyr]
+        dlg.aggiorna_comuni_da_dati()
+        self.assertIsNone(dlg._numero_comune_attivo())
+        dlg._al_cambio_di_comune()
+        self.assertEqual(lyr.featureCount(), 2, "non doveva filtrare niente")
+        self.assertEqual(lyr.subsetString(), "")
+
+    def test_un_archivio_senza_registro_non_rompe_niente(self):
+        """Un GeoPackage importato fuori dal plugin non ha la tabella del
+        registro: si deve tornare al comportamento di prima, non fallire."""
+        percorso = _gpkg_con_comuni(comuni=("Giubiasco",))
+        dlg = self._dialog(percorso)
+        dlg.loaded_layers = [self._layer()]
+        dlg.aggiorna_comuni_da_dati()
+        self.assertIsNone(dlg._numero_comune_attivo())
+        dlg._al_cambio_di_comune()          # non deve alzare
+
+
 class TestModelloAOgniPasso(unittest.TestCase):
     """Il modello dei dati va controllato in tutti i passi, non solo allo
     scaricamento: un ITF ricevuto per posta e un GeoPackage importato altrove

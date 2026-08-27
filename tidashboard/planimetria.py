@@ -224,7 +224,11 @@ def _formato(nome):
     for n, w, h in FORMATI:
         if n == nome:
             return w, h
-    raise ValueError("formato sconosciuto: %s" % nome)
+    # %(nome,) e non %nome: con un argomento che sia una tupla o una lista, la
+    # seconda forma prova a riempire tanti segnaposto quanti sono gli elementi
+    # e alza TypeError QUI, dentro il messaggio d'errore - nascondendo la vera
+    # causa dietro un "not all arguments converted during string formatting".
+    raise ValueError("formato sconosciuto: %r" % (nome,))
 
 
 def intervallo_griglia(scala):

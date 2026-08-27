@@ -153,6 +153,70 @@ class TestGpkgDeiLayer(unittest.TestCase):
         self.assertEqual(D.gpkg_dei_layer([self._Finto("memory?geometry=Point")]), "")
 
 
+class TestUnComuneSoloDentroUnArchivio(unittest.TestCase):
+    """Intestazione e data quando l'archivio contiene piu' comuni.
+
+    Senza il filtro, il piano di un comune dichiarava i dati dell'altro:
+    misurato sull'archivio vero di Lavertezzo e Coldrerio, il piano di
+    Coldrerio diceva "stato al 17.06.2026" mentre i suoi dati erano fermi al
+    20.05.2026. "Stato al" e' una delle nove iscrizioni obbligatorie, quindi
+    era un'affermazione falsa su un atto ufficiale."""
+
+    def _archivio(self):
+        percorso = os.path.join(tempfile.mkdtemp(), "archivio.gpkg")
+        con = sqlite3.connect(percorso)
+        con.execute("CREATE TABLE confini_comunali_comune "
+                    "(nome TEXT, T_datasetname TEXT)")
+        con.executemany("INSERT INTO confini_comunali_comune VALUES (?, ?)",
+                        [("Lavertezzo", "422"), ("Coldrerio", "611")])
+        con.execute("CREATE TABLE beni_immobili_tenuta_a_giorno "
+                    "(in_vigore TEXT, T_datasetname TEXT)")
+        con.executemany("INSERT INTO beni_immobili_tenuta_a_giorno VALUES (?, ?)",
+                        [("2026-06-17", "422"), ("2026-05-20", "611")])
+        con.commit()
+        con.close()
+        return percorso
+
+    def test_la_data_e_quella_del_comune_chiesto(self):
+        g = self._archivio()
+        self.assertEqual(D.leggi_data_validita(g, "611"), "20.05.2026")
+        self.assertEqual(D.leggi_data_validita(g, "422"), "17.06.2026")
+
+    def test_senza_comune_si_comporta_come_prima(self):
+        """Gli archivi a comune solo non devono cambiare comportamento: li'
+        il massimo su tutto E' la risposta giusta."""
+        g = self._archivio()
+        self.assertEqual(D.leggi_data_validita(g), "17.06.2026")
+        self.assertEqual(D.leggi_comuni(g), ["Lavertezzo", "Coldrerio"])
+
+    def test_l_intestazione_porta_un_nome_solo(self):
+        g = self._archivio()
+        self.assertEqual(D.leggi_comuni(g, "611"), ["Coldrerio"])
+        self.assertEqual(D.leggi_comuni(g, "422"), ["Lavertezzo"])
+
+    def test_su_un_archivio_senza_la_colonna_il_filtro_si_ignora(self):
+        """Un GeoPackage di un comune solo, fatto prima del multi-comune, non
+        ha T_datasetname: filtrarlo darebbe zero righe, cioe' nessuna data e
+        nessuna intestazione. Li' la risposta senza filtro e' gia' giusta."""
+        percorso = os.path.join(tempfile.mkdtemp(), "vecchio.gpkg")
+        con = sqlite3.connect(percorso)
+        con.execute("CREATE TABLE confini_comunali_comune (nome TEXT)")
+        con.execute("INSERT INTO confini_comunali_comune VALUES ('Giubiasco')")
+        con.execute("CREATE TABLE beni_immobili_tenuta_a_giorno (in_vigore TEXT)")
+        con.execute("INSERT INTO beni_immobili_tenuta_a_giorno VALUES ('2026-01-09')")
+        con.commit()
+        con.close()
+        self.assertEqual(D.leggi_comuni(percorso, "422"), ["Giubiasco"])
+        self.assertEqual(D.leggi_data_validita(percorso, "422"), "09.01.2026")
+
+    def test_un_comune_che_nell_archivio_non_c_e(self):
+        """Chiedere un comune assente deve dare NIENTE, non il dato di un
+        altro: e' il caso in cui un'intestazione sbagliata passerebbe."""
+        g = self._archivio()
+        self.assertEqual(D.leggi_comuni(g, "999"), [])
+        self.assertEqual(D.leggi_data_validita(g, "999"), "")
+
+
 if __name__ == "__main__":
     risultato = unittest.main(exit=False, verbosity=2)
     sys.exit(0 if risultato.result.wasSuccessful() else 1)
