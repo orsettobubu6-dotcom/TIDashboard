@@ -19,7 +19,7 @@ from qgis.PyQt.QtWidgets import (
     QTextEdit, QLabel, QGroupBox, QMessageBox, QAction, QCheckBox, QGridLayout,
     QComboBox, QDoubleSpinBox, QDateEdit, QTabWidget, QProgressBar, QWidget,
     QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, QListWidget,
-    QListWidgetItem, QApplication
+    QListWidgetItem, QApplication, QFrame
 )
 from qgis.PyQt.QtCore import (QThread, pyqtSignal, QPointF, QRectF, QDate,
                               QTimer, Qt)
@@ -748,6 +748,28 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._campi_percorso = []
         layout = QVBoxLayout()
 
+        # LA TENDINA DEL COMUNE NASCE QUI, prima delle schede, perche' e' li'
+        # che va a finire: sopra tutto, sempre visibile. Stava dentro la
+        # planimetria, con l'aria di un campo dell'intestazione, mentre da
+        # quando l'archivio tiene piu' comuni decide che cosa si VEDE - quali
+        # oggetti sulla mappa, su che estensione si centra il foglio, quale
+        # data va nel cartiglio. Era il controllo piu' potente della finestra
+        # e sembrava il meno importante.
+        #
+        # La casella resta scrivibile: una consegna puo' non portare nessuna
+        # delle due fonti del nome, e in quel caso e' meglio poterlo scrivere
+        # che restare bloccati.
+        self.combo_comune = QComboBox()
+        self.combo_comune.setEditable(True)
+        self.combo_comune.lineEdit().setPlaceholderText(
+            "Letto dai dati INTERLIS dopo l'importazione")
+        self.combo_comune.setToolTip(
+            "Il comune attivo: decide che cosa si vede sulla mappa, su che "
+            "estensione si centra la planimetria e quale data va nel "
+            "cartiglio.\n\nI nomi vengono dai dati: "
+            "Layout_del_piano.Nome_comune e Confini_comunali.Comune.Nome")
+        self.combo_comune.setMinimumWidth(220)
+
         prod_layout = QHBoxLayout()
         prod_layout.addWidget(QLabel("Prodotto:"))
         self.combo_product = QComboBox()
@@ -1072,20 +1094,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._sync_rotazione(self.spin_rotazione.value())
 
         riga_plan2 = QHBoxLayout()
-        riga_plan2.addWidget(QLabel("Comune:"))
-        # Il comune si LEGGE dai dati INTERLIS (vedi dati_comune.py), non si
-        # digita: e' un'iscrizione obbligatoria e il modello lo contiene gia'.
-        # La casella resta scrivibile perche' una consegna puo' non portare
-        # nessuna delle due fonti, e in quel caso e' meglio poterlo scrivere
-        # che restare bloccati.
-        self.combo_comune = QComboBox()
-        self.combo_comune.setEditable(True)
-        self.combo_comune.lineEdit().setPlaceholderText(
-            "Letto dai dati INTERLIS dopo l'importazione")
-        self.combo_comune.setToolTip(
-            "Nomi trovati nei dati: Layout_del_piano.Nome_comune e "
-            "Confini_comunali.Comune.Nome")
-        riga_plan2.addWidget(self.combo_comune, 1)
+        # QUI RESTA SOLO L'ECO: la tendina sta in cima alla finestra (vedi
+        # init_ui). Toglierla di qui senza lasciare niente avrebbe reso muto il
+        # punto in cui si decide l'intestazione - chi guarda la planimetria
+        # deve poter leggere a chi sara' intestata senza risalire con gli occhi.
+        self.lbl_comune_piano = QLabel()
+        self.lbl_comune_piano.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_comune_piano.setToolTip(
+            "Si cambia dalla barra in cima alla finestra.")
+        riga_plan2.addWidget(self.lbl_comune_piano, 1)
 
         # "Stato al" e' la DATA DI VALIDITA' dei dati (iscrizione obbligatoria,
         # cap.1.5.7), non la data di stampa: un estratto prodotto oggi da dati
@@ -1344,6 +1361,32 @@ class TIDashboardDialog(StiliMixin, QDialog):
             "padding: 4px; border: 1px solid palette(mid); border-radius: 3px;")
         layout.addWidget(self.lbl_percorso)
 
+        # LA BARRA DELL'ARCHIVIO: che cosa ho aperto, e su quale comune sto
+        # lavorando. Sta FUORI dalle schede perche' la risposta a quelle due
+        # domande serve in tutte e cinque, e perche' cambiare comune cambia
+        # quello che si vede: un comando con quell'effetto non puo' stare
+        # nascosto dentro una scheda.
+        #
+        # Sparisce quando non c'e' un archivio: una barra vuota che dice
+        # "nessun comune" occuperebbe spazio per non dire niente.
+        self.barra_archivio = QFrame()
+        self.barra_archivio.setFrameShape(QFrame.Shape.StyledPanel)
+        riga_arch = QHBoxLayout(self.barra_archivio)
+        riga_arch.setContentsMargins(10, 6, 10, 6)
+        riga_arch.setSpacing(10)
+        self.lbl_archivio = QLabel()
+        self.lbl_archivio.setTextFormat(Qt.TextFormat.RichText)
+        riga_arch.addWidget(self.lbl_archivio)
+        riga_arch.addStretch()
+        self.lbl_comune_attivo = QLabel("Comune attivo:")
+        riga_arch.addWidget(self.lbl_comune_attivo)
+        riga_arch.addWidget(self.combo_comune)
+        self.lbl_quale_comune = QLabel()
+        self.lbl_quale_comune.setTextFormat(Qt.TextFormat.RichText)
+        riga_arch.addWidget(self.lbl_quale_comune)
+        self.barra_archivio.setVisible(False)
+        layout.addWidget(self.barra_archivio)
+
         layout.addWidget(self.schede)
 
         # Sincronizza ITF/DXF del gruppo 2 con i campi del gruppo 1 (stesso
@@ -1363,6 +1406,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # importazioni.
         self.txt_gpkg.textChanged.connect(
             lambda _t=None: self._aggiorna_pulsante_svuota())
+        self.txt_gpkg.textChanged.connect(
+            lambda _t=None: self._aggiorna_barra_archivio())
 
         # Avanzamento: durante ili2gpkg su un comune intero non si muoveva
         # nulla per minuti, solo qualche riga di console. La barra e'
@@ -2318,6 +2363,71 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.combo_comune.setCurrentText(scelto if scelto in nomi else nomi[0])
         return nomi
 
+    def _aggiorna_barra_archivio(self):
+        """Riscrive la barra in cima: quale archivio, quanti comuni, quale
+        attivo. Aggiorna anche l'eco nella planimetria.
+
+        Il NOME DEL FILE e non il percorso: il campo di testo mostra il centro
+        di un percorso lungo, che e' la parte che non serve, mentre l'unica
+        cosa che identifica un archivio sta in fondo e non si vede."""
+        if getattr(self, "barra_archivio", None) is None:
+            return
+        percorso = self.txt_gpkg.text().strip()
+        try:
+            d = _archivio.descrivi(percorso)
+        except Exception:
+            d = None
+
+        if d is None or not d.e_archivio:
+            self.barra_archivio.setVisible(False)
+            self._aggiorna_eco_comune(None, 0)
+            return
+
+        nome_file = os.path.basename(d.percorso)
+        self.lbl_archivio.setText(
+            "Archivio: <b>%s</b> <span style='color:#9E9E9E;'>&nbsp;%s&nbsp;·&nbsp;"
+            "%.1f MB</span>"
+            % (nome_file,
+               "1 comune" if d.quanti == 1 else "%d comuni" % d.quanti,
+               d.dimensione / 1048576.0))
+        self.lbl_archivio.setToolTip(d.percorso)
+
+        # "1 di 2" solo quando c'e' davvero da scegliere: su un archivio a
+        # comune solo sarebbe un contatore che conta fino a uno.
+        #
+        # LA POSIZIONE SI CONTA SULLA TENDINA, non sul registro. Sono due
+        # elenchi diversi - il registro ordina per numero di comune, la tendina
+        # per come i nomi compaiono nelle tabelle - e contare sull'uno mentre
+        # l'occhio legge l'altro darebbe un "2 di 2" accanto al primo nome
+        # dell'elenco. Se i due non hanno nemmeno la stessa lunghezza il
+        # contatore tace: confronterebbe cose diverse.
+        attivo = self.combo_comune.currentText().strip()
+        indice = self.combo_comune.findText(attivo)
+        coerenti = self.combo_comune.count() == d.quanti
+        if d.quanti > 1 and indice >= 0 and coerenti:
+            self.lbl_quale_comune.setText(
+                "<span style='color:#9E9E9E;'>%d di %d</span>"
+                % (indice + 1, d.quanti))
+        else:
+            self.lbl_quale_comune.setText("")
+        self.barra_archivio.setVisible(True)
+        self._aggiorna_eco_comune(attivo, d.quanti)
+
+    def _aggiorna_eco_comune(self, nome, quanti):
+        """L'eco nella planimetria: a chi sara' intestato il piano."""
+        if getattr(self, "lbl_comune_piano", None) is None:
+            return
+        if not nome:
+            self.lbl_comune_piano.setText(
+                "<span style='color:#9E9E9E;'>Nessun comune: si sceglie dalla "
+                "barra in cima.</span>")
+            return
+        coda = ("" if quanti < 2 else
+                " <span style='color:#9E9E9E;'>(uno dei %d dell'archivio)</span>"
+                % quanti)
+        self.lbl_comune_piano.setText(
+            "Il piano sara' intestato a <b>%s</b>%s" % (nome, coda))
+
     def _numero_comune_attivo(self, percorso=None):
         """Il numero del comune scelto, o None.
 
@@ -2363,6 +2473,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
         try:
             self._applica_comune_attivo()
             self.aggiorna_comuni_da_dati()
+            self._aggiorna_barra_archivio()
         except Exception as e:
             self.log("   ⚠️ Cambio di comune non applicato: %s" % e, Qgis.Warning)
         finally:
@@ -3477,6 +3588,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self._fatti_in_coda += 1
             self._annota_a_registro()
             self._aggiorna_pulsante_svuota()
+            self._aggiorna_barra_archivio()
         else:
             self.log(f"❌ Importazione dati fallita (Codice: {returncode}).", Qgis.Critical)
             if self._import_unique_errors:
@@ -3644,6 +3756,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                  % (d.quanti, os.path.basename(gpkg)), Qgis.Success)
         self.combo_comune.clear()
         self._aggiorna_pulsante_svuota()
+        self._aggiorna_barra_archivio()
 
     def _chiudi_layer_dell_archivio(self, gpkg):
         """Toglie dal progetto i layer che leggono da quel GeoPackage.

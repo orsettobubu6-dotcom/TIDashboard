@@ -2650,6 +2650,166 @@ class TestCodaCartella(unittest.TestCase):
         self.assertEqual(dlg._falliti_in_coda, [])
 
 
+class TestBarraArchivio(unittest.TestCase):
+    """La barra in cima: quale archivio, quanti comuni, quale attivo.
+
+    La tendina del comune stava dentro la planimetria con l'aria di un campo
+    dell'intestazione, mentre da quando l'archivio tiene piu' comuni decide
+    che cosa si VEDE. Spostarla sopra le schede e' stato possibile senza
+    toccare i venti punti che la leggono, perche' leggono tutti
+    currentText() e nessuno sa dove il widget stia."""
+
+    def _archivio(self, *dataset):
+        percorso = os.path.join(tempfile.mkdtemp(), "archivio.gpkg")
+        con = sqlite3.connect(percorso)
+        con.execute("CREATE TABLE T_ILI2DB_MODEL (modelName TEXT)")
+        con.execute("INSERT INTO T_ILI2DB_MODEL VALUES ('MD01MUTI7MN95')")
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        con.execute("CREATE TABLE tidashboard_comuni "
+                    "(numero TEXT PRIMARY KEY, nome TEXT, bfs TEXT, itf TEXT,"
+                    " importato TEXT)")
+        nomi = {"422": "Lavertezzo", "611": "Coldrerio", "606": "Arzo"}
+        for i, n in enumerate(dataset, 1):
+            con.execute("INSERT INTO T_ILI2DB_DATASET VALUES (?, ?)", (i, n))
+            con.execute("INSERT INTO tidashboard_comuni VALUES (?,?,?,?,?)",
+                        (n, nomi.get(n, "comune " + n), "0", "x.itf", "oggi"))
+        con.commit()
+        con.close()
+        return percorso
+
+    def test_la_tendina_sta_FUORI_dalle_schede(self):
+        """E' il punto dell'intervento: un comando che cambia quello che si
+        vede non puo' stare dentro una scheda."""
+        dlg = TIDashboardDialog()
+        genitore = dlg.combo_comune
+        dentro_una_scheda = False
+        while genitore is not None:
+            if genitore is dlg.schede:
+                dentro_una_scheda = True
+                break
+            genitore = genitore.parent()
+        self.assertFalse(dentro_una_scheda,
+                         "la tendina e' ancora dentro le schede")
+
+    def test_senza_archivio_la_barra_non_si_vede(self):
+        """Una barra che dice "nessun comune" occuperebbe spazio per non dire
+        niente."""
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(os.path.join(tempfile.mkdtemp(), "mai.gpkg"))
+        self.assertFalse(dlg.barra_archivio.isVisibleTo(dlg))
+
+    def test_un_file_che_non_e_un_archivio_non_accende_la_barra(self):
+        percorso = os.path.join(tempfile.mkdtemp(), "altro.gpkg")
+        with open(percorso, "wb") as f:
+            f.write(b"non e' un database")
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(percorso)
+        self.assertFalse(dlg.barra_archivio.isVisibleTo(dlg))
+
+    def test_la_barra_dice_il_NOME_DEL_FILE_non_il_percorso(self):
+        """Il campo di testo mostra il centro di un percorso lungo, che e' la
+        parte che non serve: il nome sta in fondo e non si vede."""
+        g = self._archivio("422", "611")
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(g)
+        testo = dlg.lbl_archivio.text()
+        self.assertIn("archivio.gpkg", testo)
+        self.assertNotIn(os.path.dirname(g), testo)
+        self.assertEqual(dlg.lbl_archivio.toolTip(), g)
+
+    def test_la_barra_conta_i_comuni(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(self._archivio("422", "611", "606"))
+        self.assertTrue(dlg.barra_archivio.isVisibleTo(dlg))
+        self.assertIn("3 comuni", dlg.lbl_archivio.text())
+
+    def test_un_comune_solo_si_dice_al_singolare(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(self._archivio("422"))
+        self.assertIn("1 comune", dlg.lbl_archivio.text())
+        self.assertNotIn("1 comuni", dlg.lbl_archivio.text())
+
+    def test_il_contatore_dice_quale_dei_quanti(self):
+        g = self._archivio("422", "611")
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(g)
+        dlg.combo_comune.clear()
+        dlg.combo_comune.addItems(["Lavertezzo", "Coldrerio"])
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg._aggiorna_barra_archivio()
+        self.assertIn("2 di 2", dlg.lbl_quale_comune.text())
+        dlg.combo_comune.setCurrentText("Lavertezzo")
+        dlg._aggiorna_barra_archivio()
+        self.assertIn("1 di 2", dlg.lbl_quale_comune.text())
+
+    def test_il_contatore_conta_sulla_TENDINA_non_sul_registro(self):
+        """Sono due elenchi diversi: il registro ordina per numero di comune,
+        la tendina per come i nomi compaiono nelle tabelle. Contando sul
+        registro mentre l'occhio legge la tendina, accanto al PRIMO nome
+        dell'elenco poteva comparire "2 di 2"."""
+        g = self._archivio("422", "611")          # registro: Lavertezzo, Coldrerio
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(g)
+        dlg.combo_comune.clear()
+        dlg.combo_comune.addItems(["Coldrerio", "Lavertezzo"])   # ordine opposto
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg._aggiorna_barra_archivio()
+        self.assertIn("1 di 2", dlg.lbl_quale_comune.text(),
+                      "ha contato sul registro invece che sulla tendina")
+
+    def test_se_i_due_elenchi_non_combaciano_il_contatore_tace(self):
+        """Confronterebbe cose diverse: meglio niente di un numero che non si
+        sa a che cosa si riferisce."""
+        g = self._archivio("422", "611", "606")
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(g)
+        dlg.combo_comune.clear()
+        dlg.combo_comune.addItems(["Lavertezzo", "Coldrerio"])   # due su tre
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg._aggiorna_barra_archivio()
+        self.assertEqual(dlg.lbl_quale_comune.text(), "")
+        self.assertIn("3 comuni", dlg.lbl_archivio.text(),
+                      "l'archivio ne ha comunque tre, e va detto")
+
+    def test_con_un_comune_solo_il_contatore_tace(self):
+        """Sarebbe un contatore che conta fino a uno."""
+        g = self._archivio("422")
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(g)
+        dlg.combo_comune.clear()
+        dlg.combo_comune.addItems(["Lavertezzo"])
+        dlg._aggiorna_barra_archivio()
+        self.assertEqual(dlg.lbl_quale_comune.text(), "")
+
+    def test_la_planimetria_dice_a_chi_sara_intestato_il_piano(self):
+        """Togliendo la tendina di li' senza lasciare niente, il punto in cui
+        si decide l'intestazione sarebbe diventato muto."""
+        g = self._archivio("422", "611")
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(g)
+        dlg.combo_comune.clear()
+        dlg.combo_comune.addItems(["Lavertezzo", "Coldrerio"])
+        dlg.combo_comune.setCurrentText("Coldrerio")
+        dlg._aggiorna_barra_archivio()
+        eco = dlg.lbl_comune_piano.text()
+        self.assertIn("Coldrerio", eco)
+        self.assertIn("intestato", eco)
+        self.assertIn("uno dei 2", eco)
+
+    def test_senza_comune_l_eco_lo_dice_e_dice_dove_sceglierlo(self):
+        dlg = TIDashboardDialog()
+        dlg.txt_gpkg.setText(os.path.join(tempfile.mkdtemp(), "mai.gpkg"))
+        self.assertIn("barra in cima", dlg.lbl_comune_piano.text())
+
+    def test_la_tendina_resta_scrivibile(self):
+        """Una consegna puo' non portare nessuna delle due fonti del nome, e
+        li' e' meglio poterlo scrivere che restare bloccati."""
+        dlg = TIDashboardDialog()
+        self.assertTrue(dlg.combo_comune.isEditable())
+        dlg.combo_comune.setCurrentText("Comune scritto a mano")
+        self.assertEqual(dlg.combo_comune.currentText(), "Comune scritto a mano")
+
+
 class TestComuneAttivo(unittest.TestCase):
     """La catena intera: scelgo un comune nella tendina, e la data del
     cartiglio e i dati dei layer seguono quello.
