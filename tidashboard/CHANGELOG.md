@@ -1,5 +1,87 @@
 # Diario delle versioni
 
+## 1.3.1 — 27 agosto 2026 — sperimentale
+
+Correzioni trovate **aprendo QGIS** dopo la 1.3.0, più i primi interventi sulla
+finestra. Chi usa la 1.3.0 con più comuni dovrebbe passare a questa.
+
+### La data del cartiglio non era quella del comune
+
+Due difetti, e il secondo &egrave; rientrato dalla porta che avevo appena
+chiuso.
+
+Il campo ITF è **uno solo**, i comuni sono molti: la data di modifica di quel
+file finiva in cartiglio per tutti. In una sessione vera il campo era rimasto
+pieno dalle impostazioni precedenti — un ITF scaricato mesi dopo — e i due
+comuni dichiaravano entrambi «stato al 20.08.2026», che non apparteneva a
+nessuno dei due: i loro dati sono del 17.06 e del 20.05.
+
+La correzione c'era già in `leggi_data_validita`, ma **veniva scavalcata**: la
+data dell'ITF ha la precedenza e non si arrivava mai a leggere i dati. Ora con
+più comuni la data dell'ITF si salta. Con **un** comune solo resta com'era.
+
+Poi: cambiando comune dalla tendina la mappa si filtrava, ma il cartiglio
+continuava a portare la data del comune di prima — la tendina era agganciata al
+filtro dei dati e non alla rilettura della data.
+
+Nessuna delle due l'avevano prese le prove, e per lo stesso motivo: **svuotavano
+il campo ITF apposta** e chiamavano l'aggiornamento a mano, per arrivare al ramo
+che stavano provando. Così facendo saltavano proprio la condizione che rompe.
+
+### Il selettore di comune è salito sopra le schede
+
+Stava dentro la planimetria, in fondo a una riga, con l'aria di un campo
+dell'intestazione. Ma da quando l'archivio tiene più comuni decide **che cosa si
+vede**: quali oggetti sulla mappa, su che estensione si centra il foglio, quale
+data va nel cartiglio.
+
+Ora una barra sopra le schede risponde alle due domande che servono in tutte e
+cinque:
+
+```
+Archivio: archivio.gpkg  2 comuni - 14.7 MB     Comune attivo: [Coldrerio v]  2 di 2
+```
+
+Il **nome del file** e non il percorso: il campo di testo mostra il centro di un
+percorso lungo, che è la parte che non serve, mentre l'unica cosa che identifica
+un archivio sta in fondo e non si vede. La barra sparisce quando non c'è un
+archivio.
+
+Nella planimetria resta un'eco — «Il piano sarà intestato a Coldrerio» —
+perché togliere la tendina senza lasciare niente avrebbe reso muto proprio il
+punto in cui si decide l'intestazione.
+
+### Le opzioni di tolleranza nascono spente
+
+Il riquadro nasceva **acceso**, con «Non validare i dati» in prima fila. E la
+sua spunta non è apri/chiudi: è l'interruttore generale, perché con essa spenta
+non viene passato nessun flag a ili2gpkg. Nascere acceso voleva dire presentare
+come normali delle opzioni da usare solo quando una consegna è rotta e si sa
+perché.
+
+Ora nasce spento e le spunte si **nascondono**: disabilitarle non basta, sei
+opzioni grigie occupano lo stesso spazio e chi legge «Non validare i dati» non
+guarda se è grigio. Il titolo dice quante ne sono attive anche a riquadro
+chiuso, e quando ce n'è almeno una lo si ripete sopra il pulsante: senza,
+un'importazione con la validazione spenta somiglierebbe in tutto a una normale.
+
+Chi l'aveva già acceso se lo ritrova acceso: una scelta salvata non si
+sovrascrive cambiando il valore iniziale.
+
+### Due righe verdi illeggibili sul tema scuro
+
+Il colore era cablato a `#2E7D32`. Il metodo che sceglie il verde giusto secondo
+il tema **esisteva già** e in quei due punti non veniva chiamato. Una delle due
+righe dice se il piano rispetta la proporzione della norma: un'informazione di
+conformità, non una nota di servizio.
+
+### In breve
+
+- 675 prove, undici suite. Ogni correzione fatta girare contro il codice
+  precedente per verificare che fallisse davvero.
+- Le prove sulle tolleranze si isolano dalle impostazioni salvate: senza,
+  leggerebbero la scelta di chi le esegue.
+
 ## 1.3.0 — 27 agosto 2026 — sperimentale
 
 Fino a qui il plugin lavorava su **un comune per volta**: un file ITF, un

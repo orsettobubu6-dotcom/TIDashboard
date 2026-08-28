@@ -891,9 +891,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.txt_gpkg.setPlaceholderText("Definisci output GeoPackage...")
         layout_import.addLayout(self.create_file_row("Output GPKG:", self.txt_gpkg, "GeoPackage (*.gpkg)", True, "import"))
 
-        group_adv = QGroupBox("Opzioni Tolleranza Errori (Per dati sporchi)")
+        # SPENTO PER DIFETTO, e non e' solo una questione di ingombro: la
+        # spunta del riquadro e' l'INTERRUTTORE GENERALE - con essa spenta
+        # _parametri_tolleranza non passa nessun flag a ili2gpkg. Nascerlo
+        # acceso, con "Non validare i dati" in prima fila, presentava a chi
+        # apre il plugin la prima volta delle opzioni da usare solo quando una
+        # consegna e' rotta e si sa perche'.
+        #
+        # Chi l'aveva gia' acceso se lo ritrova acceso: lo stato e' salvato
+        # nelle impostazioni ("tolleranze_attive") e una scelta fatta non si
+        # sovrascrive cambiando il valore iniziale.
+        group_adv = QGroupBox("Tolleranza errori")
         group_adv.setCheckable(True)
-        group_adv.setChecked(True)
+        group_adv.setChecked(False)
         layout_adv = QGridLayout()
         # Etichette in italiano, flag di ili2gpkg nel tooltip: i nomi grezzi
         # ("--skipPolygonBuilding") dicono qualcosa solo a chi conosce gia'
@@ -928,6 +938,19 @@ class TIDashboardDialog(StiliMixin, QDialog):
         group_adv.setLayout(layout_adv)
         self.group_adv = group_adv
         layout_import.addWidget(group_adv)
+
+        # QUANTE NE SONO ATTIVE, DETTO DOVE SI GUARDA. Chiuso il riquadro, le
+        # spunte non si vedono piu': senza questa riga, un'importazione con la
+        # validazione spenta somiglierebbe in tutto a una normale, e la
+        # differenza si scoprirebbe dai dati.
+        self.lbl_tolleranze = QLabel()
+        self.lbl_tolleranze.setWordWrap(True)
+        layout_import.addWidget(self.lbl_tolleranze)
+        group_adv.toggled.connect(lambda _s=None: self._aggiorna_tolleranze())
+        for spunta in (self.chk_disable_val, self.chk_skip_geom,
+                       self.chk_skip_ref, self.chk_skip_poly,
+                       self.chk_sql_null, self.chk_sql_text):
+            spunta.toggled.connect(lambda _s=None: self._aggiorna_tolleranze())
 
         self.btn_import = QPushButton("▶ ELABORA IMPORTAZIONE INTERLIS")
         # Le regole vanno scritte con il selettore QPushButton e non come
@@ -1507,6 +1530,11 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # _ripristina_impostazioni ha appena riempito i campi: la convalida va
         # rifatta, altrimenti il percorso resta quello del dialogo vuoto.
         self._convalida_percorsi()
+        # Le tolleranze possono essere state RIPRISTINATE accese da una
+        # sessione precedente: il titolo e l'avviso vanno scritti su quello
+        # stato, non su quello iniziale.
+        self._aggiorna_tolleranze()
+        self._aggiorna_barra_archivio()
 
         # La verifica si esegue SEMPRE all'apertura, non solo al primo avvio:
         # e' l'unica cosa che popola la cache di Java, e senza quella il
@@ -1579,7 +1607,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
                      "mutazioni recenti dà una data più vecchia del suo stato "
                      "reale.")
         elif dai_dati:
-            colore = "#2E7D32"
+            # _verde_ok() e non il verde cablato: su fondo scuro #2E7D32 e'
+            # quasi illeggibile. Il metodo esiste da sempre e qui non veniva
+            # chiamato.
+            colore = self._verde_ok()
             testo = ("Fonte: <b>indicata a mano</b> (dai dati risultava %s)."
                      % dai_dati)
         else:
@@ -1616,7 +1647,10 @@ class TIDashboardDialog(StiliMixin, QDialog):
         elif nota:
             colore, coda = "#E65100", "<br>" + nota + ". Sarà scritto nel cartiglio."
         else:
-            colore, coda = "#2E7D32", "<br>Proporzione esatta della norma."
+            # Idem qui: e' la riga che dice se il piano rispetta la
+            # proporzione della norma, cioe' un'informazione di conformita',
+            # e sul tema scuro spariva nel fondo.
+            colore, coda = self._verde_ok(), "<br>Proporzione esatta della norma."
         self.lbl_fattore.setText("<span style='color:%s'>%s%s</span>"
                                  % (colore, testo, coda))
 
@@ -2362,6 +2396,48 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # Se l'utente aveva gia' scelto un nome ancora presente, lo si rispetta.
         self.combo_comune.setCurrentText(scelto if scelto in nomi else nomi[0])
         return nomi
+
+    def _aggiorna_tolleranze(self):
+        """Scrive nel titolo del riquadro e sotto quante tolleranze sono
+        attive.
+
+        Il titolo lo dice anche a riquadro chiuso, dove le spunte non si
+        vedono; la riga sotto lo ripete in rosso quando ce n'e' almeno una,
+        perche' un'importazione con la validazione spenta somiglia in tutto a
+        una normale finche' non si guardano i dati."""
+        if getattr(self, "lbl_tolleranze", None) is None:
+            return
+        spunte = (self.chk_disable_val, self.chk_skip_geom, self.chk_skip_ref,
+                  self.chk_skip_poly, self.chk_sql_null, self.chk_sql_text)
+        # SI NASCONDONO, non basta spegnerle. Un QGroupBox spuntabile disabilita
+        # i figli ma li lascia in vista: sei opzioni grigie occupano lo stesso
+        # spazio e chi legge "Non validare i dati" non guarda se e' grigio.
+        for spunta in spunte:
+            spunta.setVisible(self.group_adv.isChecked())
+
+        attive = len(self._parametri_tolleranza())
+        if not self.group_adv.isChecked():
+            self.group_adv.setTitle("Tolleranza errori — nessuna (dati puliti)")
+        elif attive:
+            self.group_adv.setTitle(
+                "Tolleranza errori — %d attiv%s"
+                % (attive, "a" if attive == 1 else "e"))
+        else:
+            self.group_adv.setTitle("Tolleranza errori — nessuna scelta")
+
+        if not attive:
+            self.lbl_tolleranze.setText("")
+            return
+        nomi = [s.text() for s in (self.chk_disable_val, self.chk_skip_geom,
+                                   self.chk_skip_ref, self.chk_skip_poly,
+                                   self.chk_sql_null, self.chk_sql_text)
+                if s.isChecked()]
+        self.lbl_tolleranze.setText(
+            "<span style='color:%s;'>⚠️ Importazione con %d tolleranz%s "
+            "attiv%s: %s. Il GeoPackage conterrà dati che il modello non "
+            "accetta.</span>"
+            % (self._rosso_avviso(), attive, "a" if attive == 1 else "e",
+               "a" if attive == 1 else "e", ", ".join(nomi).lower()))
 
     def _aggiorna_barra_archivio(self):
         """Riscrive la barra in cima: quale archivio, quanti comuni, quale

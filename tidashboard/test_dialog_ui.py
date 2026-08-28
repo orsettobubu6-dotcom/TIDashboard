@@ -14,6 +14,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from qgis.core import (QgsApplication, QgsProject, QgsVectorLayer, QgsFeature,
+                       QgsSettings,
                        QgsGeometry, QgsPointXY, QgsRectangle, Qgis,
                        QgsVectorFileWriter)
 from qgis.PyQt.QtCore import QDate, Qt
@@ -2648,6 +2649,128 @@ class TestCodaCartella(unittest.TestCase):
         self.assertEqual(dlg._avviati_in_coda, 1)
         self.assertEqual(dlg._fatti_in_coda, 0)
         self.assertEqual(dlg._falliti_in_coda, [])
+
+
+class TestTolleranze(unittest.TestCase):
+    """Il riquadro delle tolleranze.
+
+    Nasceva ACCESO, con "Non validare i dati" in prima fila. E la sua spunta
+    non e' apri/chiudi: e' l'interruttore generale, perche' _parametri_tolleranza
+    non passa nessun flag quando e' spenta. Nascere acceso voleva dire
+    presentare come normali delle opzioni da usare solo quando una consegna e'
+    rotta e si sa perche'."""
+
+    def _senza_impostazioni(self):
+        """Una finestra come la vede chi apre il plugin la prima volta.
+
+        Senza questo, la prova leggerebbe la scelta salvata di CHI la esegue:
+        sulla macchina dove il riquadro era stato acceso una volta, "nasce
+        spento" fallirebbe pur essendo vero."""
+        s = QgsSettings()
+        chiavi = ["TIDashboard/tolleranze_attive"]
+        for nome in ("disable_validation", "skip_geometry", "skip_reference",
+                     "skip_polygon", "sql_null", "sql_text"):
+            chiavi.append("TIDashboard/" + nome)
+        salvate = [(k, s.value(k, None)) for k in chiavi]
+        for k, _v in salvate:
+            s.remove(k)
+        self.addCleanup(lambda: [QgsSettings().setValue(k, v)
+                                 for k, v in salvate if v is not None])
+        return TIDashboardDialog()
+
+    def test_nasce_spento(self):
+        dlg = self._senza_impostazioni()
+        self.assertFalse(dlg.group_adv.isChecked())
+        self.assertEqual(dlg._parametri_tolleranza(), [],
+                         "spento deve voler dire nessun flag a ili2gpkg")
+
+    def test_spento_le_spunte_si_NASCONDONO(self):
+        """Un QGroupBox spuntabile disabilita i figli ma li lascia in vista:
+        sei opzioni grigie occupano lo stesso spazio, e chi legge "Non
+        validare i dati" non guarda se e' grigio."""
+        dlg = self._senza_impostazioni()
+        dlg._aggiorna_tolleranze()
+        self.assertFalse(dlg.chk_disable_val.isVisibleTo(dlg.group_adv))
+        dlg.group_adv.setChecked(True)
+        self.assertTrue(dlg.chk_disable_val.isVisibleTo(dlg.group_adv))
+
+    def test_una_scelta_gia_fatta_non_si_sovrascrive(self):
+        """Chi l'aveva acceso se lo ritrova acceso: cambiare il valore
+        iniziale non deve cancellare una decisione presa."""
+        QgsSettings().setValue("TIDashboard/tolleranze_attive", True)
+        self.addCleanup(lambda: QgsSettings().remove(
+            "TIDashboard/tolleranze_attive"))
+        self.assertTrue(TIDashboardDialog().group_adv.isChecked())
+
+    def test_il_titolo_dice_quante_ne_sono_attive(self):
+        """A riquadro chiuso le spunte non si vedono: se il titolo non lo
+        dicesse, non lo direbbe nessuno."""
+        dlg = self._senza_impostazioni()
+        dlg._aggiorna_tolleranze()
+        self.assertIn("nessuna", dlg.group_adv.title().lower())
+        dlg.group_adv.setChecked(True)
+        dlg.chk_disable_val.setChecked(True)
+        self.assertIn("1 attiva", dlg.group_adv.title())
+        dlg.chk_skip_geom.setChecked(True)
+        self.assertIn("2 attive", dlg.group_adv.title())
+
+    def test_con_una_attiva_lo_dice_sopra_il_pulsante(self):
+        """Un'importazione con la validazione spenta somiglia in tutto a una
+        normale: la differenza si scoprirebbe dai dati."""
+        dlg = TIDashboardDialog()
+        dlg.group_adv.setChecked(True)
+        dlg.chk_disable_val.setChecked(True)
+        testo = dlg.lbl_tolleranze.text()
+        self.assertIn("non validare i dati", testo.lower())
+        self.assertIn("il modello non accetta", testo.lower())
+
+    def test_senza_nessuna_attiva_la_riga_tace(self):
+        dlg = TIDashboardDialog()
+        dlg.group_adv.setChecked(True)
+        for s in (dlg.chk_disable_val, dlg.chk_skip_geom, dlg.chk_skip_ref,
+                  dlg.chk_skip_poly, dlg.chk_sql_null, dlg.chk_sql_text):
+            s.setChecked(False)
+        self.assertEqual(dlg.lbl_tolleranze.text(), "")
+
+    def test_spegnendo_il_riquadro_l_avviso_sparisce_e_i_flag_pure(self):
+        dlg = TIDashboardDialog()
+        dlg.group_adv.setChecked(True)
+        dlg.chk_disable_val.setChecked(True)
+        self.assertTrue(dlg.lbl_tolleranze.text())
+        dlg.group_adv.setChecked(False)
+        self.assertEqual(dlg.lbl_tolleranze.text(), "")
+        self.assertEqual(dlg._parametri_tolleranza(), [])
+
+
+class TestVerdeSulTemaScuro(unittest.TestCase):
+    """Due righe scrivevano il verde cablato #2E7D32, illeggibile su fondo
+    scuro. Il metodo che sceglie il colore secondo il tema esisteva gia' e
+    non veniva chiamato li'."""
+
+    def test_la_nota_del_fattore_usa_il_verde_del_tema(self):
+        dlg = TIDashboardDialog()
+        atteso = dlg._verde_ok()
+        dlg.chk_lettera_norma.setChecked(True)
+        dlg._aggiorna_nota_fattore()
+        testo = dlg.lbl_fattore.text()
+        if "Proporzione esatta" in testo:
+            self.assertIn(atteso, testo)
+            self.assertNotIn("#2E7D32", testo.replace(atteso, ""))
+
+    def test_il_verde_cambia_col_tema(self):
+        """La prova del metodo stesso: se tornasse sempre lo stesso colore,
+        chiamarlo non risolverebbe niente."""
+        dlg = TIDashboardDialog()
+        chiari, scuri = [], []
+        vero = dlg._tema_scuro
+        try:
+            dlg._tema_scuro = lambda: False
+            chiari.append(dlg._verde_ok())
+            dlg._tema_scuro = lambda: True
+            scuri.append(dlg._verde_ok())
+        finally:
+            dlg._tema_scuro = vero
+        self.assertNotEqual(chiari[0], scuri[0])
 
 
 class TestBarraArchivio(unittest.TestCase):
