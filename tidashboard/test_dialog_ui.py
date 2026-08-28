@@ -107,7 +107,7 @@ class TestSchede(unittest.TestCase):
         titoli = [dlg.schede.tabText(i) for i in range(dlg.schede.count())]
         self.assertEqual(titoli, ["0. Ambiente", "1. Importazione",
                                   "2. Conversione DXF", "3. Planimetria",
-                                  "Errori nei dati"])
+                                  "4. Consegna", "Errori nei dati"])
 
     def test_scheda_errori_spenta_finche_non_ce_ne_sono(self):
         dlg = TIDashboardDialog()
@@ -677,18 +677,20 @@ class TestOrigineData(unittest.TestCase):
         dlg.txt_itf.setText(itf)
         dlg.txt_gpkg.setText(_gpkg_con_comuni())
         dlg.aggiorna_comuni_da_dati()
-        testo = dlg.lbl_origine_data.text()
-        self.assertIn("file system", testo)
-        self.assertIn("file ITF", testo)
+        # La riga NOMINA la fonte, il suggerimento porta la riserva: il
+        # paragrafo di 238 caratteri sempre a video e' stato accorciato, ma la
+        # riserva non deve essersi persa per strada.
+        self.assertIn("file ITF", dlg.lbl_origine_data.text())
+        self.assertIn("file system", dlg.lbl_origine_data.toolTip())
 
     def test_senza_itf_dichiara_la_mutazione_nei_dati(self):
         dlg = TIDashboardDialog()
         dlg.txt_itf.setText("")
         dlg.txt_gpkg.setText(_gpkg_con_tenuta_a_giorno("2024-03-15"))
         dlg.aggiorna_comuni_da_dati()
-        testo = dlg.lbl_origine_data.text()
-        self.assertIn("mutazione pi", testo)
-        self.assertIn("limite inferiore", testo)
+        self.assertIn("mutazione", dlg.lbl_origine_data.text())
+        self.assertIn("Tenuta_a_giorno", dlg.lbl_origine_data.text())
+        self.assertIn("limite inferiore", dlg.lbl_origine_data.toolTip())
 
     def test_modificata_a_mano_smette_di_attribuirla_ai_dati(self):
         """Il caso che conta: se l'operatore corregge la data, l'etichetta non
@@ -697,11 +699,36 @@ class TestOrigineData(unittest.TestCase):
         dlg.txt_itf.setText("")
         dlg.txt_gpkg.setText(_gpkg_con_tenuta_a_giorno("2024-03-15"))
         dlg.aggiorna_comuni_da_dati()
-        self.assertIn("mutazione pi", dlg.lbl_origine_data.text())
+        self.assertIn("mutazione", dlg.lbl_origine_data.text())
+        self.assertIn("limite inferiore", dlg.lbl_origine_data.toolTip())
         dlg.data_validita.setDate(QDate(2025, 7, 1))
         testo = dlg.lbl_origine_data.text()
         self.assertIn("a mano", testo)
         self.assertIn("15.03.2024", testo, "va ricordato cosa dicevano i dati")
+
+    def test_la_riga_e_CORTA_e_la_riserva_sta_nel_suggerimento(self):
+        """Era un paragrafo arancione di 238 caratteri su due righe, sempre a
+        video. Un avviso che non si spegne mai smette di essere un avviso."""
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText("")
+        dlg.txt_gpkg.setText(_gpkg_con_tenuta_a_giorno("2024-03-15"))
+        dlg.aggiorna_comuni_da_dati()
+        import re as _re
+        nudo = _re.sub(r"<[^>]+>", "", dlg.lbl_origine_data.text())
+        self.assertLess(len(nudo), 70, "la riga e' ancora un paragrafo: %r" % nudo)
+        self.assertGreater(len(dlg.lbl_origine_data.toolTip()), 40,
+                           "la riserva si e' persa invece di spostarsi")
+
+    def test_senza_nessuna_fonte_resta_per_esteso(self):
+        """Li' non c'e' una riserva, c'e' un allarme: la data non viene dai
+        dati, e non e' una sfumatura da mettere in un suggerimento."""
+        dlg = TIDashboardDialog()
+        dlg.txt_itf.setText("")
+        dlg.txt_gpkg.setText(_gpkg_con_comuni())
+        dlg.aggiorna_comuni_da_dati()
+        testo = dlg.lbl_origine_data.text()
+        self.assertIn("Nessuna fonte", testo)
+        self.assertIn("a mano", testo)
 
     def test_rimettendo_la_data_dei_dati_torna_la_fonte(self):
         dlg = TIDashboardDialog()
@@ -710,7 +737,7 @@ class TestOrigineData(unittest.TestCase):
         dlg.aggiorna_comuni_da_dati()
         dlg.data_validita.setDate(QDate(2025, 7, 1))
         dlg.data_validita.setDate(QDate(2024, 3, 15))
-        self.assertIn("mutazione pi", dlg.lbl_origine_data.text())
+        self.assertIn("mutazione", dlg.lbl_origine_data.text())
 
 
 class TestCentroDaFondo(unittest.TestCase):
@@ -2445,12 +2472,31 @@ class TestSvuotaArchivio(unittest.TestCase):
         self.assertIsNotNone(QgsProject.instance().mapLayer(identificativo))
         QgsProject.instance().removeMapLayer(identificativo)
 
-    def test_il_pulsante_dice_quanti_ne_butterebbe(self):
+    def test_quanti_ne_butterebbe_si_legge_ACCANTO_al_pulsante(self):
+        """Il numero stava DENTRO il pulsante, che cosi' diventava una barra
+        rossa larga con scritto quanto costava premerla. Ora il pulsante dice
+        solo che cosa fa, e il costo sta nella riga di fianco - dove l'occhio
+        passa prima di arrivare al clic. La sostanza non cambia: il numero
+        dev'essere leggibile PRIMA di premere."""
         self._archivio("422", "611")
         dlg = self._dialog()
         dlg._aggiorna_pulsante_svuota()
         self.assertTrue(dlg.btn_svuota.isEnabled())
-        self.assertIn("2 comuni", dlg.btn_svuota.text())
+        self.assertIn("2 comuni", dlg.lbl_stato_archivio.text())
+        self.assertIn("Lavertezzo", dlg.btn_svuota.toolTip())
+
+    def test_il_pulsante_che_cancella_non_e_una_barra_piena(self):
+        """Era la terza di tre barre a tutta larghezza distinte solo dal
+        colore. Il rosso pieno su una barra grande attira il clic invece di
+        scoraggiarlo."""
+        dlg = self._dialog()
+        stile = dlg.btn_svuota.styleSheet()
+        self.assertIn("transparent", stile,
+                      "il pulsante ha ancora un fondo pieno")
+        from qgis.PyQt.QtWidgets import QSizePolicy
+        self.assertNotEqual(dlg.btn_svuota.sizePolicy().horizontalPolicy(),
+                            QSizePolicy.Policy.Expanding,
+                            "non deve espandersi a tutta larghezza")
 
     def test_il_pulsante_e_spento_se_non_c_e_niente_da_buttare(self):
         """Un pulsante distruttivo sempre acceso invita a premerlo per vedere

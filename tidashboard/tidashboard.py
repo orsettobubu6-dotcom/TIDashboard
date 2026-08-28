@@ -973,34 +973,41 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_cartella.clicked.connect(self.importa_cartella)
         layout_import.addWidget(self.btn_cartella)
 
-        # Rosso spento e testo che dice il numero: un pulsante distruttivo
-        # deve sembrare distruttivo, e dire quanto costa premerlo.
-        self.btn_svuota = QPushButton("🗑️ Butta l'archivio")
-        self.btn_svuota.setStyleSheet(_STILE_PULSANTE % "#8E2A2A")
-        self.btn_svuota.clicked.connect(self.svuota_archivio)
-        layout_import.addWidget(self.btn_svuota)
         self.lbl_esito_import = QLabel()
         self.lbl_esito_import.setStyleSheet("color: %s;" % self._rosso_avviso())
         layout_import.addWidget(self.lbl_esito_import)
 
-        # Sempre presente, non piu' setVisible: comparendo e sparendo al
-        # cambio di prodotto faceva saltare tutto il resto della scheda, e
-        # sparire un comando non spiega perche' non e' disponibile. Ora resta
-        # al suo posto, spento, con il motivo nel tooltip.
-        self.btn_layout = QPushButton("📐 CREA LAYOUT PB-MU")
-        self.btn_layout.setStyleSheet(_STILE_PULSANTE % "#1565C0")
-        self.btn_layout.clicked.connect(self.create_layout_bp)
-        layout_import.addWidget(self.btn_layout)
-        self._aggiorna_pulsante_layout()
+        # FUORI DALLA PILA. Il pulsante che cancella era la TERZA di tre barre
+        # a tutta larghezza, impilate a 42 pixel l'una dall'altra e distinte
+        # solo dal colore: il gesto che importa e quello che distrugge si
+        # somigliavano ed erano a un centimetro di distanza. La conferma nomina
+        # i comuni che sta per buttare, ma arriva dopo il clic.
+        #
+        # Ora sta su una riga sua, staccata da un separatore, allineato a
+        # destra e alto la meta': dev'essere raggiungibile, non a portata di
+        # mano. Niente rosso pieno - quello attira il clic invece di
+        # scoraggiarlo - ma solo il bordo e la scritta.
+        separatore = QFrame()
+        separatore.setFrameShape(QFrame.Shape.HLine)
+        separatore.setFrameShadow(QFrame.Shadow.Sunken)
+        layout_import.addSpacing(10)
+        layout_import.addWidget(separatore)
 
-        # "Consegna", non "WebGIS": quello che esce di qui e' una cartella da
-        # copiare su un server, non un sito. Il tooltip dice la cosa che ci si
-        # dimentica sempre - che il server non esegue questo plugin.
-        self.btn_consegna = QPushButton("🌐 CONSEGNA PER QGIS SERVER")
-        self.btn_consegna.setStyleSheet(_STILE_PULSANTE % "#00695C")
-        self.btn_consegna.clicked.connect(self.consegna_qgis_server)
-        layout_import.addWidget(self.btn_consegna)
-        self._aggiorna_pulsante_consegna()
+        riga_svuota = QHBoxLayout()
+        self.lbl_stato_archivio = QLabel()
+        self.lbl_stato_archivio.setTextFormat(Qt.TextFormat.RichText)
+        riga_svuota.addWidget(self.lbl_stato_archivio)
+        riga_svuota.addStretch()
+        self.btn_svuota = QPushButton("Butta l'archivio")
+        self.btn_svuota.setStyleSheet(
+            "QPushButton { color: %s; border: 1px solid %s; border-radius: 3px;"
+            " padding: 4px 12px; background: transparent; }"
+            "QPushButton:hover:enabled { background: %s; color: white; }"
+            "QPushButton:disabled { color: palette(mid); border-color: palette(mid); }"
+            % (self._rosso_avviso(), self._rosso_avviso(), self._rosso_avviso()))
+        self.btn_svuota.clicked.connect(self.svuota_archivio)
+        riga_svuota.addWidget(self.btn_svuota)
+        layout_import.addLayout(riga_svuota)
 
         layout_import.addStretch()
         group_import.setLayout(layout_import)
@@ -1237,20 +1244,28 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # Elenco e non selezione automatica: con piu' sezioni lo stesso numero
         # esiste piu' volte, e portare l'utente sul primo risultato vorrebbe
         # dire mostrargli il fondo sbagliato senza dirglielo.
+        # L'ELENCO E I SUOI COMANDI COMPAIONO CON LA RICERCA. Prima stavano
+        # sempre li': un riquadro vuoto alto 110 pixel e due pulsanti grigi,
+        # sulla scheda gia' piu' carica delle cinque. Un elenco vuoto non e'
+        # un'informazione, e' un buco che aspetta.
         self.lista_fondi = QListWidget()
         self.lista_fondi.setMaximumHeight(110)
         self.lista_fondi.itemDoubleClicked.connect(lambda _i: self.zoom_sul_fondo())
         self.lista_fondi.currentRowChanged.connect(self._aggiorna_comandi_fondo)
+        self.lista_fondi.setVisible(False)
         layout_cerca.addWidget(self.lista_fondi)
 
-        riga_azioni = QHBoxLayout()
+        self.riga_azioni_fondo = QWidget()
+        riga_azioni = QHBoxLayout(self.riga_azioni_fondo)
+        riga_azioni.setContentsMargins(0, 0, 0, 0)
         self.btn_zoom_fondo = QPushButton("🔍 Zoom sulla mappa")
         self.btn_zoom_fondo.clicked.connect(self.zoom_sul_fondo)
         riga_azioni.addWidget(self.btn_zoom_fondo)
         self.btn_centra_fondo = QPushButton("🎯 Usa come centro della planimetria")
         self.btn_centra_fondo.clicked.connect(self.centra_planimetria_sul_fondo)
         riga_azioni.addWidget(self.btn_centra_fondo)
-        layout_cerca.addLayout(riga_azioni)
+        self.riga_azioni_fondo.setVisible(False)
+        layout_cerca.addWidget(self.riga_azioni_fondo)
 
         # Avviso permanente + sblocco. Il centro agganciato a un fondo resta
         # tale finché non lo si toglie: senza qualcosa che lo dica in modo
@@ -1345,6 +1360,50 @@ class TIDashboardDialog(StiliMixin, QDialog):
         group_plan.setLayout(layout_plan)
         self.pagina_plan = self._in_scheda(group_plan)
         self.schede.addTab(self.pagina_plan, "3. Planimetria")
+
+        # --- 4. Consegna --------------------------------------------------
+        # Queste due erano in fondo alla scheda dell'IMPORTAZIONE, spente,
+        # sotto le barre: due comandi che l'utente non poteva usare e che non
+        # stava cercando li', a occupare la meta' bassa della scheda e a
+        # lasciarsi dietro duecento pixel di vuoto.
+        #
+        # Non sono importazioni: sono cio' che si fa DOPO, quando i dati ci
+        # sono e sono stilizzati. Qui sono il soggetto invece che un ripensamento,
+        # e c'e' posto per dire a che cosa servono e quando si accendono.
+        group_out = QGroupBox("4. Consegna (dopo l'importazione)")
+        layout_out = QVBoxLayout()
+
+        # Sempre presenti, non setVisible: comparendo e sparendo al cambio di
+        # prodotto facevano saltare tutto il resto della scheda, e sparire un
+        # comando non spiega perche' non e' disponibile. Restano al loro posto,
+        # spenti, con il motivo nel tooltip e ora anche scritto sotto.
+        self.btn_layout = QPushButton("📐 CREA LAYOUT PB-MU")
+        self.btn_layout.setStyleSheet(_STILE_PULSANTE % "#1565C0")
+        self.btn_layout.clicked.connect(self.create_layout_bp)
+        layout_out.addWidget(self.btn_layout)
+        self.lbl_perche_layout = QLabel()
+        self.lbl_perche_layout.setWordWrap(True)
+        layout_out.addWidget(self.lbl_perche_layout)
+        self._aggiorna_pulsante_layout()
+
+        layout_out.addSpacing(14)
+
+        # "Consegna", non "WebGIS": quello che esce di qui e' una cartella da
+        # copiare su un server, non un sito. Il tooltip dice la cosa che ci si
+        # dimentica sempre - che il server non esegue questo plugin.
+        self.btn_consegna = QPushButton("🌐 CONSEGNA PER QGIS SERVER")
+        self.btn_consegna.setStyleSheet(_STILE_PULSANTE % "#00695C")
+        self.btn_consegna.clicked.connect(self.consegna_qgis_server)
+        layout_out.addWidget(self.btn_consegna)
+        self.lbl_perche_consegna = QLabel()
+        self.lbl_perche_consegna.setWordWrap(True)
+        layout_out.addWidget(self.lbl_perche_consegna)
+        self._aggiorna_pulsante_consegna()
+
+        layout_out.addStretch()
+        group_out.setLayout(layout_out)
+        self.pagina_out = self._in_scheda(group_out)
+        self.schede.addTab(self.pagina_out, "4. Consegna")
 
         # Scheda degli errori nei dati: l'analisi delle violazioni di vincolo
         # esisteva gia' ma finiva in console, dove un elenco di venti conflitti
@@ -1594,32 +1653,47 @@ class TIDashboardDialog(StiliMixin, QDialog):
         dai_dati = getattr(self, "_data_dai_dati", "")
         origine = getattr(self, "_origine_data", "")
         corrente = self.data_validita.date().toString("dd.MM.yyyy")
+        # UNA RIGA CORTA, LA RISERVA NEL SUGGERIMENTO. Il testo per esteso era
+        # un paragrafo arancione di 238 caratteri su due righe, sempre a video:
+        # un avviso che non si spegne mai smette di essere un avviso, e quello
+        # occupava la scheda accanto a tutto il resto. La fonte va comunque
+        # dichiarata - e' l'unico modo perche' chi firma sappia che cosa sta
+        # attestando - ma dichiararla non vuol dire ripetere ogni volta il
+        # perche'.
+        #
+        # L'ULTIMO CASO RESTA PER ESTESO: li' non c'e' nessuna fonte, la data
+        # non viene dai dati, e non e' una riserva ma un allarme.
         if dai_dati and corrente == dai_dati and origine == "estrazione ITF":
-            colore = "#E65100"
-            testo = ("Fonte: <b>data di modifica del file ITF</b>. È un dato del "
-                     "file system, non del contenuto: l'ITF non contiene alcuna "
-                     "data. Cambia se il file viene ricopiato con strumenti che "
-                     "non conservano il timestamp.")
+            colore, corto = "#E65100", "Fonte: data di modifica del file ITF ⓘ"
+            riserva = ("È un dato del file system, non del contenuto: l'ITF "
+                       "non contiene alcuna data. Cambia se il file viene "
+                       "ricopiato con strumenti che non conservano il "
+                       "timestamp.")
         elif dai_dati and corrente == dai_dati:
-            colore = "#E65100"
-            testo = ("Fonte: <b>mutazione più recente presente nei dati</b> "
-                     "(Tenuta_a_giorno). È un limite inferiore: un comune senza "
-                     "mutazioni recenti dà una data più vecchia del suo stato "
-                     "reale.")
+            colore, corto = "#E65100", ("Fonte: ultima mutazione nei dati "
+                                        "(Tenuta_a_giorno) ⓘ")
+            riserva = ("È un limite inferiore: un comune senza mutazioni "
+                       "recenti dà una data più vecchia del suo stato reale.")
         elif dai_dati:
             # _verde_ok() e non il verde cablato: su fondo scuro #2E7D32 e'
             # quasi illeggibile. Il metodo esiste da sempre e qui non veniva
             # chiamato.
             colore = self._verde_ok()
-            testo = ("Fonte: <b>indicata a mano</b> (dai dati risultava %s)."
-                     % dai_dati)
+            # QUI IL VALORE RESTA IN RIGA. La riga e' gia' corta, e sapere
+            # che cosa dicevano i dati mentre li si corregge a mano e' il
+            # punto: metterlo nel suggerimento lo avrebbe indebolito.
+            corto = "Fonte: indicata a mano (dai dati risultava %s)" % dai_dati
+            riserva = ("La modifica a mano e' la sola fonte che qualcuno abbia "
+                       "davvero verificato.")
         else:
             colore = "#B71C1C"
-            testo = ("<b>Nessuna fonte nei dati</b>: né un ITF né le tabelle di "
-                     "attualizzazione. La data qui sopra non è ricavata dai "
-                     "dati e va indicata a mano.")
+            corto = ("<b>Nessuna fonte nei dati</b>: né un ITF né le tabelle "
+                     "di attualizzazione. La data qui sopra va indicata a mano.")
+            riserva = ("Né il file ITF né le tabelle Tenuta_a_giorno hanno "
+                       "dato una data: quella nel campo non è ricavata dai dati.")
         self.lbl_origine_data.setText(
-            "<span style='color:%s'>%s</span>" % (colore, testo))
+            "<span style='color:%s'>%s</span>" % (colore, corto))
+        self.lbl_origine_data.setToolTip(riserva)
 
     def _aggiorna_nota_fattore(self):
         """Scrive sotto la casella quale fattore del cap.1.5.2 verra' applicato
@@ -1665,6 +1739,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self.btn_layout.setToolTip(
             "" if attivo else
             "Disponibile solo con il prodotto \"Piano di base (PB-MU)\"")
+        # IL MOTIVO SCRITTO, non solo nel suggerimento: un pulsante grigio non
+        # dice perche' e' grigio, e il suggerimento lo legge solo chi sospetta
+        # gia' che ci sia qualcosa da leggere.
+        etichetta = getattr(self, "lbl_perche_layout", None)
+        if etichetta is None:
+            return
+        etichetta.setText("" if attivo else
+                          "<span style='color:#9E9E9E;'>Scegli il prodotto "
+                          "<b>Piano di base (PB-MU)</b> in cima alla finestra "
+                          "per abilitarlo.</span>")
 
     def _maiuscolo_localita(self):
         """La spunta e' accesa? Falso se la spunta non c'e' proprio.
@@ -1734,6 +1818,14 @@ class TIDashboardDialog(StiliMixin, QDialog):
             if attivo else
             "Disponibile dopo un'importazione riuscita: non c'e' ancora niente "
             "da consegnare.")
+        etichetta = getattr(self, "lbl_perche_consegna", None)
+        if etichetta is None:
+            return
+        etichetta.setText(
+            "<span style='color:#9E9E9E;'>Scrive una cartella con progetto, "
+            "dati, font e simboli, da copiare sul server.</span>" if attivo else
+            "<span style='color:#9E9E9E;'>Disponibile dopo un'importazione "
+            "riuscita: non c'è ancora niente da consegnare.</span>")
 
     def create_file_row(self, label_text, line_edit, filter_str, is_save, scheda=None):
         row = QHBoxLayout()
@@ -3856,6 +3948,16 @@ class TIDashboardDialog(StiliMixin, QDialog):
         self._zorder_layers = []
         return len(da_togliere)
 
+    def _mostra_risultati_fondo(self, mostra):
+        """Fa comparire (o sparire) l'elenco dei risultati e i suoi comandi.
+
+        Un elenco vuoto non e' un'informazione: e' un buco alto 110 pixel che
+        aspetta, sulla scheda gia' piu' carica delle cinque."""
+        for widget in (getattr(self, "lista_fondi", None),
+                       getattr(self, "riga_azioni_fondo", None)):
+            if widget is not None:
+                widget.setVisible(bool(mostra))
+
     def _aggiorna_pulsante_svuota(self):
         """Il pulsante dice quanti comuni butterebbe, e si spegne se non c'e'
         niente da buttare: un pulsante distruttivo sempre acceso invita a
@@ -3864,12 +3966,22 @@ class TIDashboardDialog(StiliMixin, QDialog):
             return
         d = _archivio.descrivi(self.txt_gpkg.text().strip())
         self.btn_svuota.setEnabled(d.e_archivio)
+        # IL NUMERO STA NELLA RIGA ACCANTO, non piu' dentro il pulsante. Il
+        # pulsante dice che cosa fa; quanto costa premerlo lo dice il testo che
+        # ha di fianco, dove l'occhio passa prima di arrivare al clic.
+        etichetta = getattr(self, "lbl_stato_archivio", None)
         if d.e_archivio:
-            self.btn_svuota.setText("🗑️ Butta l'archivio (%d comuni)" % d.quanti)
             self.btn_svuota.setToolTip("\n".join(d.elenco()))
+            if etichetta is not None:
+                etichetta.setText(
+                    "Archivio: <b>%d comun%s</b> · %.1f MB"
+                    % (d.quanti, "e" if d.quanti == 1 else "i",
+                       d.dimensione / 1048576.0))
         else:
-            self.btn_svuota.setText("🗑️ Butta l'archivio")
             self.btn_svuota.setToolTip(d.motivo or "Nessun archivio indicato.")
+            if etichetta is not None:
+                etichetta.setText("<span style='color:#9E9E9E;'>Nessun "
+                                  "archivio da buttare.</span>")
 
     def _avvia_prossimo_della_coda(self):
         """Prende il primo Lavoro rimasto e lo avvia."""
@@ -5342,6 +5454,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def cerca_fondo(self):
         percorso = self._gpkg_corrente()
         self.lista_fondi.clear()
+        self._mostra_risultati_fondo(False)
         self._risultati_fondo = []
         self._evidenzia_risultati([])
         self._aggiorna_comandi_fondo()
@@ -5408,6 +5521,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 voce.setToolTip("Fondo senza geometria: non si può centrare "
                                 "il foglio su di esso.")
             self.lista_fondi.addItem(voce)
+        self._mostra_risultati_fondo(True)
 
         if len(risultati) == 1:
             # Un solo risultato: si può selezionare, non c'è ambiguità.
