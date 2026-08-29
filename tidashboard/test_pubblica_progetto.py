@@ -16,6 +16,7 @@
 #   & "C:\Program Files\QGIS 4.2.0\bin\python-qgis.bat" test_pubblica_progetto.py
 import gc
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -337,6 +338,63 @@ class TestConsegna(unittest.TestCase):
         cls.dest = os.path.join(cls.base, "consegna_comune")
         cls.esito = P.consegna(cls.dest, cls.progetto, cls.gpkg, PLUGIN_DIR,
                                titolo="Comune di prova")
+
+    def test_il_progetto_consegnato_non_porta_percorsi_di_QUESTA_macchina(self):
+        """TROVATO PROVANDO LA CONSEGNA SU LINUX VERO.
+
+        Ci si metteva homePath = cartella di consegna, cioe' un percorso
+        assoluto di questa macchina: nel .qgs finiva
+        <homePath path="C:\\Users\\...\\consegna"/>, e su un server Linux
+        quella cartella non esiste. homePath, quando e' valorizzato, e' la
+        base con cui QGIS risolve i percorsi relativi - quindi proprio i
+        "./symbols/..." che la consegna ha appena reso relativi.
+
+        Da Windows non si vedeva: li' la cartella c'era."""
+        import zipfile
+        z = zipfile.ZipFile(self.esito["qgz"])
+        dentro = [n for n in z.namelist() if n.lower().endswith(".qgs")]
+        self.assertTrue(dentro, "nel .qgz non c'e' nessun .qgs")
+        testo = z.read(dentro[0]).decode("utf-8", "replace")
+        lettere = re.findall(r"(?<![A-Za-z])([A-Za-z]):[\\/]", testo)
+        self.assertEqual(lettere, [],
+                         "restano percorsi con lettera di unita': %s" % lettere)
+        m = re.search(r'<homePath path="([^"]*)"', testo)
+        if m:
+            self.assertEqual(m.group(1), "",
+                             "homePath deve restare vuoto: QGIS ripiega sulla "
+                             "cartella del progetto, che e' giusta ovunque")
+
+    def test_il_LEGGIMI_dice_quali_comuni_sono_nel_file(self):
+        """Da quando l'archivio ne tiene piu' d'uno, il GeoPackage consegnato
+        NON coincide con cio' che si pubblica: i layer sono filtrati sul comune
+        attivo, quindi il WMS ne mostra uno, ma il file li contiene tutti.
+        Chi consegna deve saperlo PRIMA di spedire."""
+        gpkg = os.path.join(tempfile.mkdtemp(), "due.gpkg")
+        con = sqlite3.connect(gpkg)
+        con.execute("CREATE TABLE T_ILI2DB_DATASET (T_Id INTEGER, datasetname TEXT)")
+        con.executemany("INSERT INTO T_ILI2DB_DATASET VALUES (?,?)",
+                        [(1, "422"), (2, "611")])
+        con.commit()
+        con.close()
+        self.assertEqual(P.comuni_del_gpkg(gpkg), ["422", "611"])
+        nota = P._nota_comuni(["422", "611"])
+        self.assertIn("2 comuni", nota)
+        self.assertIn("422", nota)
+        self.assertIn("611", nota)
+        self.assertIn("FILTRATI", nota)
+
+    def test_con_un_comune_solo_il_LEGGIMI_non_ne_parla(self):
+        """Sarebbe un avviso su un pericolo che non c'e'."""
+        self.assertEqual(P._nota_comuni(["422"]), "")
+        self.assertEqual(P._nota_comuni([]), "")
+
+    def test_un_gpkg_senza_la_tabella_dei_dataset(self):
+        """Archivio a comune solo, fatto prima del multi-comune: non c'e'
+        niente da avvertire, e non deve esplodere."""
+        vuoto = os.path.join(tempfile.mkdtemp(), "vecchio.gpkg")
+        sqlite3.connect(vuoto).close()
+        self.assertEqual(P.comuni_del_gpkg(vuoto), [])
+        self.assertEqual(P.comuni_del_gpkg("C:\\mai\\esistito.gpkg"), [])
 
     def test_la_cartella_contiene_quello_che_serve(self):
         dentro = set(os.listdir(self.dest))

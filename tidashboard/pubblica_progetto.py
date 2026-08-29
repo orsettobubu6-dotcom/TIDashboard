@@ -74,6 +74,7 @@
 import os
 import re
 import shutil
+import sqlite3
 import zipfile
 
 # qgis.core serve a tutto il modulo TRANNE verifica_consegna(), che legge un
@@ -529,7 +530,49 @@ def _copia_dotazione(plugin_dir, dest):
     return n_font, n_svg
 
 
-def _scrivi_leggimi(dest, titolo, n_font):
+def comuni_del_gpkg(percorso):
+    """I comuni presenti nel GeoPackage consegnato, letti da T_ILI2DB_DATASET.
+
+    Lista vuota quando la tabella non c'e' - un archivio a comune solo, fatto
+    prima del multi-comune - e in quel caso non c'e' niente da avvertire."""
+    if not percorso or not os.path.isfile(str(percorso)):
+        return []
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % str(percorso), uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        return sorted(set(n for (n,) in con.execute(
+            "SELECT datasetname FROM T_ILI2DB_DATASET") if n))
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+
+
+def _nota_comuni(comuni):
+    """La riga che dice quali comuni ci sono NEL FILE.
+
+    Serve perche' da quando l'archivio ne tiene piu' d'uno, il GeoPackage
+    consegnato NON coincide con cio' che si pubblica: i layer portano il filtro
+    del comune attivo, quindi il WMS ne mostra uno, ma il file li contiene
+    tutti. Chi consegna deve saperlo prima di spedire, non dopo."""
+    if len(comuni) < 2:
+        return ""
+    return (u"""
+Comuni contenuti nel GeoPackage
+-------------------------------
+Il file .gpkg contiene %d comuni: %s.
+I layer del progetto sono FILTRATI sul comune attivo al momento della
+consegna, quindi il WMS ne mostra uno solo - ma i dati degli altri sono
+comunque dentro il file e chiunque lo apra puo' leggerli.
+
+Se non si intendeva consegnarli, va rifatto l'archivio con il solo comune
+da pubblicare.
+""" % (len(comuni), ", ".join(comuni)))
+
+
+def _scrivi_leggimi(dest, titolo, n_font, comuni=()):
     testo = """Consegna per QGIS Server
 ========================
 
@@ -580,7 +623,7 @@ server, per i client web che non sanno altro.
 
 Il piano per il registro fondiario resta un prodotto di STAMPA. Quello che
 il WMS mostra e' una riproduzione senza valore legale.
-""" % (titolo or "", n_font)
+%s"""  % (titolo or "", n_font, _nota_comuni(comuni))
     with open(os.path.join(dest, "LEGGIMI.txt"), "w", encoding="utf-8") as f:
         f.write(testo)
 
@@ -609,8 +652,19 @@ def consegna(cartella, project, gpkg_path, plugin_dir, titolo="",
             os.path.normcase(os.path.normpath(gpkg_dst)):
         shutil.copy2(str(gpkg_path), gpkg_dst)
 
+    # CHE COSA C'E' DENTRO IL GEOPACKAGE, che con l'archivio a piu' comuni non
+    # coincide piu' con cio' che si PUBBLICA: i layer portano il filtro del
+    # comune attivo, quindi il WMS ne mostra uno, ma il file li contiene TUTTI.
+    # Su un archivio cantonale vorrebbe dire spedire un gigabyte per pubblicare
+    # un comune, e consegnare dati che non si intendeva consegnare.
+    #
+    # Qui non si filtra: se sia giusto consegnarne uno o tutti lo decide chi
+    # consegna. Ma la consegna deve DIRE che cosa contiene, se no nessuno se ne
+    # accorge finche' il file non e' gia' partito.
+    comuni_nel_file = comuni_del_gpkg(gpkg_dst)
+
     n_font, n_svg = _copia_dotazione(plugin_dir, dest)
-    _scrivi_leggimi(dest, titolo, n_font)
+    _scrivi_leggimi(dest, titolo, n_font, comuni_nel_file)
 
     qgz = os.path.join(dest, os.path.basename(dest) + ".qgz")
     prima = stato_progetto(project)
@@ -625,8 +679,24 @@ def consegna(cartella, project, gpkg_path, plugin_dir, titolo="",
                        for lay in project.mapLayers().values()]
         adegua_progetto(project, titolo, abstract,
                         estensione_pubblicata(project))
+        # LA CARTELLA DI CASA SI SVUOTA, non si imposta. Ci si metteva 'dest',
+        # che e' il percorso della cartella SU QUESTA MACCHINA: nel progetto
+        # consegnato finiva
+        #     <homePath path="C:\Users\...\consegna_webgis"/>
+        # e su un server Linux quella cartella non esiste. homePath, quando e'
+        # valorizzato, e' la base con cui QGIS risolve i percorsi relativi -
+        # quindi proprio i "./symbols/..." che la consegna ha appena reso
+        # relativi dipendono da lui.
+        #
+        # Vuoto, QGIS ripiega sulla cartella del file di progetto: giusta su
+        # qualunque macchina e in qualunque posto la si copi. Che e' poi
+        # l'unica cosa che una consegna possa promettere.
+        #
+        # Trovato provando la consegna su Linux vero (WSL, filesystem
+        # sensibile alle maiuscole): da Windows non si vedeva, perche' li' la
+        # cartella c'era.
         if hasattr(project, "setPresetHomePath"):
-            project.setPresetHomePath(dest)
+            project.setPresetHomePath("")
         if not project.write(qgz):
             raise RuntimeError("QGIS ha rifiutato la scrittura di %s" % qgz)
     finally:
