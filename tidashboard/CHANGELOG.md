@@ -1,5 +1,79 @@
 # Diario delle versioni
 
+## 1.3.2 — 29 agosto 2026 — sperimentale
+
+Quattro interventi sulla finestra, la consegna WebGIS provata davvero su Linux,
+e due controlli che non sapevano di non star controllando.
+
+### La finestra: gli ultimi quattro punti
+
+**Il pulsante che cancella è uscito dalla pila.** Era la terza di tre barre a
+tutta larghezza, impilate a 42 pixel e distinte solo dal colore: il gesto che
+importa e quello che distrugge si somigliavano ed erano a un centimetro. Ora sta
+su una riga sua, dopo un separatore, allineato a destra, alto la metà, col bordo
+invece del fondo pieno — il rosso pieno su una barra grande attira il clic
+invece di scoraggiarlo. Quanti comuni butterebbe non sta più *dentro* il
+pulsante ma nella riga accanto, dove l'occhio passa prima di arrivare al clic.
+
+**Le due uscite hanno una scheda loro** («4. Consegna»). *Crea layout PB-MU* e
+*Consegna per QGIS Server* non sono importazioni: stavano in fondo alla scheda
+sbagliata, spente, a occuparne la metà bassa. Ora sotto ognuna c'è scritto
+**perché** è spenta: un pulsante grigio non lo dice, e il suggerimento lo legge
+solo chi sospetta già che ci sia qualcosa da leggere.
+
+**L'avviso sulla data è una riga, non un paragrafo.** Erano 238 caratteri
+arancioni su due righe, sempre a video. Ora la riga nomina la fonte e la riserva
+sta nel suggerimento — con due eccezioni volute: quando la data è stata messa a
+mano il valore che risultava dai dati resta in riga, e quando non c'è nessuna
+fonte il testo resta per esteso, perché lì non è una riserva ma un allarme.
+
+**L'elenco dei risultati compare con la ricerca.** Un riquadro vuoto alto 110
+pixel e due pulsanti grigi stavano sempre lì, sulla scheda già più carica.
+
+### La consegna WebGIS, provata su Linux
+
+Non era mai stata provata contro il consumatore vero. Provata, e c'era un
+difetto che da Windows non si poteva vedere: il progetto consegnato portava un
+`homePath` con il percorso assoluto della macchina che l'aveva prodotto.
+
+Non era dimenticato, era impostato apposta — con l'intento di far risolvere i
+percorsi relativi. Ma è un percorso di Windows, e su un server Linux quella
+cartella non esiste. E `homePath`, quando è valorizzato, è la **base** con cui
+QGIS risolve i percorsi relativi: proprio i `./symbols/...` che la consegna ha
+appena reso relativi dipendono da lui. Ora resta vuoto, e QGIS ripiega sulla
+cartella del progetto — giusta ovunque la si copi.
+
+**Poi il server vero.** QGIS Server 3.34 LTR su Linux serve la consegna, e il
+PNG di un GetMap è byte per byte identico a quello di un server 4.x su Windows.
+Ma la 3.34 **non legge** le proprietà WMS del progetto: il formato è cambiato
+fra la serie 3 e la 4. In concreto, EPSG:2056 non viene annunciato nelle
+capabilities — ed è il sistema nativo del catasto svizzero. Il `LEGGIMI.txt` ora
+lo dice, con l'elenco di cosa si perde sulla LTR.
+
+### Due controlli che non sapevano di non controllare
+
+**Le maiuscole.** Su Windows il controllo più importante di `verifica_consegna`
+— che ogni file nominato esista davvero — non può fallire: il filesystem le
+ignora, quindi un progetto che chiede `Symbol_1_Fels.svg` trova
+`symbol_1_fels.svg` e passa. Sul server no. Ora lo dichiara, e lo **prova**
+invece di dedurlo dal sistema operativo: crea un file e lo ricerca scritto in un
+altro modo, perché esistono cartelle sensibili su Windows e insensibili su Linux.
+
+**I comuni nel file.** Con l'archivio a più comuni il GeoPackage consegnato non
+coincide con ciò che si pubblica: i layer portano il filtro del comune attivo,
+quindi il WMS ne mostra uno, ma il file li contiene tutti. Su un archivio
+cantonale vorrebbe dire spedire un gigabyte per pubblicarne uno, e consegnare
+dati che non si intendeva consegnare. Il `LEGGIMI.txt` ora lo dice, coi numeri.
+
+### In breve
+
+- **714 prove, tredici suite.** `test_inventario` non era nella CI: dieci prove
+  che non avevano mai girato su Linux. Ora c'è.
+- Il verde di due righe era cablato a `#2E7D32`, illeggibile su tema scuro; il
+  metodo che sceglie il colore giusto esisteva già e non veniva chiamato.
+- Le opzioni di tolleranza nascono spente e le spunte si nascondono: la spunta
+  del riquadro non è apri/chiudi, è l'interruttore generale.
+
 ## 1.3.1 — 27 agosto 2026 — sperimentale
 
 Correzioni trovate **aprendo QGIS** dopo la 1.3.0, più i primi interventi sulla
