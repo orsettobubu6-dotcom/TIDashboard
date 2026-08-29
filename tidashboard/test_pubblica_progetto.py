@@ -408,8 +408,9 @@ class TestConsegna(unittest.TestCase):
         La conseguenza che si paga: EPSG:2056 non compare nelle capabilities,
         e un client che si fida di quelle non sa di poterlo chiedere. Si
         scoprirebbe in produzione, quindi va scritto nella cartella."""
-        leggimi = open(os.path.join(self.dest, "LEGGIMI.txt"),
-                       encoding="utf-8").read()
+        with open(os.path.join(self.dest, "LEGGIMI.txt"),
+                  encoding="utf-8") as f:
+            leggimi = f.read()
         self.assertIn("Versione di QGIS Server", leggimi)
         self.assertIn("EPSG:2056", leggimi)
         self.assertIn("3.34", leggimi)

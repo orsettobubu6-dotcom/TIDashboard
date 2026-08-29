@@ -542,8 +542,8 @@ def comuni_del_gpkg(percorso):
     except sqlite3.Error:
         return []
     try:
-        return sorted(set(n for (n,) in con.execute(
-            "SELECT datasetname FROM T_ILI2DB_DATASET") if n))
+        return sorted({n for (n,) in con.execute(
+            "SELECT datasetname FROM T_ILI2DB_DATASET") if n})
     except sqlite3.Error:
         return []
     finally:
@@ -569,7 +569,7 @@ def _nota_comuni(comuni):
     tutti. Chi consegna deve saperlo prima di spedire, non dopo."""
     if len(comuni) < 2:
         return ""
-    return (u"""
+    return ("""
 Comuni contenuti nel GeoPackage
 -------------------------------
 Il file .gpkg contiene %d comuni: %s.
@@ -793,7 +793,7 @@ def _distingue_le_maiuscole(cartella):
     try:
         with open(prova, "w"):
             pass
-    except (IOError, OSError):
+    except OSError:          # IOError e' un alias di OSError in Python 3
         return False
     try:
         gemello = os.path.join(str(cartella),
