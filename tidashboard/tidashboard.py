@@ -3185,7 +3185,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
     def _validate_gpkg_with_gdal(self, gpkg_path):
         """Verifica il GeoPackage appena importato usando i binding Python
         di GDAL/OGR direttamente (osgeo.ogr, non tramite QgsVectorLayer):
-        stesso principio di _validate_dxf per l'export, applicato qui
+        stesso principio di verifica_dxf.controlla_struttura, applicato qui
         all'import - ili2gpkg puo' uscire con codice 0 anche per un
         GeoPackage vuoto o strutturalmente incompleto (es. schema creato ma
         nessun dato importato per un ITF malformato/tronco)."""
@@ -4102,6 +4102,24 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log("   ✅ %d voci scritte in %s" % (n_voci, percorso))
             scritte += 1
         return scritte
+
+    @staticmethod
+    def _livello_di_riga(riga):
+        """La gravita' di una riga di esito, dedotta dall'emoji che la apre.
+
+        Non e' un vezzo: e' il modo in cui verifica_dxf.py restituisce righe
+        gia' pronte per la console senza dover conoscere Qgis - quel modulo
+        gira anche dove QGIS non c'e'. La traduzione da emoji a livello sta
+        QUI, dove Qgis esiste, e in UN POSTO SOLO: prima ogni chiamante
+        rifaceva il proprio ternario, e quello che c'era conosceva solo il
+        rosso, quindi gli avvisi delle righe strutturali sarebbero usciti
+        come informazioni."""
+        testa = riga.strip()
+        if testa.startswith("❌"):
+            return Qgis.Critical
+        if testa.startswith("⚠"):
+            return Qgis.Warning
+        return Qgis.Info
 
     def _annota_a_registro(self):
         """Scrive nel registro il comune appena importato e da quale ITF.
@@ -6224,7 +6242,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
             valido = True
             if dxf_path:
                 self.log("\n🔎 Verifica struttura DXF...")
-                valido = self._validate_dxf(dxf_path)
+                valido, righe = _verifica_dxf.controlla_struttura(dxf_path)
+                for riga in righe:
+                    self.log(riga, self._livello_di_riga(riga))
             if valido:
                 # Il primo controllo legge il file con il NOSTRO codice: se
                 # sbagliamo a scrivere e sbagliamo allo stesso modo a rileggere,
@@ -6241,51 +6261,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
         else:
             self.log("❌ Esportazione DXF fallita.", Qgis.Critical)
 
-    def _count_dxf_entities_stream(self, dxf_path, max_layers_sample=12):
-        """Conta i tipi di entita' (group 0) nella sezione ENTITIES leggendo
-        il file riga per riga, senza caricarlo tutto in memoria (i DXF di un
-        piano cadastrale reale arrivano facilmente a decine di MB)."""
-        stats = {}
-        total = 0
-        layers = []
-        layer_seen = set()
-        in_entities = False
-        expect_type = False
-        expect_layer = False
-        # Il DXF e' fatto di COPPIE: una riga col codice, una col valore. Non
-        # tenerne il conto e guardare ogni riga per conto suo sembra funzionare
-        # finche' non capita un VALORE uguale a "0" - e capita di continuo: ogni
-        # VERTEX 2d finisce con 70/0, ogni HATCH con 98/0. Quel valore veniva
-        # scambiato per il codice di una nuova entita', la riga dopo (il vero
-        # codice) veniva mangiata come se fosse un tipo, e il conteggio non si
-        # risincronizzava piu': tre VERTEX e un SEQEND risultavano una entita'
-        # sola. Ora le righe si leggono a due a due, come sono scritte.
-        try:
-            with open(dxf_path, "r", encoding="latin-1", errors="replace") as f:
-                for raw in f:
-                    codice = raw.strip()
-                    valore_raw = f.readline()
-                    if not valore_raw:
-                        break
-                    valore = valore_raw.strip()
-                    if not in_entities:
-                        if valore == "ENTITIES":
-                            in_entities = True
-                        continue
-                    if codice == "0" and valore == "ENDSEC":
-                        break
-                    if codice == "0":
-                        stats[valore] = stats.get(valore, 0) + 1
-                        total += 1
-                    elif codice == "8":
-                        if valore and valore not in layer_seen and len(layer_seen) < max_layers_sample:
-                            layer_seen.add(valore)
-                            layers.append(valore)
-        except OSError as e:
-            return {"_error": str(e), "_total": 0, "_layers_sample": []}
-        stats["_total"] = total
-        stats["_layers_sample"] = layers
-        return stats
 
     def _avvia_rilettura_gdal(self, dxf_path):
         """Fa rileggere il DXF a GDAL e rimanda a dopo il verdetto sul passo."""
@@ -6311,7 +6286,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self._segna_passo("dxf")
             return
         for riga in _verifica_dxf.righe_di_esito(esito):
-            self.log(riga, Qgis.Critical if riga.strip().startswith("❌") else Qgis.Info)
+            self.log(riga, self._livello_di_riga(riga))
 
         # PRECISIONE ITF -> DXF: l'unico controllo che confronta l'uscita con
         # l'INGRESSO, e non il DXF con se stesso. Serve a DIMOSTRARE che la
@@ -6356,61 +6331,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
                                 "GDAL non torna:\n\n%s"
                                 % "\n".join(esito.problemi))
 
-    def _validate_dxf(self, dxf_path):
-        """Controlli strutturali minimi su un DXF appena esportato: esiste,
-        non e' vuoto, ha SECTION/EOF, contiene almeno un'entita' geometrica.
-        Non ripara nulla (i problemi noti - LTYPE a lunghezza 0, $HANDSEED
-        placeholder - sono gia' risolti alla fonte nel writer Java): serve
-        solo a far emergere subito un file strutturalmente incompleto,
-        invece di scoprirlo solo aprendolo in AutoCAD."""
-        path = Path(dxf_path)
-        if not path.is_file():
-            self.log(f"   ❌ DXF non creato: {path}", Qgis.Critical)
-            return False
-        size = path.stat().st_size
-        self.log(f"   📏 Dimensione DXF: {size} byte")
-        if size < 200:
-            self.log("   ❌ DXF sospettosamente piccolo (probabile file vuoto/corrotto).", Qgis.Critical)
-            return False
-
-        head_lines = []
-        tail_lines = []
-        try:
-            with open(path, "r", encoding="latin-1", errors="replace") as f:
-                for i, line in enumerate(f):
-                    if i >= 80:
-                        break
-                    head_lines.append(line.rstrip("\n"))
-                f.seek(max(0, size - 8000))
-                tail_lines = f.read().splitlines()[-40:]
-        except OSError as e:
-            self.log(f"   ⚠️ Lettura DXF fallita: {e}", Qgis.Warning)
-            return False
-
-        if not any(l.strip() == "SECTION" for l in head_lines):
-            self.log("   ⚠️ Nessuna SECTION trovata in testa al DXF (formato inatteso).", Qgis.Warning)
-
-        has_eof = any(l.strip() == "EOF" for l in tail_lines) or any(l.strip() == "EOF" for l in head_lines)
-        if has_eof:
-            self.log("   ✅ EOF presente")
-        else:
-            self.log("   ⚠️ EOF assente in coda al DXF (file troncato?).", Qgis.Warning)
-
-        stats = self._count_dxf_entities_stream(path)
-        if "_error" in stats:
-            self.log(f"   ⚠️ Analisi entità fallita: {stats['_error']}", Qgis.Warning)
-            return True
-        total = stats.pop("_total", 0)
-        layers_sample = stats.pop("_layers_sample", [])
-        self.log(f"   📊 Entità in ENTITIES: {total}")
-        if total <= 0:
-            self.log("   ❌ Nessuna entità geometrica trovata nel DXF.", Qgis.Critical)
-            return False
-        top = sorted(stats.items(), key=lambda kv: -kv[1])[:8]
-        self.log("   📊 Tipi principali: " + ", ".join(f"{k}={v}" for k, v in top))
-        if layers_sample:
-            self.log("   📋 Layer (campione): " + ", ".join(layers_sample))
-        return True
 
 # ==================================================================================================================
 # 5. ENTRY POINT PLUGIN QGIS

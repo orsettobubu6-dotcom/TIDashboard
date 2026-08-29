@@ -97,6 +97,132 @@ class TestConteggioScritte(unittest.TestCase):
                          {"01651", "01653", "TI_NUMERO_OS"})
 
 
+class TestControlloStrutturale(unittest.TestCase):
+    """Il controllo che legge il file CON IL NOSTRO CODICE.
+
+    Stava dentro la classe della finestra (_validate_dxf, 54 righe) e non
+    poteva essere provato senza costruire una finestra intera. E' uscito
+    perche' non toccava un solo widget: l'unico legame erano undici chiamate
+    a self.log, e il modulo aveva gia' la convenzione giusta - restituire le
+    righe e lasciare che sia chi chiama a stamparle.
+
+    Resta il piu' DEBOLE dei due controlli, e apposta: se sbagliamo a
+    scrivere e sbagliamo allo stesso modo a rileggere, passa. Per quello c'e'
+    la rilettura con GDAL."""
+
+    def test_un_dxf_sano_passa_e_racconta(self):
+        p = _dxf(tempfile.mkdtemp(), _punto("01651") * 3 + _testo("01651"))
+        ok, righe = V.controlla_struttura(p)
+        self.assertTrue(ok, righe)
+        testo = "\n".join(righe)
+        self.assertIn("EOF presente", testo)
+        self.assertIn("Entità in ENTITIES: 4", testo)
+        self.assertIn("POINT=3", testo)
+        self.assertIn("01651", testo)
+
+    def test_un_file_che_non_esiste(self):
+        ok, righe = V.controlla_struttura(r"C:\mai\esistito.dxf")
+        self.assertFalse(ok)
+        self.assertTrue(righe[0].strip().startswith("❌"))
+
+    def test_un_file_troppo_piccolo(self):
+        p = os.path.join(tempfile.mkdtemp(), "vuoto.dxf")
+        with io.open(p, "w", encoding="latin-1") as f:
+            f.write("0\nEOF\n")
+        ok, righe = V.controlla_struttura(p)
+        self.assertFalse(ok)
+        self.assertIn("sospettosamente piccolo", "\n".join(righe))
+
+    def test_un_dxf_senza_entita(self):
+        """Il caso che conta: il file c'e', ha la forma giusta, e dentro non
+        c'e' niente. Un GetMap di questo darebbe una pagina bianca."""
+        p = _dxf(tempfile.mkdtemp(), "", layer=("01651",))
+        ok, righe = V.controlla_struttura(p)
+        self.assertFalse(ok)
+        self.assertIn("Nessuna entità geometrica", "\n".join(righe))
+
+    def test_un_dxf_troncato_senza_EOF(self):
+        p = os.path.join(tempfile.mkdtemp(), "tronco.dxf")
+        with io.open(p, "w", encoding="latin-1", newline="\r\n") as f:
+            f.write(_coppie("0", "SECTION", "2", "ENTITIES")
+                    + _punto("01651") * 12)
+        ok, righe = V.controlla_struttura(p)
+        self.assertTrue(ok, "un EOF mancante e' un avviso, non un rifiuto")
+        self.assertIn("EOF assente", "\n".join(righe))
+
+    def test_l_emoji_porta_la_gravita(self):
+        """La finestra deduce il livello dall'emoji che apre la riga: e' il
+        modo in cui questo modulo puo' restituire righe pronte senza
+        conoscere Qgis. Se le emoji cambiassero, la gravita' si perderebbe
+        in silenzio."""
+        _ok, righe = V.controlla_struttura(
+            _dxf(tempfile.mkdtemp(), _punto("01651") * 3))
+        for r in righe:
+            self.assertTrue(r.startswith("   "), "manca il rientro: %r" % r)
+            self.assertTrue(r.strip()[0] in "❌⚠✅📏📊📋ℹ",
+                            "riga senza emoji riconoscibile: %r" % r)
+
+
+class TestConteggioEntita(unittest.TestCase):
+    def test_le_coppie_non_si_disallineano_su_un_valore_zero(self):
+        """Lo stesso difetto gia' corretto in conta_scritte: un VALORE uguale
+        a "0" - ogni VERTEX 2d finisce con 70/0 - veniva scambiato per il
+        codice di una nuova entita'."""
+        p = _dxf(tempfile.mkdtemp(),
+                 _polilinea("01651", [(CX, CY), (CX + 5, CY), (CX + 5, CY + 5)]))
+        c = V.conta_entita(p)
+        self.assertEqual(c["_totale"], 5)     # POLYLINE + 3 VERTEX + SEQEND
+        self.assertEqual(c["POLYLINE"], 1)
+        self.assertEqual(c["VERTEX"], 3)
+
+    def test_il_campione_dei_layer_si_ferma_dove_gli_si_dice(self):
+        corpo = "".join(_punto("layer%02d" % i) for i in range(20))
+        c = V.conta_entita(_dxf(tempfile.mkdtemp(), corpo,
+                                layer=tuple("layer%02d" % i for i in range(20))),
+                           quanti_layer=5)
+        self.assertEqual(len(c["_layer"]), 5)
+        self.assertEqual(c["_totale"], 20, "il conteggio non si ferma col campione")
+
+    def test_un_file_illeggibile_lo_dice_invece_di_alzare(self):
+        c = V.conta_entita(r"C:\mai\esistito.dxf")
+        self.assertIn("_errore", c)
+        self.assertEqual(c["_totale"], 0)
+
+    # --- le due prove che stavano in test_dialog_ui -----------------------
+    # Erano li' perche' la funzione era prigioniera della classe, e per
+    # chiamarla dovevano costruire una finestra con __new__ senza __init__ -
+    # un ammennicolo che ora non serve piu'.
+
+    def _grezzo(self, righe):
+        percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
+        with io.open(percorso, "w", encoding="latin-1") as f:
+            f.write("\n".join(righe) + "\n")
+        return percorso
+
+    def test_i_vertici_non_si_mangiano_l_entita_successiva(self):
+        righe = ["  2", "ENTITIES"]
+        for _ in range(3):
+            # un VERTEX come lo scrive il nostro writer: finisce con 70 -> 0
+            righe += ["  0", "VERTEX", "  8", "01611", " 10", "2717000.0",
+                      " 20", "1082000.0", " 70", "0"]
+        righe += ["  0", "SEQEND", "  8", "01611", "  0", "ENDSEC"]
+        c = V.conta_entita(self._grezzo(righe))
+        self.assertEqual(c.get("VERTEX"), 3, "i vertici vanno contati tutti")
+        self.assertEqual(c.get("SEQEND"), 1)
+        self.assertEqual(c["_totale"], 4)
+
+    def test_il_campionamento_dei_layer_non_prende_numeri(self):
+        """Il campione raccoglie i valori del gruppo 8. Leggendo riga per riga
+        invece che a coppie, ci finirebbero dentro anche l'altezza del testo
+        (gruppo 40) e l'ancoraggio (gruppo 73)."""
+        righe = ["  2", "ENTITIES",
+                 "  0", "TEXT", "  8", "TI_NUMERO_PUNTO_DI_CONFINE",
+                 " 40", "0.9", " 73", "0",
+                 "  0", "ENDSEC"]
+        c = V.conta_entita(self._grezzo(righe))
+        self.assertEqual(c["_layer"], ["TI_NUMERO_PUNTO_DI_CONFINE"])
+
+
 class TestRiletturaGdal(unittest.TestCase):
     def test_un_dxf_sano_non_perde_niente(self):
         p = _dxf(tempfile.mkdtemp(),

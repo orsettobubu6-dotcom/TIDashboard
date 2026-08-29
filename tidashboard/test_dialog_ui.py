@@ -1261,38 +1261,6 @@ class TestWorkerDistrutto(unittest.TestCase):
         dlg.closeEvent(QCloseEvent())      # prima: RuntimeError
 
 
-class TestConteggioEntitaDXF(unittest.TestCase):
-    """Regressione: il DXF è fatto di COPPIE codice/valore, e leggere ogni riga
-    per conto suo si rompe al primo VALORE uguale a "0" — cosa che capita di
-    continuo, perché ogni VERTEX 2d finisce con 70/0 e ogni HATCH con 98/0."""
-
-    def _dxf(self, righe):
-        percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
-        with open(percorso, "w", encoding="latin-1") as f:
-            f.write("\n".join(righe) + "\n")
-        return percorso
-
-    def test_i_vertici_non_si_mangiano_l_entita_successiva(self):
-        righe = ["  2", "ENTITIES"]
-        for _ in range(3):
-            # un VERTEX come lo scrive il nostro writer: finisce con 70 -> 0
-            righe += ["  0", "VERTEX", "  8", "01611", " 10", "2717000.0",
-                      " 20", "1082000.0", " 70", "0"]
-        righe += ["  0", "SEQEND", "  8", "01611", "  0", "ENDSEC"]
-        stats = TIDashboardDialog._count_dxf_entities_stream(
-            TIDashboardDialog.__new__(TIDashboardDialog), self._dxf(righe))
-        self.assertEqual(stats.get("VERTEX"), 3, "i vertici vanno contati tutti")
-        self.assertEqual(stats.get("SEQEND"), 1)
-        self.assertEqual(stats["_total"], 4)
-
-    def test_il_campionamento_dei_layer_non_prende_numeri(self):
-        righe = ["  2", "ENTITIES",
-                 "  0", "TEXT", "  8", "TI_NUMERO_PUNTO_DI_CONFINE",
-                 " 40", "0.9", " 73", "0",
-                 "  0", "ENDSEC"]
-        stats = TIDashboardDialog._count_dxf_entities_stream(
-            TIDashboardDialog.__new__(TIDashboardDialog), self._dxf(righe))
-        self.assertEqual(stats["_layers_sample"], ["TI_NUMERO_PUNTO_DI_CONFINE"])
 
 
 class TestInventarioSenzaSchianti(unittest.TestCase):

@@ -2,7 +2,8 @@
 # scritto.
 #
 # PERCHE' SERVE UN SECONDO LETTORE. Il controllo strutturale che facevamo prima
-# (_validate_dxf) legge il file con il nostro stesso codice: se sbagliamo a
+# (controlla_struttura, qui sotto) legge il file con il nostro stesso codice:
+# se sbagliamo a
 # scrivere qualcosa e sbagliamo allo stesso modo a rileggerlo, il controllo
 # passa e il difetto arriva in AutoCAD.
 #
@@ -390,6 +391,122 @@ class Esito(object):
     @property
     def ok(self):
         return self.leggibile and not self.problemi
+
+
+# Quanto si legge in testa e in coda per il controllo strutturale. Un DXF di un
+# comune arriva a decine di MB: la SECTION sta nelle prime righe e l'EOF
+# nell'ultima, e leggere tutto per trovarle sarebbe uno spreco.
+RIGHE_IN_TESTA = 80
+BYTE_IN_CODA = 8000
+DIMENSIONE_MINIMA = 200
+LAYER_NEL_CAMPIONE = 12
+
+
+def conta_entita(percorso, quanti_layer=LAYER_NEL_CAMPIONE):
+    """I tipi di entita' nella sezione ENTITIES, contati leggendo il file riga
+    per riga senza caricarlo in memoria.
+
+    IL DXF E' FATTO DI COPPIE: una riga col codice, una col valore. Non tenerne
+    il conto e guardare ogni riga per conto suo sembra funzionare finche' non
+    capita un VALORE uguale a "0" - e capita di continuo: ogni VERTEX 2d
+    finisce con 70/0, ogni HATCH con 98/0. Quel valore veniva scambiato per il
+    codice di una nuova entita', la riga dopo (il vero codice) veniva mangiata
+    come se fosse un tipo, e il conteggio non si risincronizzava piu': tre
+    VERTEX e un SEQEND risultavano una entita' sola."""
+    conteggio = {}
+    totale = 0
+    layer, visti = [], set()
+    dentro = False
+    try:
+        with io.open(str(percorso), "r", encoding="latin-1",
+                     errors="replace") as f:
+            for riga in f:
+                codice = riga.strip()
+                grezzo = f.readline()
+                if not grezzo:
+                    break
+                valore = grezzo.strip()
+                if not dentro:
+                    if valore == "ENTITIES":
+                        dentro = True
+                    continue
+                if codice == "0" and valore == "ENDSEC":
+                    break
+                if codice == "0":
+                    conteggio[valore] = conteggio.get(valore, 0) + 1
+                    totale += 1
+                elif codice == "8":
+                    if valore and valore not in visti and len(visti) < quanti_layer:
+                        visti.add(valore)
+                        layer.append(valore)
+    except OSError as e:
+        return {"_errore": str(e), "_totale": 0, "_layer": []}
+    conteggio["_totale"] = totale
+    conteggio["_layer"] = layer
+    return conteggio
+
+
+def controlla_struttura(percorso):
+    """Controlli strutturali minimi su un DXF appena esportato: esiste, non e'
+    vuoto, ha SECTION ed EOF, contiene almeno un'entita'. Ritorna
+    (va_bene, righe) con le righe gia' pronte per la console.
+
+    NON RIPARA NULLA. I difetti noti - LTYPE a lunghezza 0, $HANDSEED
+    segnaposto - sono risolti alla fonte nel writer Java. Serve solo a far
+    emergere subito un file strutturalmente incompleto, invece di scoprirlo
+    aprendolo in AutoCAD.
+
+    E' un controllo che legge il file CON IL NOSTRO STESSO CODICE, quindi non
+    sostituisce la rilettura con GDAL (vedi verifica): sono due mestieri
+    diversi, e questo e' il piu' debole dei due."""
+    righe = []
+    percorso = str(percorso)
+    if not os.path.isfile(percorso):
+        return False, ["   ❌ DXF non creato: %s" % percorso]
+    dimensione = os.path.getsize(percorso)
+    righe.append("   📏 Dimensione DXF: %d byte" % dimensione)
+    if dimensione < DIMENSIONE_MINIMA:
+        righe.append("   ❌ DXF sospettosamente piccolo (probabile file "
+                     "vuoto/corrotto).")
+        return False, righe
+
+    testa, coda = [], []
+    try:
+        with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+            for i, riga in enumerate(f):
+                if i >= RIGHE_IN_TESTA:
+                    break
+                testa.append(riga.rstrip("\n"))
+            f.seek(max(0, dimensione - BYTE_IN_CODA))
+            coda = f.read().splitlines()[-40:]
+    except OSError as e:
+        righe.append("   ⚠️ Lettura DXF fallita: %s" % e)
+        return False, righe
+
+    if not any(r.strip() == "SECTION" for r in testa):
+        righe.append("   ⚠️ Nessuna SECTION trovata in testa al DXF "
+                     "(formato inatteso).")
+    if any(r.strip() == "EOF" for r in coda + testa):
+        righe.append("   ✅ EOF presente")
+    else:
+        righe.append("   ⚠️ EOF assente in coda al DXF (file troncato?).")
+
+    conteggio = conta_entita(percorso)
+    if "_errore" in conteggio:
+        righe.append("   ⚠️ Analisi entità fallita: %s" % conteggio["_errore"])
+        return True, righe
+    totale = conteggio.pop("_totale", 0)
+    campione = conteggio.pop("_layer", [])
+    righe.append("   📊 Entità in ENTITIES: %d" % totale)
+    if totale <= 0:
+        righe.append("   ❌ Nessuna entità geometrica trovata nel DXF.")
+        return False, righe
+    primi = sorted(conteggio.items(), key=lambda kv: -kv[1])[:8]
+    righe.append("   📊 Tipi principali: "
+                 + ", ".join("%s=%d" % kv for kv in primi))
+    if campione:
+        righe.append("   📋 Layer (campione): " + ", ".join(campione))
+    return True, righe
 
 
 def conta_scritte(percorso):
