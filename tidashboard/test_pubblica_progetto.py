@@ -398,6 +398,24 @@ class TestConsegna(unittest.TestCase):
         self.assertFalse(P._distingue_le_maiuscole(
             os.path.join(tempfile.mkdtemp(), "cartella", "che", "non", "c_e")))
 
+    def test_il_LEGGIMI_avverte_sulla_versione_del_server(self):
+        """MISURATO servendo la consegna con QGIS Server 3.34 LTR su Linux:
+        il progetto si apre e il PNG di un GetMap e' byte per byte identico a
+        quello di un server 4.x, ma le proprieta' WMS del progetto vengono
+        IGNORATE - il modo in cui QGIS le scrive e' cambiato fra la serie 3 e
+        la 4. Letto da 3.34: WMSCrsList [], WMSExtent [], WMSServiceTitle "".
+
+        La conseguenza che si paga: EPSG:2056 non compare nelle capabilities,
+        e un client che si fida di quelle non sa di poterlo chiedere. Si
+        scoprirebbe in produzione, quindi va scritto nella cartella."""
+        leggimi = open(os.path.join(self.dest, "LEGGIMI.txt"),
+                       encoding="utf-8").read()
+        self.assertIn("Versione di QGIS Server", leggimi)
+        self.assertIn("EPSG:2056", leggimi)
+        self.assertIn("3.34", leggimi)
+        self.assertIn(P._versione_qgis().split("-")[0], leggimi,
+                      "deve dire con quale versione e' stata scritta")
+
     def test_il_LEGGIMI_dice_quali_comuni_sono_nel_file(self):
         """Da quando l'archivio ne tiene piu' d'uno, il GeoPackage consegnato
         NON coincide con cio' che si pubblica: i layer sono filtrati sul comune

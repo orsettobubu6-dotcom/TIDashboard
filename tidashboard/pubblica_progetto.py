@@ -550,6 +550,16 @@ def comuni_del_gpkg(percorso):
         con.close()
 
 
+def _versione_qgis():
+    """La versione di QGIS che sta scrivendo. "una versione della serie 4"
+    quando QGIS non c'e' - il modulo deve restare importabile senza."""
+    try:
+        from qgis.core import Qgis
+        return Qgis.QGIS_VERSION
+    except Exception:
+        return "(versione non rilevata)"
+
+
 def _nota_comuni(comuni):
     """La riga che dice quali comuni ci sono NEL FILE.
 
@@ -623,7 +633,27 @@ server, per i client web che non sanno altro.
 
 Il piano per il registro fondiario resta un prodotto di STAMPA. Quello che
 il WMS mostra e' una riproduzione senza valore legale.
-%s"""  % (titolo or "", n_font, _nota_comuni(comuni))
+
+Versione di QGIS Server
+-----------------------
+Questa cartella e' stata scritta da QGIS %s. Va servita da un QGIS Server
+della STESSA serie maggiore.
+
+Su QGIS Server 3.34 LTR il progetto si apre e le mappe escono corrette -
+verificato, il PNG di un GetMap e' byte per byte identico a quello di un
+server 4.x - ma le impostazioni WMS del progetto vengono IGNORATE, perche'
+il modo in cui QGIS le scrive e' cambiato fra la serie 3 e la 4. In
+concreto, su 3.34:
+
+  - EPSG:2056 NON viene annunciato nelle capabilities (restano CRS:84,
+    EPSG:4326 e EPSG:3857). Un GetMap in EPSG:2056 funziona lo stesso, ma
+    un client che si fida delle capabilities non sapra' di poterlo
+    chiedere;
+  - l'estensione pubblicata, il titolo e la descrizione del servizio non
+    vengono letti;
+  - i layer esclusi dal WMS potrebbero comparire.
+
+%s"""  % (titolo or "", n_font, _versione_qgis(), _nota_comuni(comuni))
     with open(os.path.join(dest, "LEGGIMI.txt"), "w", encoding="utf-8") as f:
         f.write(testo)
 
