@@ -1,6 +1,21 @@
 # Diario delle versioni
 
-## 1.3.2 — 29 agosto 2026 — sperimentale
+## 1.3.3 — 29 agosto 2026 — sperimentale
+
+Stesso contenuto della 1.3.2, che non è stata pubblicata: la sua CI è caduta su
+`ruff`, che segnalava quattro rilievi in codice scritto quel giorno — una
+`sorted(set(...))` da riscrivere come comprensione, un prefisso `u""` residuo di
+Python 2, un `IOError` che in Python 3 è un alias di `OSError`, e un `open()`
+senza gestore di contesto in una prova.
+
+Il tag `v1.3.2` non è stato spostato. Un tag che cambia contenuto è peggio di un
+tag fallito: chi l'avesse già scaricato si troverebbe un file diverso con lo
+stesso nome, che è esattamente il difetto da cui è partito questo giro di
+controlli.
+
+Il resto è nella 1.3.2 qui sotto.
+
+## 1.3.2 — 29 agosto 2026 — non pubblicata (CI rossa su ruff)
 
 Quattro interventi sulla finestra, la consegna WebGIS provata davvero su Linux,
 e due controlli che non sapevano di non star controllando.
