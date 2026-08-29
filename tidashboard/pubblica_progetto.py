@@ -748,6 +748,34 @@ def leggi_qgs(percorso_qgz):
         return f.read()
 
 
+def _distingue_le_maiuscole(cartella):
+    """Il filesystem di questa cartella distingue maiuscole e minuscole?
+
+    Non si deduce dal sistema operativo: su Windows esistono cartelle
+    sensibili (WSL, volumi con il flag apposta) e su Linux ne esistono di
+    insensibili (una condivisione di rete). Si prova: si crea un file e lo si
+    cerca scritto in un altro modo.
+
+    In caso di dubbio - non si e' potuto scrivere - si risponde False, cioe'
+    "non lo so, quindi non fidarti": e' il verso che porta ad avvisare invece
+    che a tacere."""
+    prova = os.path.join(str(cartella), "tidashboard_prova_maiuscole.tmp")
+    try:
+        with open(prova, "w"):
+            pass
+    except (IOError, OSError):
+        return False
+    try:
+        gemello = os.path.join(str(cartella),
+                               "TIDASHBOARD_PROVA_MAIUSCOLE.TMP")
+        return not os.path.exists(gemello)
+    finally:
+        try:
+            os.remove(prova)
+        except OSError:
+            pass
+
+
 def verifica_consegna(cartella):
     """Apre il progetto scritto e controlla che sia davvero portabile.
 
@@ -763,6 +791,23 @@ def verifica_consegna(cartella):
                 {"qgz": None})
     xml = leggi_qgs(qgz[0])
     rilievi = []
+
+    # SI DICE DOVE SI STA CONTROLLANDO, perche' il controllo piu' importante -
+    # che ogni file nominato esista DAVVERO - su Windows non puo' fallire: il
+    # filesystem ignora le maiuscole, quindi un progetto che chiede
+    # "Symbol_1_Fels.svg" trova "symbol_1_fels.svg" e passa. Sul server Linux
+    # non lo trova, e la mappa esce senza simboli.
+    #
+    # Un controllo che non ha potuto controllare deve dirlo: e' la stessa
+    # regola del controllo di deviazione del DXF, dove "zero confronti"
+    # usciva come "0.0000 m".
+    #
+    # MA NON FRA I RILIEVI: li' significherebbe "questa consegna ha qualcosa
+    # che non va", e una consegna sana prodotta su Windows ne avrebbe sempre
+    # uno. Un avviso che compare sempre lo si smette di leggere - e' la stessa
+    # ragione per cui l'allarme per layer del controllo DXF e' stato tolto.
+    # Sta nei dati, e chi mostra l'esito lo dice una volta.
+    maiuscole = _distingue_le_maiuscole(cartella)
 
     def controlla(percorsi, che_cosa):
         mancanti = 0
@@ -832,5 +877,6 @@ def verifica_consegna(cartella):
 
     dati = {"qgz": qgz[0], "n_datasource": len(datasource), "n_svg": len(svg),
             "n_privati": sum(1 for v in _RE_PRIVATO.findall(xml) if v == "1"),
-            "font_usati": famiglie, "ttf_consegnati": len(ttf)}
+            "font_usati": famiglie, "ttf_consegnati": len(ttf),
+            "maiuscole_distinte": maiuscole}
     return (rilievi, dati)

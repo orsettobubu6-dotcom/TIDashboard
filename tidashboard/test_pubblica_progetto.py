@@ -364,6 +364,40 @@ class TestConsegna(unittest.TestCase):
                              "homePath deve restare vuoto: QGIS ripiega sulla "
                              "cartella del progetto, che e' giusta ovunque")
 
+    def test_dice_quando_il_controllo_non_puo_accorgersi_delle_maiuscole(self):
+        """Su Windows il controllo piu' importante - che ogni file nominato
+        esista davvero - NON PUO' FALLIRE: il filesystem ignora le maiuscole,
+        quindi un progetto che chiede "Symbol_1_Fels.svg" trova
+        "symbol_1_fels.svg" e passa. Sul server Linux non lo trova, e la mappa
+        esce senza simboli.
+
+        Un controllo che non ha potuto controllare deve dirlo: e' la stessa
+        regola gia' applicata al controllo di deviazione del DXF."""
+        rilievi, dati = P.verifica_consegna(self.dest)
+        # NON FRA I RILIEVI: li' significherebbe "questa consegna ha qualcosa
+        # che non va", e una consegna sana prodotta su Windows ne avrebbe
+        # sempre uno. Un avviso che compare sempre lo si smette di leggere.
+        self.assertNotIn("maiuscole", " ".join(rilievi).lower())
+        self.assertIn("maiuscole_distinte", dati)
+        self.assertEqual(dati["maiuscole_distinte"],
+                         P._distingue_le_maiuscole(self.dest))
+
+    def test_la_prova_delle_maiuscole_e_una_prova_vera(self):
+        """Non si deduce dal sistema operativo: esistono cartelle sensibili su
+        Windows (WSL) e insensibili su Linux (una condivisione di rete). Si
+        crea un file e lo si ricerca scritto in un altro modo."""
+        cartella = tempfile.mkdtemp()
+        esito = P._distingue_le_maiuscole(cartella)
+        self.assertIn(esito, (True, False))
+        self.assertEqual(os.listdir(cartella), [],
+                         "il file di prova non e' stato rimosso")
+
+    def test_su_una_cartella_non_scrivibile_si_avvisa_lo_stesso(self):
+        """Nel dubbio si risponde "non lo so, quindi non fidarti": e' il verso
+        che porta ad avvisare invece che a tacere."""
+        self.assertFalse(P._distingue_le_maiuscole(
+            os.path.join(tempfile.mkdtemp(), "cartella", "che", "non", "c_e")))
+
     def test_il_LEGGIMI_dice_quali_comuni_sono_nel_file(self):
         """Da quando l'archivio ne tiene piu' d'uno, il GeoPackage consegnato
         NON coincide con cio' che si pubblica: i layer sono filtrati sul comune
