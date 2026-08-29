@@ -48,7 +48,6 @@
 #    feature. Serve anche leggere il layer OGR "entities" per nome: il primo
 #    layer e' "blocks", cioe' le definizioni, e sono 24.
 import collections
-import io
 import math
 import os
 
@@ -100,7 +99,7 @@ def archi_imprecisi(percorso, soglia=SCOSTAMENTO_ARCO_MAX):
 
     Ritorna [(scostamento_m, corda_m, bulge, cifre)], i peggiori per primi."""
     trovati = []
-    with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+    with open(percorso, "r", encoding="latin-1", errors="replace") as f:
         tipo = None
         x = y = None
         bulge = None
@@ -134,10 +133,12 @@ def archi_imprecisi(percorso, soglia=SCOSTAMENTO_ARCO_MAX):
                     x = float(valore)
                 elif codice == "20":
                     y = float(valore)
-                elif codice == "42":
-                    if abs(float(valore)) > 1e-12:
-                        bulge = valore
-                        cifre = _cifre_decimali(valore)
+                # Un bulge nullo non e' un arco: e' il caso normale, e
+                # tenerlo separato dal codice 42 rendeva la condizione
+                # annidata senza dire nulla di piu'.
+                elif codice == "42" and abs(float(valore)) > 1e-12:
+                    bulge = valore
+                    cifre = _cifre_decimali(valore)
     trovati.sort(reverse=True)
     return trovati
 
@@ -191,7 +192,7 @@ def coordinate_itf(percorso):
     otto cifre, gli identificatori interi fuori scala - quindi il
     riconoscimento non ha bisogno di sapere che cosa sta leggendo."""
     punti = []
-    with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+    with open(percorso, "r", encoding="latin-1", errors="replace") as f:
         for riga in f:
             token = riga.split()
             for i in range(len(token) - 1):
@@ -240,7 +241,7 @@ def deviazione_coordinate(percorso_itf, percorso_dxf,
              "collocate": 0, "peggiore": None}
     per_layer = collections.Counter()
     identiche_layer = collections.Counter()
-    with io.open(percorso_dxf, "r", encoding="latin-1", errors="replace") as f:
+    with open(percorso_dxf, "r", encoding="latin-1", errors="replace") as f:
         tipo = layer = None
         x = None
         while True:
@@ -418,7 +419,7 @@ def conta_entita(percorso, quanti_layer=LAYER_NEL_CAMPIONE):
     layer, visti = [], set()
     dentro = False
     try:
-        with io.open(str(percorso), "r", encoding="latin-1",
+        with open(str(percorso), "r", encoding="latin-1",
                      errors="replace") as f:
             for riga in f:
                 codice = riga.strip()
@@ -472,7 +473,7 @@ def controlla_struttura(percorso):
 
     testa, coda = [], []
     try:
-        with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+        with open(percorso, "r", encoding="latin-1", errors="replace") as f:
             for i, riga in enumerate(f):
                 if i >= RIGHE_IN_TESTA:
                     break
@@ -520,7 +521,7 @@ def conta_scritte(percorso):
     dentro = False
     tipo = None
     layer = None
-    with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+    with open(percorso, "r", encoding="latin-1", errors="replace") as f:
         while True:
             codice = f.readline()
             if not codice:
@@ -562,7 +563,7 @@ def layer_dichiarati(percorso):
     dentro_tabelle = False
     dentro_layer = False
     tipo = None
-    with io.open(percorso, "r", encoding="latin-1", errors="replace") as f:
+    with open(percorso, "r", encoding="latin-1", errors="replace") as f:
         while True:
             codice = f.readline()
             if not codice:
@@ -598,7 +599,8 @@ def conta_lette(percorso, gdal=None, ogr=None):
     restare provabile lo stesso."""
     if gdal is None or ogr is None:
         try:
-            from osgeo import gdal as _g, ogr as _o
+            from osgeo import gdal as _g
+            from osgeo import ogr as _o
         except ImportError as e:
             return collections.Counter(), None, "GDAL non disponibile: %s" % e, []
         gdal, ogr = _g, _o
@@ -706,8 +708,8 @@ def verifica(percorso, gdal=None, ogr=None):
             "dichiarato, quindi colore, spessore e tipo di linea li decide "
             "chi apre il file. Un DXF cosi' non e' conforme.")
     if dichiarati:
-        con_entita = set(n for n, v in lette.items() if v)
-        mancanti = sorted(con_entita - dichiarati - set(["(senza layer)"]))
+        con_entita = {n for n, v in lette.items() if v}
+        mancanti = sorted(con_entita - dichiarati - {"(senza layer)"})
         if mancanti:
             esito.non_dichiarati = mancanti
             esito.problemi.append(

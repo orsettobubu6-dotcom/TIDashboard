@@ -46,11 +46,18 @@ jobs:
           python tidashboard/test_coordinate.py
           python tidashboard/test_archivio.py
 
-      - name: ruff sui moduli piccoli
+      - name: ruff sui moduli puliti
         run: |
           pip install ruff
+          # I moduli PULITI, non tutti. Sul resto c'e' un arretrato di 157
+          # rilievi, quasi tutti in tidashboard.py: si smaltisce quando quei
+          # pezzi escono dalla classe, non mescolandolo a un rifacimento.
+          # Ogni modulo che esce entra in questa lista e ci resta.
           ruff check crea_zip_plugin.py tidashboard/java_env.py tidashboard/test_java_env.py \
-                     tidashboard/pubblica_progetto.py tidashboard/test_pubblica_progetto.py
+                     tidashboard/pubblica_progetto.py tidashboard/test_pubblica_progetto.py \
+                     tidashboard/archivio.py tidashboard/test_archivio.py \
+                     tidashboard/verifica_dxf.py tidashboard/test_verifica_dxf.py \
+                     tidashboard/applica_etichette.py
 
       - name: metadata
         run: python crea_zip_plugin.py --solo-check-metadata

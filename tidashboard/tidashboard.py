@@ -57,6 +57,7 @@ try:
     from . import pubblica_progetto as _pubblica
     from . import simbologia as _simbologia
     from . import archivio as _archivio
+    from . import applica_etichette as _applica_etichette
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
     from .colori import *          # noqa: F401,F403 - costanti C_*
@@ -92,6 +93,7 @@ except ImportError:
     import pubblica_progetto as _pubblica
     import simbologia as _simbologia
     import archivio as _archivio
+    import applica_etichette as _applica_etichette
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
     from colori import *           # noqa: F401,F403
@@ -4491,7 +4493,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if pending_labels:
             self.log(f"\n📝 Fase 3bis: Configurazione etichette ({len(pending_labels)} layer)...")
             for layer, t_low, class_name in pending_labels:
-                self._apply_labels_to_layer(layer, t_low, class_name, mode == "gb")
+                _applica_etichette.applica_etichette(
+                    layer, t_low, class_name, e_gb=(mode == "gb"),
+                    maiuscolo=self._maiuscolo_localita(), log=self.log)
 
         # Ri-aggancio dei filtri su "genere" al campo reale (post-join) per
         # Elemento_puntiforme/Elemento_lineare/Elemento_con_superficie.
@@ -4502,14 +4506,15 @@ class TIDashboardDialog(StiliMixin, QDialog):
         if pending_genere_rebind:
             self.log(f"\n🔗 Fase 3ter: Ri-aggancio campo \"genere\" ({len(pending_genere_rebind)} layer)...")
             for layer in pending_genere_rebind:
-                field = self._find_label_field(layer, ["genere"])
+                field = _applica_etichette.campo_di_etichetta(layer, ["genere"])
                 if not field:
                     self.log(f"   ⚠️ Campo genere (diretto o da join) non trovato per {layer.name()}", Qgis.Warning)
                     continue
                 renderer = layer.renderer()
                 if renderer is None or not hasattr(renderer, 'rootRule'):
                     continue
-                n = self._rebind_field_in_rules(renderer.rootRule(), "genere", field)
+                n = _applica_etichette.rilega_campo_nelle_regole(
+                    renderer.rootRule(), "genere", field)
                 layer.triggerRepaint()
                 self.log(f"   ✅ {layer.name()}: \"genere\" -> \"{field}\" ({n} regole)")
 
@@ -4550,7 +4555,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 child_col, parent_col = next(iter(pairs.items()))
                 parent_layer = relation.referencedLayer()
                 parent_table = _raw_table_name(parent_layer)
-                parent_genere_field = self._find_label_field(parent_layer, ["genere"])
+                parent_genere_field = _applica_etichette.campo_di_etichetta(
+                    parent_layer, ["genere"])
                 if not parent_genere_field:
                     self.log(f"   ⚠️ Campo genere non trovato su {parent_layer.name()}: split saltato", Qgis.Warning)
                     break
@@ -4819,219 +4825,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
                   f"oltre 1:{CONFINE_POINTS_MIN_SCALE}): {n_visibility} layer")
 
     # --- ETICHETTE ---
-    @staticmethod
-    def _find_label_field(layer, candidates):
-        """Trova il primo campo tra i candidati sul layer. Le tabelle "PosX" del
-        modello ILI non contengono quasi mai il testo direttamente: vive sulla
-        tabella padre "X" e diventa un campo del layer solo dopo il join
-        (rinominato "{tabella_padre}_{campo}" da setup_relations_and_joins).
-        Cerchiamo quindi anche un campo che termini con "_<candidato>"."""
-        existing = {f.name().lower(): f.name() for f in layer.fields()}
-        for cand in candidates:
-            if cand.lower() in existing:
-                return existing[cand.lower()]
-        for cand in candidates:
-            suffix = ("_" + cand).lower()
-            for lname, orig in existing.items():
-                if lname.endswith(suffix):
-                    return orig
-        return None
 
-    @staticmethod
-    def _rebind_field_in_rules(rule, old_field, new_field):
-        """Sostituisce, in tutto l'albero di regole a partire da 'rule', ogni
-        riferimento a "old_field" nell'espressione di filtro con "new_field".
-        Usato per i renderer costruiti su un campo (es. "Genere") che esiste solo
-        sulla tabella padre e diventa disponibile sul layer solo dopo il join."""
-        count = 0
-        old_ref, new_ref = f'"{old_field}"', f'"{new_field}"'
-        if old_field != new_field:
-            expr = rule.filterExpression()
-            if old_ref in expr:
-                rule.setFilterExpression(expr.replace(old_ref, new_ref))
-                count += 1
-        for child in rule.children():
-            count += TIDashboardDialog._rebind_field_in_rules(child, old_field, new_field)
-        return count
 
-    def _apply_pos_text_attrs(self, layer, settings, keyword, base_size):
-        """Collega Ori/HAli/VAli/Dimensione/Stile (tabelle Pos* di
-        MD01MUTI7MN95.ili) alle proprieta' data-defined di QGIS, applicando
-        come default esplicito il valore "non_definito" dichiarato dal
-        modello per quell'attributo quando e' assente nei dati, invece di
-        lasciarlo a un default QGIS implicito.
 
-        - Ori: azimut in GON orario da Nord (0=Nord, 100=Est, coerente con
-          "E_Azimut ... Azimut 100 = E" del modello). QGIS vuole gradi orari
-          da Est (0=Est): gradi_qgis = (Ori_gon - 100) * 0.9 (segno opposto
-          alla stessa formula usata per il DXF in av2geobau_ti/Mapper.java,
-          che converte lo stesso Ori in gradi ANTIorari da Est).
-        - HAli/VAli: le proprieta' data-defined QgsPalLayerSettings.Hali/Vali
-          accettano LETTERALMENTE gli stessi valori del dominio ILI
-          (Left/Center/Right, Bottom/Base/Half/Cap/Top) - nessuna conversione,
-          solo il default giusto per tabella (Left/Bottom per le etichette-
-          numero di punto PFP/PFA/Segnale/Punto_quotato, Center/Half per
-          tutte le altre, secondo _POS_LEFT_BOTTOM_KEYWORDS).
-        - Dimensione (piccolo/medio/grande): il plugin ha gia' una dimensione
-          fissa in pt per ogni voce di TEXT_LABEL_RULES, che rappresenta il
-          caso "medio" (default dichiarato ovunque). +-25% per piccolo/grande
-          e' un'approssimazione (il valore pt esatto non e' specificato ne'
-          nel modello ne' in av2geobau, che non mappa affatto Dimensione).
-        - Stile (normale/spaziato): "spaziato" = testo con spaziatura lettere
-          allargata, via la proprieta' data-defined FontLetterSpacing
-          (assente il concetto in DXF/av2geobau); ampiezza approssimata
-          proporzionale alla dimensione del carattere.
-
-        Tutte le proprieta' hanno senso solo con placement "sopra al punto"
-        anziche' la ricerca automatica anti-sovrapposizione di QGIS
-        (AroundPoint, il default): viene quindi sempre impostato OverPoint,
-        analogo al posizionamento fisso di un TEXT DXF.
-        """
-        fields = layer.fields()
-        applied = []
-        left_bottom = keyword in _POS_LEFT_BOTTOM_KEYWORDS
-        hali_default = "Left" if left_bottom else "Center"
-        vali_default = "Bottom" if left_bottom else "Half"
-        dd = settings.dataDefinedProperties()
-
-        if fields.lookupField("ori") >= 0:
-            dd.setProperty(QgsPalLayerSettings.Property.LabelRotation,
-                            QgsProperty.fromExpression('(coalesce("ori", 100) - 100) * 0.9'))
-            applied.append("Ori")
-        if fields.lookupField("hali") >= 0:
-            dd.setProperty(QgsPalLayerSettings.Property.Hali,
-                            QgsProperty.fromExpression(f"coalesce(\"hali\", '{hali_default}')"))
-            applied.append("HAli")
-        if fields.lookupField("vali") >= 0:
-            dd.setProperty(QgsPalLayerSettings.Property.Vali,
-                            QgsProperty.fromExpression(f"coalesce(\"vali\", '{vali_default}')"))
-            applied.append("VAli")
-        if not left_bottom and fields.lookupField("dimensione") >= 0:
-            dd.setProperty(QgsPalLayerSettings.Property.Size, QgsProperty.fromExpression(
-                f'CASE "dimensione" '
-                f"WHEN 'piccolo' THEN {base_size * 0.8} "
-                f"WHEN 'grande' THEN {base_size * 1.25} "
-                f'ELSE {base_size} END'
-            ))
-            applied.append("Dimensione")
-        if keyword in _POS_STILE_KEYWORDS and fields.lookupField("stile") >= 0:
-            dd.setProperty(QgsPalLayerSettings.Property.FontLetterSpacing, QgsProperty.fromExpression(
-                f"CASE WHEN \"stile\" = 'spaziato' THEN {base_size * 0.3} ELSE 0 END"
-            ))
-            applied.append("Stile")
-
-        # Priorita' e comportamento in caso di sovrapposizione. Il motore di
-        # etichettatura di QGIS sa gia' nascondere una scritta che non ci sta;
-        # quello che non sa, senza che glielo si dica, e' QUALE delle due deve
-        # cedere: senza priorita' tratta tutti i layer alla pari e decide
-        # l'ordine di disegno. La scala sta in _LABEL_PRIORITY, ed e' la stessa
-        # usata dall'esportazione DXF (AntiCollisioneEtichette.java), cosi'
-        # anteprima e disegno consegnato non si contraddicono.
-        settings.priority = _LABEL_PRIORITY.get(keyword, _LABEL_PRIORITY_DEFAULT)
-        # La scritta e' anche ostacolo per le altre, con peso pari alla sua
-        # priorita': un numero di fondo non va coperto da un numero di punto.
-        ostacoli = settings.obstacleSettings()
-        ostacoli.setIsObstacle(True)
-        ostacoli.setFactor(0.5 + 0.1 * settings.priority)
-        settings.setObstacleSettings(ostacoli)
-
-        if applied:
-            settings.placement = Qgis.LabelPlacement.OverPoint
-        return applied
-
-    def _apply_labels_to_layer(self, layer, t_low, class_name, is_gb=False):
-        """Applica etichette ai layer testuali (cap. 5 Weisung-GB-it.pdf)."""
-        _ensure_cadastra_text_font_loaded()
-        # Punto quotato: la quota e' la componente Z della geometria (CoordA),
-        # non un attributo separato -> etichetta basata su espressione $z.
-        if "punto_quotato" in t_low:
-            settings = QgsPalLayerSettings()
-            settings.fieldName = "round($z, 2)"
-            settings.isExpression = True
-            text_format = QgsTextFormat()
-            text_format.setColor(gbc(is_gb, QColor(102, 51, 0)))
-            text_format.setFont(QFont(CADASTRA_TEXT_FAMILY))
-            # Punto quotato: estensione cantonale senza grandezza federale,
-            # allineato a 1.8mm come le altre etichette-numero.
-            text_format.setSize(_font_size_for_cap(1.8))
-            text_format.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-            settings.setFormat(text_format)
-            settings.enabled = True
-            applied = self._apply_pos_text_attrs(layer, settings, "punto_quotato", 1.8)
-            layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
-            layer.setLabelsEnabled(True)
-            note = f" ({'+'.join(applied)} da Pos*)" if applied else ""
-            self.log(f"     ✅ Etichetta Punto_quotato su $z{note}")
-            return
-
-        for keyword, candidates, bold, italic, size in TEXT_LABEL_RULES:
-            if keyword not in t_low:
-                continue
-
-            # La scritta va sul PUNTO DI ISCRIZIONE, non sull'oggetto che
-            # nomina: vedi TESTO_SOLO_SU_POS. Senza questo controllo il nome
-            # finiva sul foglio due volte - 658 iscrizioni di troppo sul solo
-            # comune di prova, a mediana 40-50 mm di carta l'una dall'altra.
-            if keyword in TESTO_SOLO_SU_POS and not e_tabella_pos(t_low):
-                self.log("     ⏭️ %s: l'iscrizione sta sulla tabella Pos*, "
-                         "qui sarebbe la seconda copia dello stesso nome"
-                         % class_name)
-                return
-
-            field_name = self._find_label_field(layer, candidates)
-            if not field_name:
-                self.log(f"     ⚠️ Nessun campo tra {candidates} trovato per '{keyword}' "
-                          f"(join mancante o non riuscito?)", Qgis.Warning)
-                return
-
-            settings = QgsPalLayerSettings()
-            # PosNome_localizzazione: Indice_iniziale/Indice_finale delimitano
-            # una sottostringa di Testo da mostrare (default 1..ultimo
-            # carattere = tutto il testo), secondo MD01MUTI7MN95.ili.
-            if keyword == "posnome_localizzazione" and layer.fields().lookupField("indice_iniziale") >= 0:
-                settings.fieldName = (
-                    f'substr("{field_name}", coalesce("indice_iniziale", 1), '
-                    f'coalesce("indice_finale", length("{field_name}")) - coalesce("indice_iniziale", 1) + 1)'
-                )
-                settings.isExpression = True
-            elif keyword == KEYWORD_LOCALITA:
-                settings.fieldName, settings.isExpression = \
-                    iscrizione_localita(field_name, self._maiuscolo_localita())
-            else:
-                settings.fieldName = field_name
-            text_format = QgsTextFormat()
-            font = QFont(CADASTRA_TEXT_FAMILY)
-            font.setBold(bold)
-            font.setItalic(italic)
-            text_format.setFont(font)
-            # 'size' e' l'altezza della MAIUSCOLA in mm richiesta dalla norma:
-            # va convertita nella dimensione del font e resa in millimetri di
-            # stampa (a 1:1000 coincide col valore normativo). In punti
-            # tipografici, come prima, il rapporto fra le classi di scrittura
-            # non sarebbe quello prescritto.
-            text_format.setSize(_font_size_for_cap(size))
-            text_format.setSizeUnit(QgsUnitTypes.RenderMillimeters)
-            settings.setFormat(text_format)
-            settings.enabled = True
-            applied = self._apply_pos_text_attrs(layer, settings, keyword, size)
-            layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
-            label_off = any(k in t_low for k in _LABEL_DISABLED_BY_DEFAULT)
-            layer.setLabelsEnabled(not label_off)
-            style = "grassetto" if bold else ("corsivo" if italic else "normale")
-            note = f" + {'+'.join(applied)} da Pos*" if applied else ""
-            off_note = " (etichetta creata ma spenta di default)" if label_off else ""
-            self.log(f"     ✅ Etichetta '{keyword}' su campo '{field_name}' (Cadastra {style} {size}mm{note}){off_note}")
-
-            if any(k in t_low for k in _LABEL_LAYER_OFF_BY_DEFAULT):
-                node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
-                if node:
-                    node.setItemVisibilityChecked(False)
-                    self.log(f"     ✅ Layer spento di default (etichetta pronta, da riaccendere manualmente)")
-                else:
-                    self.log(f"     ⚠️ Nodo albero non trovato per {layer.name()}: layer resta acceso", Qgis.Warning)
-            return
-
-        self.log("     ⚠️ Nessuna regola di etichettatura corrispondente")
 
     # --- RELAZIONI E JOIN ---
     def setup_relations_and_joins(self, gpkg_path, loaded_layers):

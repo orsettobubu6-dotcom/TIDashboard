@@ -30,6 +30,7 @@ _qgs.initQgis()
 
 import tidashboard as cd
 from etichette import _LABEL_PRIORITY
+import applica_etichette as _ae
 
 
 class TestGenereIn(unittest.TestCase):
@@ -350,7 +351,7 @@ class TestFindLabelField(unittest.TestCase):
     def test_campo_diretto_case_insensitive(self):
         layer = QgsVectorLayer("Point?field=Numero:string", "t", "memory")
         self.assertEqual(
-            cd.TIDashboardDialog._find_label_field(layer, ("Numero",)), "Numero")
+            _ae.campo_di_etichetta(layer, ("Numero",)), "Numero")
 
     def test_campo_rinominato_da_join_suffisso(self):
         # setup_relations_and_joins rinomina i campi ereditati "{padre}_{campo}"
@@ -358,18 +359,18 @@ class TestFindLabelField(unittest.TestCase):
         layer = QgsVectorLayer(
             "Point?field=entrata_edificio_numero_casa:string", "t", "memory")
         self.assertEqual(
-            cd.TIDashboardDialog._find_label_field(layer, ("Numero_casa",)),
+            _ae.campo_di_etichetta(layer, ("Numero_casa",)),
             "entrata_edificio_numero_casa")
 
     def test_primo_candidato_prioritario(self):
         layer = QgsVectorLayer(
             "Point?field=nome:string&field=numero:string", "t", "memory")
         self.assertEqual(
-            cd.TIDashboardDialog._find_label_field(layer, ("Numero", "Nome")), "numero")
+            _ae.campo_di_etichetta(layer, ("Numero", "Nome")), "numero")
 
     def test_nessun_campo_trovato(self):
         layer = QgsVectorLayer("Point?field=altro:string", "t", "memory")
-        self.assertIsNone(cd.TIDashboardDialog._find_label_field(layer, ("Numero",)))
+        self.assertIsNone(_ae.campo_di_etichetta(layer, ("Numero",)))
 
 
 class _FakeTextEdit:
@@ -437,8 +438,7 @@ class TestApplyLabelsToLayer(unittest.TestCase):
 
     def test_punto_quotato_usa_espressione_z(self):
         layer = QgsVectorLayer("Point", "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(layer, "altimetria_punto_quotato", "Punto_quotato", is_gb=True)
+        _ae.applica_etichette(layer, "altimetria_punto_quotato", "Punto_quotato", e_gb=True)
         settings = layer.labeling().settings()
         self.assertEqual(settings.fieldName, "round($z, 2)")
         self.assertTrue(settings.isExpression)
@@ -458,8 +458,8 @@ class TestApplyLabelsToLayer(unittest.TestCase):
                                 ("nomenclatura_nome_locale", "Nome_locale"),
                                 ("nomenclatura_nome_del_luogo", "Nome_del_luogo")):
             layer = QgsVectorLayer("Polygon?field=nome:string", "t", "memory")
-            make_dialog_stub()._apply_labels_to_layer(layer, tabella, classe,
-                                                      is_gb=True)
+            _ae.applica_etichette(layer, tabella, classe,
+                                                      e_gb=True)
             self.assertFalse(
                 layer.labelsEnabled(),
                 "%s viene etichettato: il nome uscirebbe due volte" % tabella)
@@ -471,8 +471,8 @@ class TestApplyLabelsToLayer(unittest.TestCase):
                         "nomenclatura_posnome_locale",
                         "nomenclatura_posnome_del_luogo"):
             layer = QgsVectorLayer("Point?field=nome:string", "t", "memory")
-            make_dialog_stub()._apply_labels_to_layer(layer, tabella, tabella,
-                                                      is_gb=True)
+            _ae.applica_etichette(layer, tabella, tabella,
+                                                      e_gb=True)
             self.assertTrue(layer.labelsEnabled(),
                             "%s resta senza iscrizione" % tabella)
 
@@ -489,15 +489,14 @@ class TestApplyLabelsToLayer(unittest.TestCase):
         tutte: il punto quotato non e' una tabella Pos e deve restare
         etichettato."""
         layer = QgsVectorLayer("Point", "t", "memory")
-        make_dialog_stub()._apply_labels_to_layer(
-            layer, "altimetria_punto_quotato", "Punto_quotato", is_gb=True)
+        _ae.applica_etichette(
+            layer, "altimetria_punto_quotato", "Punto_quotato", e_gb=True)
         self.assertTrue(layer.labelsEnabled())
 
     def test_posfondo_grassetto_non_corsivo(self):
         # TEXT_LABEL_RULES: ("posfondo", ("Numero",), True, False, 2.5)
         layer = QgsVectorLayer("Point?field=numero:string", "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(layer, "beni_immobili_posfondo", "PosFondo", is_gb=True)
+        _ae.applica_etichette(layer, "beni_immobili_posfondo", "PosFondo", e_gb=True)
         settings = layer.labeling().settings()
         self.assertEqual(settings.fieldName, "numero")
         self.assertFalse(settings.isExpression)
@@ -514,8 +513,7 @@ class TestApplyLabelsToLayer(unittest.TestCase):
     def test_posnumero_os_corsivo_non_grassetto(self):
         # TEXT_LABEL_RULES: ("posnumero_os", ("Numero",), False, True, 8)
         layer = QgsVectorLayer("Point?field=numero:string", "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(layer, "oggetti_singoli_posnumero_os", "PosNumero_OS", is_gb=True)
+        _ae.applica_etichette(layer, "oggetti_singoli_posnumero_os", "PosNumero_OS", e_gb=True)
         font = layer.labeling().settings().format().font()
         self.assertFalse(font.bold())
         self.assertTrue(font.italic())
@@ -524,9 +522,14 @@ class TestApplyLabelsToLayer(unittest.TestCase):
         # Nessuno dei campi candidati ("Numero") presente: deve loggare un
         # avviso e uscire, non lanciare un'eccezione ne' abilitare etichette.
         layer = QgsVectorLayer("Point?field=altro:string", "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(layer, "beni_immobili_posfondo", "PosFondo", is_gb=True)
-        self.assertTrue(any("⚠️" in line for line in d.txt_log.lines))
+        # UNA LISTA AL POSTO DI TRE OGGETTI FINTI. Prima serviva una finta
+        # QTextEdit, una finta spunta e un finto contatore, tutti e tre solo
+        # per dare una casa a self.log: la funzione ora prende il registro
+        # come parametro.
+        righe = []
+        _ae.applica_etichette(layer, "beni_immobili_posfondo", "PosFondo",
+                              e_gb=True, log=lambda t, l=None: righe.append(t))
+        self.assertTrue(any("⚠️" in r for r in righe))
         self.assertIsNone(layer.labeling())
 
     def test_posnome_localizzazione_usa_substr_indici(self):
@@ -534,9 +537,8 @@ class TestApplyLabelsToLayer(unittest.TestCase):
         layer = QgsVectorLayer(
             "Point?field=testo:string&field=indice_iniziale:int&field=indice_finale:int",
             "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(
-            layer, "indirizzi_posnome_localizzazione", "PosNome_localizzazione", is_gb=True)
+        _ae.applica_etichette(
+            layer, "indirizzi_posnome_localizzazione", "PosNome_localizzazione", e_gb=True)
         settings = layer.labeling().settings()
         self.assertTrue(settings.isExpression)
         self.assertIn("substr(\"testo\"", settings.fieldName)
@@ -546,22 +548,20 @@ class TestApplyLabelsToLayer(unittest.TestCase):
     def test_posnome_localizzazione_senza_indici_usa_campo_diretto(self):
         # Senza i campi indice sul layer, deve ricadere sul campo intero.
         layer = QgsVectorLayer("Point?field=testo:string", "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(
-            layer, "indirizzi_posnome_localizzazione", "PosNome_localizzazione", is_gb=True)
+        _ae.applica_etichette(
+            layer, "indirizzi_posnome_localizzazione", "PosNome_localizzazione", e_gb=True)
         settings = layer.labeling().settings()
         self.assertFalse(settings.isExpression)
         self.assertEqual(settings.fieldName, "testo")
 
     def test_nessuna_regola_corrispondente_non_lancia_eccezioni(self):
         layer = QgsVectorLayer("Point?field=altro:string", "t", "memory")
-        d = make_dialog_stub()
-        d._apply_labels_to_layer(layer, "tabella_sconosciuta_xyz", "Sconosciuta", is_gb=True)
+        _ae.applica_etichette(layer, "tabella_sconosciuta_xyz", "Sconosciuta", e_gb=True)
         self.assertIsNone(layer.labeling())
 
     def _priorita_di(self, tabella, campo="numero:string"):
         layer = QgsVectorLayer("Point?field=%s" % campo, "t", "memory")
-        make_dialog_stub()._apply_labels_to_layer(layer, tabella, "X", is_gb=True)
+        _ae.applica_etichette(layer, tabella, "X", e_gb=True)
         return layer.labeling().settings()
 
     def test_priorita_numero_di_fondo_maggiore_del_numero_di_punto(self):

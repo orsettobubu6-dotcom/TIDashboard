@@ -6,7 +6,6 @@
 #
 # Eseguire con l'interprete di QGIS (serve osgeo):
 #   & "C:\Program Files\QGIS 4.2.0\bin\python-qgis.bat" test_verifica_dxf.py
-import io
 import os
 import sys
 import tempfile
@@ -59,7 +58,7 @@ def _dxf(cartella, corpo, layer=("01651",), nome="prova.dxf"):
     testo += _tabella_layer(layer)
     testo += _coppie("0", "SECTION", "2", "ENTITIES") + corpo
     testo += _coppie("0", "ENDSEC", "0", "EOF")
-    with io.open(percorso, "w", encoding="latin-1", newline="\r\n") as f:
+    with open(percorso, "w", encoding="latin-1", newline="\r\n") as f:
         f.write(testo)
     return percorso
 
@@ -127,7 +126,7 @@ class TestControlloStrutturale(unittest.TestCase):
 
     def test_un_file_troppo_piccolo(self):
         p = os.path.join(tempfile.mkdtemp(), "vuoto.dxf")
-        with io.open(p, "w", encoding="latin-1") as f:
+        with open(p, "w", encoding="latin-1") as f:
             f.write("0\nEOF\n")
         ok, righe = V.controlla_struttura(p)
         self.assertFalse(ok)
@@ -143,7 +142,7 @@ class TestControlloStrutturale(unittest.TestCase):
 
     def test_un_dxf_troncato_senza_EOF(self):
         p = os.path.join(tempfile.mkdtemp(), "tronco.dxf")
-        with io.open(p, "w", encoding="latin-1", newline="\r\n") as f:
+        with open(p, "w", encoding="latin-1", newline="\r\n") as f:
             f.write(_coppie("0", "SECTION", "2", "ENTITIES")
                     + _punto("01651") * 12)
         ok, righe = V.controlla_struttura(p)
@@ -195,7 +194,7 @@ class TestConteggioEntita(unittest.TestCase):
 
     def _grezzo(self, righe):
         percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
-        with io.open(percorso, "w", encoding="latin-1") as f:
+        with open(percorso, "w", encoding="latin-1") as f:
             f.write("\n".join(righe) + "\n")
         return percorso
 
@@ -322,7 +321,7 @@ class TestRiletturaGdal(unittest.TestCase):
     def test_file_che_non_e_un_dxf(self):
         cartella = tempfile.mkdtemp()
         percorso = os.path.join(cartella, "finto.dxf")
-        with io.open(percorso, "w", encoding="latin-1") as f:
+        with open(percorso, "w", encoding="latin-1") as f:
             f.write("questo non e' un DXF\n")
         esito = V.verifica(percorso)
         self.assertFalse(esito.ok)
@@ -352,7 +351,7 @@ class TestRighe(unittest.TestCase):
         self.assertTrue(any("01651" in r and "❌" in r for r in righe), righe)
 
     def test_senza_gdal_il_modulo_lo_dice_invece_di_esplodere(self):
-        per_layer, estensione, errore, messaggi = V.conta_lette(
+        _per_layer, _estensione, errore, _messaggi = V.conta_lette(
             "x.dxf", gdal=None, ogr=None)
         # Qui GDAL c'e' davvero, quindi l'errore sara' sul file, non sull'import:
         # basta che non sollevi.
@@ -376,7 +375,7 @@ class TestSenzaTabellaLayer(unittest.TestCase):
         testo += _punto("MU_CS_EDIFICIO")
         testo += _coppie("0", "ENDSEC", "0", "EOF")
         percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
-        with io.open(percorso, "w", encoding="latin-1") as f:
+        with open(percorso, "w", encoding="latin-1") as f:
             f.write(testo)
         return percorso
 
@@ -417,7 +416,7 @@ class TestArchiImprecisi(unittest.TestCase):
         testo += _coppie("0", "SEQEND", "8", "MU_CS_EDIFICIO")
         testo += _coppie("0", "ENDSEC", "0", "EOF")
         percorso = os.path.join(tempfile.mkdtemp(), "arco.dxf")
-        with io.open(percorso, "w", encoding="latin-1") as f:
+        with open(percorso, "w", encoding="latin-1") as f:
             f.write(testo)
         return percorso
 
@@ -425,7 +424,7 @@ class TestArchiImprecisi(unittest.TestCase):
         """Com'era prima: 0.5e-3 * 100 / 2 = 25 mm di scostamento."""
         trovati = V.archi_imprecisi(self._polilinea("0.170", corda=100.0))
         self.assertEqual(len(trovati), 1, trovati)
-        scostamento, corda, bulge, cifre = trovati[0]
+        scostamento, corda, _bulge, cifre = trovati[0]
         self.assertAlmostEqual(scostamento, 0.025, places=4)
         self.assertEqual(cifre, 3)
         self.assertAlmostEqual(corda, 100.0, places=3)
@@ -463,10 +462,9 @@ class TestDeviazioneCoordinate(unittest.TestCase):
 
     def _itf(self, punti):
         percorso = os.path.join(tempfile.mkdtemp(), "prova.itf")
-        with io.open(percorso, "w", encoding="latin-1") as f:
+        with open(percorso, "w", encoding="latin-1") as f:
             f.write("SCNT\nMODL MD01MUTI7MN95\nTABL Punto_di_confine\n")
-            for x, y in punti:
-                f.write("OBJE 1 2 %.3f %.3f 9.0 0\n" % (x, y))
+            f.writelines("OBJE 1 2 %.3f %.3f 9.0 0\n" % (x, y) for x, y in punti)
             f.write("ETAB\n")
         return percorso
 
@@ -478,7 +476,7 @@ class TestDeviazioneCoordinate(unittest.TestCase):
                              "10", "%.3f" % x, "20", "%.3f" % y, "30", "0.0")
         testo += _coppie("0", "ENDSEC", "0", "EOF")
         percorso = os.path.join(tempfile.mkdtemp(), "prova.dxf")
-        with io.open(percorso, "w", encoding="latin-1") as f:
+        with open(percorso, "w", encoding="latin-1") as f:
             f.write(testo)
         return percorso
 

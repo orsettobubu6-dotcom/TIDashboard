@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Il registro dell'archivio: quali comuni ci sono nel GeoPackage, e da quale
 # file ITF e' venuto ognuno.
 #
@@ -17,7 +16,6 @@
 # fondo trovato dalla ricerca si riconduce al suo comune senza nessuna tabella
 # di passaggio. Il nome del comune no: i nomi cambiano con le aggregazioni, e
 # un --replace che cerca "Lavertezzo" fallirebbe il giorno che diventa altro.
-import io
 import os
 import sqlite3
 
@@ -43,7 +41,7 @@ class Comune(object):
     federale. Tutti e due come stringa: sono identificativi, non quantita', e
     uno zero iniziale non va perso."""
 
-    __slots__ = ("numero", "nome", "bfs")
+    __slots__ = ("bfs", "nome", "numero")
 
     def __init__(self, numero, nome, bfs=None):
         self.numero = numero
@@ -101,7 +99,7 @@ def leggi_comuni_itf(percorso_itf):
         return []
     trovati = []
     try:
-        with io.open(str(percorso_itf), encoding="latin-1", errors="replace") as f:
+        with open(str(percorso_itf), encoding="latin-1", errors="replace") as f:
             dentro = False
             for numero_riga, riga in enumerate(f):
                 if numero_riga > RIGHE_MAX:
@@ -121,7 +119,7 @@ def leggi_comuni_itf(percorso_itf):
                     if letto:
                         nome, bfs, numero = letto
                         trovati.append(Comune(numero, nome, bfs))
-    except (IOError, OSError):
+    except OSError:
         return []
     return trovati
 
@@ -265,7 +263,7 @@ def _e_sqlite(percorso):
     try:
         with open(str(percorso), "rb") as f:
             return f.read(16) == b"SQLite format 3\x00"
-    except (IOError, OSError):
+    except OSError:
         return False
 
 
@@ -460,7 +458,7 @@ ESTENSIONE_ITF = ".itf"
 class Lavoro(object):
     """Un file della cartella, e che cosa farne."""
 
-    __slots__ = ("itf", "comune", "azione", "motivo")
+    __slots__ = ("azione", "comune", "itf", "motivo")
 
     def __init__(self, itf, comune=None, azione=RIFIUTA, motivo=None):
         self.itf = itf
@@ -657,8 +655,14 @@ class Descrizione(object):
     sovrascritto": vera, e inutile. Non diceva quanti comuni ci fossero
     dentro ne' quali, cioe' proprio l'unica cosa che serve per decidere."""
 
-    __slots__ = ("percorso", "esiste", "e_archivio", "motivo", "comuni",
-                 "dimensione")
+    __slots__ = (
+        "comuni",
+        "dimensione",
+        "e_archivio",
+        "esiste",
+        "motivo",
+        "percorso",
+    )
 
     def __init__(self, percorso, esiste=False, e_archivio=False, motivo=None,
                  comuni=None, dimensione=0):
@@ -708,7 +712,7 @@ def descrivi(percorso_gpkg):
     # nomi, i dati dicono che cosa c'e' davvero. Un dataset presente nei dati
     # ma non a registro va mostrato lo stesso - col solo numero - perche'
     # buttarlo senza nominarlo sarebbe il caso peggiore.
-    per_numero = dict((r["numero"], r) for r in registrati(percorso))
+    per_numero = {r["numero"]: r for r in registrati(percorso)}
     comuni = []
     for numero in dataset_nel_gpkg(percorso):
         riga = per_numero.get(numero)
@@ -738,5 +742,5 @@ def disallineati(percorso_gpkg):
     ITF, quindi non se ne puo' fare il DXF. Il secondo che il registro promette
     un comune che nei dati non c'e' piu'."""
     dati = set(dataset_nel_gpkg(percorso_gpkg))
-    registro = set(r["numero"] for r in registrati(percorso_gpkg))
+    registro = {r["numero"] for r in registrati(percorso_gpkg)}
     return sorted(dati - registro), sorted(registro - dati)
