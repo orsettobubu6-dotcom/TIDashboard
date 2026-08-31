@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import stat
+import subprocess
 import sys
 import zipfile
 from xml.sax.saxutils import escape
@@ -32,7 +33,42 @@ with open(os.path.join(SRC, "metadata.txt"), encoding="utf-8") as f:
 # I pacchetti stanno in dist/, non sparsi nella radice del repository: e' la
 # cartella che la CI carica come artefatto.
 DIST = os.path.join(QUI, "dist")
-ZIP = os.path.join(DIST, "%s_%s.zip" % (NOME, versione))
+
+
+def _e_proprio_quella_versione():
+    """Questo albero e' ESATTAMENTE il commit del tag v<versione>?
+
+    IL NOME DI UN PACCHETTO E' UNA PROMESSA. "tidashboard_1.3.3.zip" dice
+    "questo e' cio' che e' stato pubblicato come 1.3.3", e finche' non si alza
+    il numero ogni ricostruzione riscriveva quel nome con un contenuto
+    diverso. E' successo due volte in un giorno: la prima l'ho scoperta
+    controllando, la seconda l'ho rifatta identica poche ore dopo - quindi non
+    e' distrazione, e' il costruttore che lo permette.
+
+    Fuori dal tag il pacchetto si chiama "+lavoro": e' una build di lavoro, e
+    lo dice.
+
+    Se git non risponde - un pacchetto scompattato senza .git, o la copia
+    superficiale che usa la CI, dove i tag non ci sono - si tiene il nome
+    pulito: li' non c'e' una versione pubblicata con cui confondersi."""
+    def git(*argomenti):
+        try:
+            # check=False: se git non c'e' o il comando fallisce si vuole la
+            # stringa vuota, non un'eccezione - il costruttore deve girare
+            # anche fuori da un repository.
+            return subprocess.run(("git",) + argomenti, cwd=QUI, check=False,
+                                  capture_output=True, text=True,
+                                  timeout=15).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    tag = "v%s" % versione
+    if git("tag", "-l", tag) != tag:
+        return True                    # quel tag non esiste: niente da tradire
+    return git("rev-parse", tag + "^{}") == git("rev-parse", "HEAD") != ""
+
+
+_SUFFISSO = "" if _e_proprio_quella_versione() else "+lavoro"
+ZIP = os.path.join(DIST, "%s_%s%s.zip" % (NOME, versione, _SUFFISSO))
 
 # Data fissa delle voci dello zip: vedi la nota sulla riproducibilita' in
 # testa al file. Il 1980 e' il minimo che il formato ZIP sappia scrivere.
