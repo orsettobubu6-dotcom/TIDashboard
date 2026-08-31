@@ -122,7 +122,7 @@ class StiliMixin:
         #     SimboloPFP1/2/3: portano solo "Ori", cioe' l'orientamento del
         #     simbolo del punto a cui si riferiscono. Non sono disegnabili: non
         #     hanno nulla da disegnare. Il loro "Ori" viene portato sul padre da
-        #     _join_orientamento_simboli e usato la' come angolo del marcatore.
+        #     relazioni.orientamento_simboli e usato la' come angolo del marcatore.
         #  b) CON GEOMETRIA, genere dal padre - SimboloSuperficieCS(Prog),
         #     SimboloElemento_lineare, SimboloEl_con_superficie: si disegnano,
         #     vedi i rami dedicati sotto.
@@ -991,7 +991,7 @@ class StiliMixin:
         root.setLabel("Punto_di_confine")
 
         # Orientamento del simbolo. Sta in SimboloPunto_di_confine, che NON ha
-        # geometria: _join_orientamento_simboli lo porta qui come
+        # geometria: relazioni.orientamento_simboli lo porta qui come
         # CAMPO_ORI_SIMBOLO. Sui dati reali di Chiasso 5637 punti su 67919 ne
         # portano uno non nullo e finora venivano disegnati tutti dritti.
         # La rotazione si applica a TUTTI i simboli di questo stile tramite

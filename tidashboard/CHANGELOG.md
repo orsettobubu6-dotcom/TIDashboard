@@ -1,5 +1,24 @@
 # Diario delle versioni
 
+## Non ancora pubblicato
+
+**L'orientamento dei simboli arriva davvero sui punti.** Cinque tabelle
+`Simbolo*` del modello non hanno geometria: portano solo `Ori`, l'angolo con cui
+va disegnato il simbolo del punto a cui si riferiscono, e l'unico modo di
+usarle è portare quel campo sul punto, che la geometria ce l'ha. Il join che lo
+faceva veniva **rifiutato in silenzio**: insieme al join diretto formava un
+anello fra gli stessi due layer, e QGIS scarta il secondo che arriva. Misurato
+su una consegna vera: *zero* orientamenti su undici chiavi. Il join diretto, su
+quelle tabelle, non serviva a niente — porta i campi del padre su una tabella
+che non viene mai disegnata — quindi ora si salta, e l'anello non si forma. Sul
+comune di prova: 9 460 punti di confine e 640 punti giurisdizionali che prima
+erano disegnati tutti dritti.
+
+**Le relazioni sono uscite dalla finestra** in `relazioni.py`. La metà che
+*legge* le chiavi esterne dal GeoPackage è sqlite e basta: ora si prova nel
+lavoro di CI da dieci secondi invece che dentro QGIS, ed è la metà dove i
+difetti sono successi davvero. Quattordici prove nuove.
+
 ## 1.3.3 — 29 agosto 2026 — sperimentale
 
 Stesso contenuto della 1.3.2, che non è stata pubblicata: la sua CI è caduta su

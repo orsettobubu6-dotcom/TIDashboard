@@ -354,7 +354,7 @@ class TestFindLabelField(unittest.TestCase):
             _ae.campo_di_etichetta(layer, ("Numero",)), "Numero")
 
     def test_campo_rinominato_da_join_suffisso(self):
-        # setup_relations_and_joins rinomina i campi ereditati "{padre}_{campo}"
+        # relazioni.collega_layer rinomina i campi ereditati "{padre}_{campo}"
         # dopo il join (es. "entrata_edificio_numero_casa").
         layer = QgsVectorLayer(
             "Point?field=entrata_edificio_numero_casa:string", "t", "memory")

@@ -45,6 +45,7 @@ jobs:
           python tidashboard/test_java_env.py
           python tidashboard/test_coordinate.py
           python tidashboard/test_archivio.py
+          python tidashboard/test_relazioni.py
 
       - name: ruff sui moduli puliti
         run: |
@@ -57,7 +58,8 @@ jobs:
                      tidashboard/pubblica_progetto.py tidashboard/test_pubblica_progetto.py \
                      tidashboard/archivio.py tidashboard/test_archivio.py \
                      tidashboard/verifica_dxf.py tidashboard/test_verifica_dxf.py \
-                     tidashboard/applica_etichette.py
+                     tidashboard/applica_etichette.py \
+                     tidashboard/relazioni.py tidashboard/test_relazioni.py
 
       - name: metadata
         run: python crea_zip_plugin.py --solo-check-metadata
@@ -93,13 +95,19 @@ jobs:
       - name: Test con QGIS 4.2 headless
         run: |
           set +e
+          # TIDASHBOARD_QGIS_ATTESO: test_relazioni ha un gruppo di prove che
+          # salta da se' quando QGIS non c'e' (cosi' gira anche nel lavoro
+          # puro). QUI QGIS c'e', e uno skip silenzioso sarebbe una suite
+          # verde che non ha provato niente: con questa variabile, se
+          # l'import di qgis fallisce la prova esce rossa invece di saltare.
           docker run --rm \
             --entrypoint bash \
             -v "$PWD":/src \
             -w /src \
             -e QT_QPA_PLATFORM=offscreen \
+            -e TIDASHBOARD_QGIS_ATTESO=1 \
             qgis/qgis:4.2-trixie \
-            -lc 'rc=0; for t in test_style_logic test_planimetria test_verifica_dxf test_pubblica_progetto test_inventario; do echo "== $t =="; python3 -X faulthandler tidashboard/$t.py || { echo "USCITA $? nella suite $t"; rc=1; }; done; exit $rc' 2>&1 | tee /tmp/qgis.log
+            -lc 'rc=0; for t in test_style_logic test_planimetria test_verifica_dxf test_pubblica_progetto test_inventario test_relazioni; do echo "== $t =="; python3 -X faulthandler tidashboard/$t.py || { echo "USCITA $? nella suite $t"; rc=1; }; done; exit $rc' 2>&1 | tee /tmp/qgis.log
           esito=${PIPESTATUS[0]}
           if [ "$esito" -ne 0 ]; then
             echo "::error::test QGIS falliti (uscita $esito)"

@@ -58,6 +58,7 @@ try:
     from . import simbologia as _simbologia
     from . import archivio as _archivio
     from . import applica_etichette as _applica_etichette
+    from . import relazioni as _relazioni
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
     from .colori import *          # noqa: F401,F403 - costanti C_*
@@ -94,6 +95,7 @@ except ImportError:
     import simbologia as _simbologia
     import archivio as _archivio
     import applica_etichette as _applica_etichette
+    import relazioni as _relazioni
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
     from colori import *           # noqa: F401,F403
@@ -4487,7 +4489,8 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
         # Relazioni e join
         self.log("\n🔗 Fase 3: Relazioni e join...")
-        self.setup_relations_and_joins(gpkg_path, loaded_layers)
+        _relazioni.collega_layer(gpkg_path, loaded_layers,
+                                 QgsProject.instance(), self.log)
 
         # Etichette (dopo i join, cosi' i campi della tabella padre sono disponibili)
         if pending_labels:
@@ -4830,188 +4833,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
 
     # --- RELAZIONI E JOIN ---
-    def setup_relations_and_joins(self, gpkg_path, loaded_layers):
-        """Crea relazioni e join tra i layer."""
-        if not loaded_layers:
-            self.log("   ⚠️ Nessun layer caricato, skip relazioni")
-            return
-
-        self.log(f"   📊 Layer caricati: {len(loaded_layers)}")
-        # BUG REALE (segnalato dall'utente: testi/etichette assenti su beni
-        # immobili e indirizzi degli edifici): le chiavi esterne lette da
-        # sqlite_master/t_ili2db_column_prop usano i nomi RAW delle tabelle
-        # del GeoPackage, ma qui sotto veniva indicizzato per layer.name() -
-        # gia' rinominato al nome "nice" in italiano (vedi _nice_layer_name,
-        # applicato in Fase 2, PRIMA di questa Fase 3) per la maggior parte
-        # dei layer. Il lookup falliva quindi silenziosamente (continue senza
-        # log) per ~123 join su 128 in un caso reale, lasciando i layer Pos*
-        # senza il campo testo della tabella padre e di conseguenza senza
-        # etichetta. Il nome di tabella RAW e' invece recuperabile in modo
-        # affidabile dalla source URI del layer OGR ("...gpkg|layername=xxx"),
-        # indipendente da come e' stato rinominato il layer.
-        layer_dict = {_raw_table_name(layer): layer for layer in loaded_layers}
-        fk_list = []
-        seen = set()
-
-        try:
-            conn = sqlite3.connect(str(gpkg_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'gpkg_%' AND name NOT LIKE 'sqlite_%'")
-            tables = [row[0] for row in cursor.fetchall()]
-            self.log(f"   📋 Tabelle nel DB: {len(tables)}")
-
-            # 1. Vincoli FK reali (presenti solo se lo schema e' stato creato con --createFk)
-            # PRAGMA non supporta il binding '?' sui nomi tabella (solo sui valori),
-            # quindi l'identificatore va quotato a mano: raddoppiare gli apici interni
-            # e' la forma di escaping SQL standard per una stringa letterale.
-            for table in tables:
-                cursor.execute("PRAGMA foreign_key_list('%s')" % table.replace("'", "''"))
-                rows = cursor.fetchall()
-                for row in rows:
-                    child_col, parent_table, parent_col = row[3], row[2], row[4] if row[4] else "rowid"
-                    key = (table, child_col)
-                    if key not in seen:
-                        fk_list.append((table, child_col, parent_table, parent_col))
-                        seen.add(key)
-
-            # 2. Fallback: metadati ili2db (t_ili2db_column_prop, tag ch.ehi.ili2db.foreignKey).
-            # Popolata con --createMetaInfo anche SENZA --createFk: e' il modo con cui ili2db
-            # permette di ricostruire le relazioni quando lo schema non ha vincoli FK reali
-            # (che rifiuterebbero l'import di dati con riferimenti mancanti/tolleranti errori).
-            # I nomi delle tabelle di metadati ili2db sono in MAIUSCOLO
-            # (es. "T_ILI2DB_COLUMN_PROP", verificato sul GeoPackage): il confronto
-            # diretto su sqlite_master.name e' case-sensitive in SQLite, quindi
-            # serve un confronto case-insensitive esplicito.
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND lower(name)='t_ili2db_column_prop'")
-            if cursor.fetchone():
-                cursor.execute(
-                    "SELECT tablename, columnname, setting FROM t_ili2db_column_prop "
-                    "WHERE tag = 'ch.ehi.ili2db.foreignKey'")
-                for table, child_col, parent_table in cursor.fetchall():
-                    key = (table, child_col)
-                    if key not in seen:
-                        fk_list.append((table, child_col, parent_table, "T_Id"))
-                        seen.add(key)
-            else:
-                self.log("   ℹ️ t_ili2db_column_prop non presente (schemaimport senza --createMetaInfo)")
-
-            conn.close()
-            self.log(f"   🔗 Chiavi esterne trovate: {len(fk_list)}")
-        except Exception as e:
-            self.log(f"   ❌ Errore lettura FK: {str(e)}", Qgis.Warning)
-            return
-
-        relations_created = 0
-        joins_created = 0
-
-        for child_table, child_col, parent_table, parent_col in fk_list:
-            child_layer = layer_dict.get(child_table)
-            parent_layer = layer_dict.get(parent_table)
-
-            if not child_layer or not parent_layer:
-                continue
-
-            child_fields = [f.name() for f in child_layer.fields()]
-            parent_fields = [f.name() for f in parent_layer.fields()]
-
-            if child_col not in child_fields or parent_col not in parent_fields:
-                continue
-
-            relation = QgsRelation()
-            relation.setId(f"{child_table}_{parent_table}")
-            relation.setName(f"{child_table} → {parent_table}")
-            relation.setReferencingLayer(child_layer.id())
-            relation.setReferencedLayer(parent_layer.id())
-            relation.addFieldPair(child_col, parent_col)
-
-            if relation.isValid():
-                QgsProject.instance().relationManager().addRelation(relation)
-                relations_created += 1
-                self.log(f"   ✅ Relazione: {child_table}.{child_col} → {parent_table}.{parent_col}")
-
-            join_info = QgsVectorLayerJoinInfo()
-            # NB: QgsVectorLayerJoinInfo e' un binding SIP: l'assegnazione diretta di
-            # attributo (join_info.joinLayerId = ...) NON richiama il setter C++, crea
-            # solo un attributo Python "ombra" che addJoin() ignora completamente,
-            # lasciando il join configurato con valori vuoti/default (fallimento silenzioso).
-            # Vanno usati i metodi setter espliciti. setJoinLayer() (puntatore diretto)
-            # e' preferito a setJoinLayerId() per evitare qualsiasi dipendenza dalla
-            # risoluzione dell'ID tramite QgsProject al momento dell'uso del join.
-            join_info.setJoinLayer(parent_layer)
-            join_info.setJoinFieldName(parent_col)
-            join_info.setTargetFieldName(child_col)
-            join_info.setUsingMemoryCache(True)
-            join_info.setPrefix(f"{parent_table}_")
-            if child_layer.addJoin(join_info):
-                joins_created += 1
-                new_fields = [f.name() for f in child_layer.fields()
-                              if f.name().lower().startswith(f"{parent_table}_".lower())]
-                if not new_fields:
-                    all_fields = [f.name() for f in child_layer.fields()]
-                    self.log(f"   ⚠️ Join OK ma nessun campo con prefisso '{parent_table}_' su "
-                              f"{child_table} (campi attuali: {all_fields})", Qgis.Warning)
-            else:
-                self.log(f"   ⚠️ Join fallito: {child_table}.{child_col} → {parent_table}.{parent_col}", Qgis.Warning)
-
-        self.log(f"   📊 Relazioni create: {relations_created}")
-        self.log(f"   📊 Join creati: {joins_created}")
-        self._join_orientamento_simboli(fk_list, layer_dict)
-
-    def _join_orientamento_simboli(self, fk_list, layer_dict):
-        """Porta l'orientamento del simbolo dalle tabelle "Simbolo*" SENZA
-        geometria sul layer del padre, con un join nel verso opposto a tutti
-        gli altri.
-
-        Cinque delle undici tabelle Simbolo* del modello - SimboloPunto_di_
-        confine, SimboloPCGiurisdizionale, SimboloPFP1/2/3 - non hanno alcuna
-        geometria: portano solo "Ori", cioe' l'orientamento con cui va disegnato
-        il simbolo del punto a cui si riferiscono, e la relazione e' 1-c (IDENT
-        sul riferimento), quindi al piu' una riga per padre. Non sono
-        disegnabili di per se': l'unico modo di usarle e' portare "Ori" sul
-        padre, che la geometria ce l'ha. Tutti gli altri join di questo metodo
-        vanno figlio -> padre; questo e' l'unico che va padre <- figlio.
-
-        Sui dati reali di Chiasso: 5637 punti di confine su 67919 portano un
-        orientamento non nullo, e finora venivano disegnati tutti dritti.
-
-        Il prefisso e' fisso (PREFISSO_SIMBOLO) e non derivato dal nome della
-        tabella: gli stili cercano "simbolo_ori", che e' uguale per tutti i
-        temi, invece di dover ricostruire nomi come
-        "beni_immobili_simbolopunto_di_confine_ori"."""
-        fatti = 0
-        for child_table, child_col, parent_table, parent_col in fk_list:
-            nome = child_table.lower()
-            if "simbolo" not in nome:
-                continue
-            child_layer = layer_dict.get(child_table)
-            parent_layer = layer_dict.get(parent_table)
-            if not child_layer or not parent_layer:
-                continue
-            # Solo le tabelle SENZA geometria: quelle che ce l'hanno si
-            # disegnano da se' e il loro "Ori" lo usa il loro stesso stile.
-            if child_layer.geometryType() != QgsWkbTypes.NullGeometry:
-                continue
-            if child_layer.fields().indexFromName("ori") < 0:
-                continue
-            if parent_layer.fields().indexFromName(CAMPO_ORI_SIMBOLO) >= 0:
-                continue
-            join = QgsVectorLayerJoinInfo()
-            join.setJoinLayer(child_layer)
-            join.setJoinFieldName(child_col)      # la FK del figlio...
-            join.setTargetFieldName(parent_col)   # ...contro la chiave del padre
-            join.setUsingMemoryCache(True)
-            join.setPrefix(PREFISSO_SIMBOLO)
-            join.setJoinFieldNamesSubset(["ori"])
-            if parent_layer.addJoin(join):
-                fatti += 1
-                self.log("   🧭 Orientamento simbolo: %s.ori → %s.%s"
-                         % (child_table, parent_table, CAMPO_ORI_SIMBOLO))
-            else:
-                self.log("   ⚠️ Join orientamento fallito: %s → %s"
-                         % (child_table, parent_table), Qgis.Warning)
-        if fatti:
-            self.log("   📊 Orientamenti di simbolo collegati: %d" % fatti)
-
     def consegna_qgis_server(self):
         """Scrive la cartella da copiare su QGIS Server e la ricontrolla.
 

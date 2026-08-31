@@ -19,7 +19,7 @@ import re
 # ==================================================================================================================
 # Ogni tabella "PosX" del modello ILI e' solo il punto di iscrizione: il testo vive
 # sulla tabella "padre" X (referenziata via FK) e diventa disponibile sul layer solo
-# dopo il join impostato in setup_relations_and_joins (campo "{tabella_padre}_{campo}").
+# dopo il join impostato in relazioni.collega_layer (campo "{tabella_padre}_{campo}").
 # Un'unica famiglia "Cadastra" e' installata (non esistono famiglie separate
 # "Cadastra Bold"/"Cadastra Italic"): lo stile va applicato con setBold()/setItalic().
 # Formato: (sottostringa in t_low, campi candidati, grassetto, corsivo, dimensione pt)

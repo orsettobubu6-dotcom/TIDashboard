@@ -152,7 +152,7 @@ def _raw_table_name(layer):
     "oggetti_singoli_elemento_con_superficie"), indipendente da come il
     layer e' stato rinominato nel pannello (vedi _nice_layer_name). Letto
     dalla source URI ("...gpkg|layername=xxx"), non da layer.name() - vedi
-    la nota in setup_relations_and_joins sul bug reale che questo ha
+    la nota in relazioni.per_tabella_raw sul bug reale che questo ha
     risolto (join falliti per ~123 layer su 128)."""
     src = layer.source()
     marker = "layername="
