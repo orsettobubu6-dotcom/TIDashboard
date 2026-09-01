@@ -547,5 +547,127 @@ class TestCartella(unittest.TestCase):
         self.assertIn("1 non importabili", testo)
 
 
+QGIS_ATTESO = bool(os.environ.get("TIDASHBOARD_QGIS_ATTESO"))
+try:
+    from osgeo import ogr
+    C_E_OSGEO = True
+    PERCHE_NO = ""
+except ImportError as _errore:
+    C_E_OSGEO = False
+    PERCHE_NO = str(_errore)
+
+
+@unittest.skipUnless(C_E_OSGEO, "osgeo non disponibile: %s" % PERCHE_NO)
+class VerificaConGdal(unittest.TestCase):
+    """La verifica del GeoPackage appena scritto.
+
+    PERCHE' ESISTE: ili2gpkg puo' uscire con codice 0 anche per un GeoPackage
+    vuoto o incompleto - schema creato ma nessun dato, per esempio da un ITF
+    troncato. Il codice di uscita dice che il programma non e' morto, non che
+    il lavoro e' riuscito.
+
+    Queste prove hanno bisogno dei binding di GDAL, che nel python puro non
+    ci sono: girano nel lavoro QGIS. Nel python puro saltano, e il file dice
+    quale gruppo ha girato.
+    """
+
+    def setUp(self):
+        self.cartella = tempfile.mkdtemp()
+        self.percorso = os.path.join(self.cartella, "prova.gpkg")
+
+    def _gpkg(self, tabelle):
+        """tabelle: lista di (nome, geometria_o_None, quante_feature)."""
+        fonte = ogr.GetDriverByName("GPKG").CreateDataSource(self.percorso)
+        for nome, geometria, quante in tabelle:
+            tipo = ogr.wkbPoint if geometria else ogr.wkbNone
+            strato = fonte.CreateLayer(nome, geom_type=tipo)
+            strato.CreateField(ogr.FieldDefn("T_Id", ogr.OFTInteger))
+            for i in range(quante):
+                elemento = ogr.Feature(strato.GetLayerDefn())
+                elemento.SetField("T_Id", i)
+                if geometria:
+                    elemento.SetGeometry(
+                        ogr.CreateGeometryFromWkt("POINT(2712000 1115000)"))
+                strato.CreateFeature(elemento)
+        fonte = None
+        return self.percorso
+
+    def test_un_geopackage_pieno_va_bene(self):
+        righe = []
+        esito = A.verifica_con_gdal(
+            self._gpkg([("punti", True, 3), ("attributi", False, 2)]), righe.append)
+
+        self.assertTrue(esito)
+        self.assertTrue(any("2 tabelle nel GeoPackage" in r for r in righe), righe)
+        self.assertTrue(any("1 tabelle con geometria, 5 feature" in r for r in righe),
+                        righe)
+
+    def test_un_geopackage_vuoto_e_un_fallimento(self):
+        """IL CASO PER CUI ESISTE QUESTA VERIFICA: ili2gpkg esce con codice 0
+        e non ha importato niente.
+
+        Cade sul controllo dell'APERTURA, non su quello delle tabelle: un
+        GeoPackage con le sole tabelle di servizio e nessuna voce in
+        gpkg_contents, GDAL non lo riconosce nemmeno come GeoPackage
+        (misurato: ogr.Open alza "not recognized as being in a supported file
+        format"). L'esito per chi importa e' lo stesso - falso - ma la riga
+        nel registro e' l'altra, e una prova che si aspettasse "senza
+        tabelle" starebbe descrivendo un comportamento che non c'e'.
+        """
+        fonte = ogr.GetDriverByName("GPKG").CreateDataSource(self.percorso)
+        del fonte          # e' cosi' che si chiude una sorgente OGR: via il riferimento
+
+        righe = []
+        self.assertFalse(A.verifica_con_gdal(self.percorso, righe.append))
+        self.assertTrue(any("non riesce ad aprire" in r for r in righe), righe)
+
+    def test_un_file_illeggibile_e_un_fallimento(self):
+        with open(self.percorso, "wb") as f:
+            f.write(b"non e' un GeoPackage" * 40)
+
+        righe = []
+        self.assertFalse(A.verifica_con_gdal(self.percorso, righe.append))
+        self.assertTrue(any("non riesce ad aprire" in r for r in righe), righe)
+
+    def test_le_tabelle_vuote_si_dicono_ma_non_sono_un_errore(self):
+        """Un tema assente in questo comune e' normale: va detto, non
+        trasformato in un fallimento."""
+        righe = []
+        esito = A.verifica_con_gdal(
+            self._gpkg([("pieni", True, 2), ("vuoti", True, 0)]), righe.append)
+
+        self.assertTrue(esito)
+        self.assertTrue(any("0 feature" in r and "vuoti" in r for r in righe), righe)
+
+    def test_senza_i_binding_non_si_blocca_l_import(self):
+        """Se osgeo non c'e', la verifica si salta e si va avanti: non poter
+        controllare non e' lo stesso che aver trovato un errore."""
+        import builtins
+
+        # Si intercetta l'import vero e non sys.modules["osgeo"] = None:
+        # provato, quella strada non alzava niente - i sottomoduli osgeo.gdal
+        # e osgeo.ogr erano gia' caricati e il from-import li trovava lo
+        # stesso, cosi' la prova credeva di aver simulato l'assenza dei
+        # binding mentre li stava usando.
+        vero = builtins.__import__
+
+        def senza_osgeo(nome, *resto, **chiavi):
+            if nome == "osgeo" or nome.startswith("osgeo."):
+                raise ImportError("No module named 'osgeo'")
+            return vero(nome, *resto, **chiavi)
+
+        builtins.__import__ = senza_osgeo
+        try:
+            righe = []
+            self.assertTrue(A.verifica_con_gdal(self.percorso, righe.append))
+        finally:
+            builtins.__import__ = vero
+        self.assertTrue(any("verifica saltata" in r for r in righe), righe)
+
+
 if __name__ == "__main__":
+    if QGIS_ATTESO and not C_E_OSGEO:
+        sys.stderr.write("osgeo era atteso ma non si importa: %s\n" % PERCHE_NO)
+        raise SystemExit(1)
+    sys.stderr.write("gruppo GDAL: %s\n" % ("eseguito" if C_E_OSGEO else "SALTATO"))
     unittest.main(verbosity=2)

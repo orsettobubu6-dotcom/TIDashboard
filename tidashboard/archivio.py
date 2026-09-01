@@ -744,3 +744,85 @@ def disallineati(percorso_gpkg):
     dati = set(dataset_nel_gpkg(percorso_gpkg))
     registro = {r["numero"] for r in registrati(percorso_gpkg)}
     return sorted(dati - registro), sorted(registro - dati)
+
+
+# VERIFICA DEL GEOPACKAGE APPENA IMPORTATO ------------------------------------
+
+def _zitto(_testo, _livello=None):
+    """Registro di riposo: chi chiama senza log non stampa niente."""
+
+
+def verifica_con_gdal(percorso_gpkg, log=None):
+    """Guarda il GeoPackage appena scritto con i binding di GDAL/OGR.
+
+    PERCHE' SERVE: ili2gpkg puo' uscire con codice 0 anche per un GeoPackage
+    vuoto o strutturalmente incompleto - schema creato ma nessun dato
+    importato, per esempio da un ITF malformato o troncato. Il codice di
+    uscita dice che il programma non e' morto, non che il lavoro e' riuscito.
+
+    Si legge con osgeo.ogr direttamente e non attraverso QgsVectorLayer:
+    stesso principio di verifica_dxf.controlla_struttura, cioe' chiedere al
+    consumatore vero invece che alle proprie misure.
+
+    Restituisce True/False. La gravita' delle righe si deduce dall'emoji
+    (vedi la nota in errori_import.py): qui Qgis non c'e'.
+    """
+    log = log or _zitto
+    try:
+        from osgeo import gdal, ogr
+    except ImportError:
+        log("   ⚠️ Binding Python di GDAL (osgeo) non disponibili in questo "
+            "QGIS: verifica saltata.")
+        return True
+
+    # NIENTE mutazione globale delle eccezioni OGR (DontUseExceptions): quella
+    # cambia lo stato GDAL di TUTTA l'applicazione QGIS, non solo di questa
+    # chiamata, e con essa il comportamento di ogni altro plugin che usi i
+    # binding dopo di noi. Si isola invece un gestore d'errore silenzioso
+    # attorno alla sola ogr.Open - cosi' l'errore ATTESO su un file corrotto
+    # non inonda il registro - e il risultato si controlla per None, con un
+    # except RuntimeError di sicurezza nel caso le eccezioni fossero state
+    # attivate globalmente da altri.
+    gdal.PushErrorHandler("CPLQuietErrorHandler")
+    try:
+        fonte = ogr.Open(str(percorso_gpkg))
+    except RuntimeError:
+        fonte = None
+    finally:
+        gdal.PopErrorHandler()
+
+    if fonte is None:
+        log("   ❌ GDAL non riesce ad aprire il GeoPackage: %s" % percorso_gpkg)
+        return False
+
+    quante = fonte.GetLayerCount()
+    log("   📊 GDAL: %d tabelle nel GeoPackage" % quante)
+    if quante == 0:
+        # Cintura e bretelle. Il GeoPackage davvero vuoto - solo tabelle di
+        # servizio, nessuna voce in gpkg_contents - non arriva fin qui: GDAL
+        # non lo riconosce nemmeno come GeoPackage e si ferma sull'apertura
+        # (misurato). Questo ramo copre il caso in cui un giorno si apra lo
+        # stesso, e non e' quindi la strada normale del file vuoto.
+        log("   ❌ GeoPackage senza tabelle: import probabilmente fallito.")
+        return False
+
+    totale = 0
+    con_geometria = 0
+    vuote = []
+    for i in range(quante):
+        strato = fonte.GetLayerByIndex(i)
+        n = strato.GetFeatureCount()
+        totale += n
+        if strato.GetGeomType() != ogr.wkbNone:
+            con_geometria += 1
+            if n == 0:
+                vuote.append(strato.GetName())
+
+    log("   📊 GDAL: %d tabelle con geometria, %d feature totali"
+        % (con_geometria, totale))
+    if vuote:
+        campione = ", ".join(vuote[:10])
+        altro = ", ..." if len(vuote) > 10 else ""
+        log("   ℹ️ %d tabelle con geometria ma 0 feature (normale per temi "
+            "assenti in questo comune): %s%s" % (len(vuote), campione, altro))
+    return True

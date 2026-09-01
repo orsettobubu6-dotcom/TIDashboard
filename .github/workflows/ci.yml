@@ -47,6 +47,7 @@ jobs:
           python tidashboard/test_archivio.py
           python tidashboard/test_relazioni.py
           python tidashboard/test_errori_import.py
+          python tidashboard/test_ordinamento.py
 
       - name: ruff sui moduli puliti
         run: |
@@ -61,7 +62,8 @@ jobs:
                      tidashboard/verifica_dxf.py tidashboard/test_verifica_dxf.py \
                      tidashboard/applica_etichette.py \
                      tidashboard/relazioni.py tidashboard/test_relazioni.py \
-                     tidashboard/errori_import.py tidashboard/test_errori_import.py
+                     tidashboard/errori_import.py tidashboard/test_errori_import.py \
+                     tidashboard/test_ordinamento.py
 
       - name: metadata
         run: python crea_zip_plugin.py --solo-check-metadata
@@ -109,7 +111,7 @@ jobs:
             -e QT_QPA_PLATFORM=offscreen \
             -e TIDASHBOARD_QGIS_ATTESO=1 \
             qgis/qgis:4.2-trixie \
-            -lc 'rc=0; for t in test_style_logic test_planimetria test_verifica_dxf test_pubblica_progetto test_inventario test_relazioni test_errori_import; do echo "== $t =="; python3 -X faulthandler tidashboard/$t.py || { echo "USCITA $? nella suite $t"; rc=1; }; done; exit $rc' 2>&1 | tee /tmp/qgis.log
+            -lc 'rc=0; for t in test_style_logic test_planimetria test_verifica_dxf test_pubblica_progetto test_inventario test_relazioni test_errori_import test_ordinamento test_archivio; do echo "== $t =="; python3 -X faulthandler tidashboard/$t.py || { echo "USCITA $? nella suite $t"; rc=1; }; done; exit $rc' 2>&1 | tee /tmp/qgis.log
           esito=${PIPESTATUS[0]}
           if [ "$esito" -ne 0 ]; then
             echo "::error::test QGIS falliti (uscita $esito)"

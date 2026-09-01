@@ -65,6 +65,7 @@ try:
     from .colori import *          # noqa: F401,F403 - costanti C_*
     from .etichette import *       # noqa: F401,F403 - regole di etichettatura
     from .ordinamento import *     # noqa: F401,F403 - ordine z e gruppi
+    from . import ordinamento as _ordinamento
     from .simbologia import *      # noqa: F401,F403 - costruttori di simboli
     from .etichette import (KEYWORD_LOCALITA, TESTO_SOLO_SU_POS,
                             _LABEL_DISABLED_BY_DEFAULT,
@@ -103,6 +104,7 @@ except ImportError:
     from colori import *           # noqa: F401,F403
     from etichette import *        # noqa: F401,F403
     from ordinamento import *      # noqa: F401,F403
+    import ordinamento as _ordinamento
     from simbologia import *       # noqa: F401,F403
     from etichette import (KEYWORD_LOCALITA, TESTO_SOLO_SU_POS,
                            _LABEL_DISABLED_BY_DEFAULT,
@@ -3112,51 +3114,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log(f"  ⚠️ Errore lettura metadati ILI per {table_name}: {str(e)}", Qgis.Warning)
             return None
 
-    def _nice_layer_name(self, class_name, table):
-        """Nome leggibile per il pannello Layers di QGIS, al posto del nome
-        tabella grezzo del GeoPackage (es. "beni_immobili_punto_di_confine",
-        "punti_fissctgria3_simbolopfp3" - l'identificativo SQL generato da
-        ili2db, spesso troncato/concatenato in modi poco intuitivi e mai
-        pensato per essere letto da un utente).
-        'class_name' e' il nome della classe ILI vera e propria (letto dai
-        metadati t_ili2db_classname, es. "Punto_di_confine", "SuperficieCS",
-        "PosNome_del_luogo") - gia' molto piu' chiaro con un semplice
-        underscore->spazio, tranne per le sigle tecniche concatenate senza
-        underscore (SuperficieCS, PCGiurisdizionale, DPSSP, PFP1/2/3, PFA1/2),
-        per cui uso _NICE_CLASS_NAMES. Le tabelle "PosXxx" (punto di
-        iscrizione di un'etichetta testuale, non l'oggetto vero e proprio -
-        vedi TEXT_LABEL_RULES) diventano "Xxx (etichetta)".
-        Se la classe ILI non e' stata risolta (raro, gia' loggato come
-        warning altrove), ripulisce almeno il nome tabella grezzo invece di
-        lasciarlo cosi' com'e'."""
-        if not class_name:
-            return table.replace("_", " ").strip().capitalize()
-        if class_name in self._NICE_CLASS_NAMES:
-            return self._NICE_CLASS_NAMES[class_name]
-        base, suffix = class_name, ""
-        if base.startswith("Pos") and len(base) > 3 and base[3].isupper():
-            base = base[3:]
-            suffix = " (etichetta)"
-        if base in self._NICE_CLASS_NAMES:
-            return self._NICE_CLASS_NAMES[base] + suffix
-        return base.replace("_", " ") + suffix
-
-    # Sigle/nomi di classe ILI concatenati senza underscore, illeggibili con
-    # il semplice underscore->spazio usato da _nice_layer_name per tutti gli
-    # altri (es. "Punto_di_confine" -> "Punto di confine" gia' va bene cosi').
-    # PFP1/2/3 e PFA1/2 non compaiono qui apposta: senza underscore, ricadono
-    # gia' correttamente sul percorso generico (base.replace("_"," ")) che le
-    # lascia invariate ("PFP1" invece della precedente "Punto fisso di
-    # poligonazione (cat. 1)" - richiesta esplicita dell'utente, i nomi
-    # ufficiali sono le sigle stesse, non una parafrasi).
-    _NICE_CLASS_NAMES = {
-        "SuperficieCS": "Superficie (copertura del suolo)",
-        "SuperficieCSProg": "Superficie (copertura del suolo, progetto)",
-        "PCGiurisdizionale": "Punto di confine giurisdizionale",
-        "DPSSP": "DPSSP (diritto per sé stante e permanente)",
-        "CAP_localita": "CAP località",
-    }
-
     def _check_geometry_validity(self, layer, table):
         """Conta le geometrie non valide (auto-intersezioni, anelli
         degeneri, ecc.) in un layer appena caricato, verificate con il motore
@@ -3187,65 +3144,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
             self.log(f"   ⚠️ {n_invalid}/{n_checked} geometrie non valide in {table} "
                       f"- feature id esempio: {examples}", Qgis.Warning)
         return n_invalid
-
-    def _validate_gpkg_with_gdal(self, gpkg_path):
-        """Verifica il GeoPackage appena importato usando i binding Python
-        di GDAL/OGR direttamente (osgeo.ogr, non tramite QgsVectorLayer):
-        stesso principio di verifica_dxf.controlla_struttura, applicato qui
-        all'import - ili2gpkg puo' uscire con codice 0 anche per un
-        GeoPackage vuoto o strutturalmente incompleto (es. schema creato ma
-        nessun dato importato per un ITF malformato/tronco)."""
-        try:
-            from osgeo import ogr, gdal
-        except ImportError:
-            self.log("   ⚠️ Binding Python di GDAL (osgeo) non disponibili in questo QGIS: verifica saltata.", Qgis.Warning)
-            return True
-        # Niente la mutazione globale delle eccezioni OGR (DontUse...): mutava
-        # lo stato GDAL GLOBALE di tutta l'applicazione QGIS (non solo di
-        # questa chiamata), cambiando il comportamento di ogni altro
-        # plugin/codice che usa i binding dopo di noi. Per non inondare il log con l'errore ATTESO su un file
-        # eventualmente corrotto si isola invece un error handler "quiet"
-        # attorno alla sola ogr.Open, e il risultato si controlla per None
-        # (con un except RuntimeError di sicurezza, nel caso le eccezioni
-        # GDAL fossero state attivate globalmente da altri).
-        gdal.PushErrorHandler("CPLQuietErrorHandler")
-        try:
-            ds = ogr.Open(str(gpkg_path))
-        except RuntimeError:
-            ds = None
-        finally:
-            gdal.PopErrorHandler()
-        if ds is None:
-            self.log(f"   ❌ GDAL non riesce ad aprire il GeoPackage: {gpkg_path}", Qgis.Critical)
-            return False
-
-        n_layers = ds.GetLayerCount()
-        self.log(f"   📊 GDAL: {n_layers} tabelle nel GeoPackage")
-        if n_layers == 0:
-            self.log("   ❌ GeoPackage senza tabelle: import probabilmente fallito.", Qgis.Critical)
-            ds = None
-            return False
-
-        total_features = 0
-        empty_geom_layers = []
-        n_geom_layers = 0
-        for i in range(n_layers):
-            lyr = ds.GetLayerByIndex(i)
-            n = lyr.GetFeatureCount()
-            total_features += n
-            if lyr.GetGeomType() != ogr.wkbNone:
-                n_geom_layers += 1
-                if n == 0:
-                    empty_geom_layers.append(lyr.GetName())
-
-        self.log(f"   📊 GDAL: {n_geom_layers} tabelle con geometria, {total_features} feature totali")
-        if empty_geom_layers:
-            sample = ", ".join(empty_geom_layers[:10])
-            more = ", ..." if len(empty_geom_layers) > 10 else ""
-            self.log(f"   ℹ️ {len(empty_geom_layers)} tabelle con geometria ma 0 feature "
-                      f"(normale per temi assenti in questo comune): {sample}{more}")
-        ds = None
-        return True
 
     # Pattern degli errori di vincolo di unicita' ili2db (es. due
     # Punto_di_confine con lo stesso IdentAN+Identificatore ma coordinate
@@ -3554,7 +3452,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
         if self._chiusa_la_coda():
             self.log("\n🔎 Verifica GeoPackage (GDAL)...")
-            self._validate_gpkg_with_gdal(self.txt_gpkg.text().strip())
+            _archivio.verifica_con_gdal(
+                self.txt_gpkg.text().strip(),
+                lambda t: self.log(t, self._livello_di_riga(t)))
             self.log("\n" + "=" * 60)
             self.log("🎨 AVVIO APPLICAZIONE LEGENDA")
             self.log("=" * 60)
@@ -4085,7 +3985,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 # rompere in modo silenzioso passi piu' a valle.
                 self._check_geometry_validity(layer, table)
 
-                # Nome leggibile nel pannello Layers - vedi _nice_layer_name.
+                # Nome leggibile nel pannello Layers - vedi ordinamento.nome_leggibile.
                 # class_name calcolato una sola volta qui e riusato piu'
                 # sotto per lo stile, invece di rileggerlo.
                 ili_class = self.get_ili_class(gpkg_path, table)
@@ -4099,7 +3999,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                     class_name = ili_class_main.split('.')[-1] if ili_class_main else ""
                 else:
                     class_name = ""
-                layer.setName(self._nice_layer_name(class_name, table))
+                layer.setName(_ordinamento.nome_leggibile(class_name, table))
 
                 # Applica stili (logica in cascata a 3 livelli: QML accanto
                 # al GPKG -> Gestore Stili di QGIS -> renderer generato).
@@ -4129,7 +4029,7 @@ class TIDashboardDialog(StiliMixin, QDialog):
                 if not style_applied:
                     self.log("   3️⃣ Applicazione stile automatico")
                     # t_low/ili_class/class_name gia' calcolati sopra (per il
-                    # nome leggibile del layer, vedi _nice_layer_name): non
+                    # nome leggibile del layer, vedi ordinamento.nome_leggibile): non
                     # vanno ricalcolati, solo loggati qui per diagnostica.
                     if ili_class:
                         ili_class_main = ili_class.split('(')[0]
@@ -4429,7 +4329,9 @@ class TIDashboardDialog(StiliMixin, QDialog):
             for lyr, t_low in zorder_layers:
                 group, reason = _rf_group_debug_info(t_low)
                 self.log(f"      {lyr.name()}  ->  \"{group}\"  ({reason})")
-            self._reorganize_layer_tree(zorder_layers, attr_layers)
+            _ordinamento.raggruppa_albero(
+                zorder_layers, attr_layers, QgsProject.instance(),
+                lambda t: self.log(t, self._livello_di_riga(t)))
 
         # Conformita' cartografica: dimensioni simboli/etichette corrette a
         # qualunque scala di zoom (non solo 1:1000) + punti di confine
@@ -4471,67 +4373,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
         # momento un clic su una copertura del suolo non risponde piu', senza
         # spiegazione. Si adegua quando si consegna, e si rimette a posto.
         self._aggiorna_pulsante_consegna()
-
-    def _reorganize_layer_tree(self, geom_layers, attr_layers):
-        """Raggruppa il pannello Layers secondo i 12 livelli di RF_LAYER_GROUPS
-        (circ154 cap. 1.5.4), invece di lasciare un elenco piatto di
-        decine/centinaia di tabelle con nomi tecnici. Puramente organizzativo:
-        NON tocca l'ordine di disegno (gia' impostato da setCustomLayerOrder
-        in Fase 4) ne' stili/etichette - sposta solo i nodi nell'albero.
-        'geom_layers': lista di (layer, t_low) come zorder_layers.
-        'attr_layers': layer attributo puri (senza geometria, solo per i join).
-        Rilanciabile: rimuove i gruppi RF di un run precedente prima di
-        ricrearli, cosi' ricaricare la legenda su un progetto gia' aperto
-        non li duplica."""
-        root = QgsProject.instance().layerTreeRoot()
-
-        # Rimuovi eventuali gruppi RF di un run precedente (stesso progetto,
-        # legenda ricaricata): stacca prima i layer nel nodo radice, cosi'
-        # restano nel progetto anche se il gruppo viene rimosso.
-        prefixes = tuple(f"{title.split()[0]} " for title, _ in RF_LAYER_GROUPS) + ("90 ", "99 ")
-        for child in list(root.children()):
-            if isinstance(child, QgsLayerTreeGroup) and child.name().startswith(prefixes):
-                for sub in list(child.findLayers()):
-                    root.insertChildNode(0, sub.clone())
-                    child.removeChildNode(sub)
-                root.removeChildNode(child)
-
-        group_nodes = {}
-        for title, _pats in RF_LAYER_GROUPS:
-            group_nodes[title] = root.addGroup(title)
-        other_group = root.addGroup("90 Altri layer geometrici")
-        attr_group = root.addGroup("99 Tabelle attributo (join)")
-
-        moved = 0
-        for lyr, t_low in geom_layers:
-            node = root.findLayer(lyr.id())
-            if node is None:
-                continue
-            title = _rf_group_for_table(t_low)
-            target = group_nodes.get(title, other_group) if title else other_group
-            target.insertChildNode(-1, node.clone())
-            parent = node.parent()
-            if parent is not None:
-                parent.removeChildNode(node)
-            moved += 1
-
-        for lyr in attr_layers:
-            node = root.findLayer(lyr.id())
-            if node is None:
-                continue
-            attr_group.insertChildNode(-1, node.clone())
-            parent = node.parent()
-            if parent is not None:
-                parent.removeChildNode(node)
-            moved += 1
-
-        # Rimuovi i gruppi rimasti vuoti (nessun layer di questo dataset
-        # rientrava in quella categoria - es. nessuna condotta nel comune).
-        for g in list(group_nodes.values()) + [other_group, attr_group]:
-            if len(g.children()) == 0:
-                root.removeChildNode(g)
-
-        self.log(f"   ✅ Albero raggruppato: {moved} layer in {len(RF_LAYER_GROUPS) + 2} categorie possibili")
 
     def _nascondi_legenda_se_invisibile(self, layer, renderer):
         """Toglie dalla legenda le voci dei layer con simbolo invisibile.
@@ -5161,60 +5002,20 @@ class TIDashboardDialog(StiliMixin, QDialog):
             punti, QgsPointXY(f.centro[0], f.centro[1]), scala, formato)
 
     def _avvisa_capienza(self, f):
-        """Centrare non basta: la scala resta quella scelta prima, e un fondo
-        piu' grande del foglio viene tagliato. Sui dati di Mendrisio, su A4
-        verticale, non ci sta il 25% dei fondi a 1:500.
-
-        L'avviso dice cosa FARE, non solo che c'è un problema. Prima proponeva
-        solo di rimpicciolire la scala sullo stesso formato: per il 14.5% dei
-        fondi è una perdita di dettaglio evitabile, perché alla scala voluta ci
-        starebbero su un altro foglio. Passare da 1:500 a 1:1000 dimezza il
-        dettaglio di un piano che non aveva bisogno di perderlo."""
+        """Giunto fra il fondo trovato e planimetria.avviso_capienza: legge i
+        parametri dai controlli e scarta il guscio del risultato di ricerca -
+        il modulo ragiona di fogli e di metri, non sa cos'e' un FondoTrovato."""
         if f.extent is None:
             return
         dx, dy = f.extent[2] - f.extent[0], f.extent[3] - f.extent[1]
         formato, scala, rotazione, _c, _d = self._parametri_planimetria()
-
-        # Due controlli distinti: se ci sta ma a filo di cornice è un'altra
-        # cosa dal non starci, e va detta in un altro modo.
-        edx, edy = _planimetria.estensione_ruotata(dx, dy, rotazione)
-        larghezza, altezza = _planimetria.area_mappa(formato)
-        if edx <= larghezza / 1000.0 * scala and edy <= altezza / 1000.0 * scala:
-            stretto, _, _ = _planimetria.miglior_foglio(
-                dx, dy, scala, formato, rotazione_gon=rotazione)
-            if stretto != formato:
-                self.log("   ℹ️ Il fondo (%.0f × %.0f m) ci sta a 1:%d su %s ma "
-                         "arriva a meno di %.0f mm dalla cornice: sul foglio "
-                         "stampato sembrerà tagliato."
-                         % (dx, dy, scala, formato, _planimetria.MARGINE_CORTESIA))
+        esito = _planimetria.avviso_capienza(
+            dx, dy, formato, scala, rotazione,
+            contorno=getattr(f, "contorno", None), centro=f.centro)
+        if esito is None:
             return
-
-        proposta, nuova_scala, motivo = _planimetria.miglior_foglio(
-            dx, dy, scala, formato, rotazione_gon=rotazione)
-        if motivo == "formato":
-            rimedio = ("Alla stessa scala ci sta su %s: basta cambiare formato."
-                       % proposta)
-        else:
-            # Prima di rinunciare alla scala si prova a GIRARE il foglio: un
-            # fondo lungo e stretto in diagonale ha un rettangolo circoscritto
-            # molto più grande di sé, e alla scala voluta ci starebbe storto.
-            # Serve la geometria vera, non l'extent: se la ricerca non l'ha
-            # (WKB troncato, o ripiego su PosFondo) si resta al consiglio di
-            # prima, che è comunque corretto.
-            foglio_giro, giro = self._rotazione_che_salva_la_scala(f, scala, formato)
-            if giro is not None:
-                rimedio = ("Alla stessa scala ci sta ruotando il foglio di "
-                           "%.0f gon%s." % (giro, "" if foglio_giro == formato
-                                            else " su %s" % foglio_giro))
-            elif motivo == "scala":
-                rimedio = ("Serve 1:%d%s."
-                           % (nuova_scala,
-                              " su %s" % proposta if proposta != formato else ""))
-            else:
-                rimedio = "Non ci sta in nessun formato e in nessuna scala ufficiale."
-        self.log("   ⚠️ Il fondo misura %.0f × %.0f m e a 1:%d su %s non ci "
-                 "sta: verrà tagliato. %s" % (dx, dy, scala, formato, rimedio),
-                 Qgis.Warning)
+        testo, _grave = esito
+        self.log(testo, self._livello_di_riga(testo))
 
     def _aggiorna_centro_fissato(self, etichetta=None):
         """Avviso PERMANENTE finché il centro è agganciato a un fondo.

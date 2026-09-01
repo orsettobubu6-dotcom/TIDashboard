@@ -1350,3 +1350,68 @@ def esporta_pdf(layout, percorso):
     if esito == QgsLayoutExporter.Success:
         return True, percorso
     return False, "codice di errore %s" % esito
+
+
+def avviso_capienza(dx, dy, formato, scala, rotazione_gon,
+                    contorno=None, centro=None):
+    """Se il fondo non ci sta nel foglio, che cosa dire.
+
+    Centrare non basta: la scala resta quella scelta prima, e un fondo piu'
+    grande del foglio viene tagliato. Sui dati di Mendrisio, su A4 verticale,
+    non ci sta il 25% dei fondi a 1:500.
+
+    L'AVVISO DICE COSA FARE, non solo che c'e' un problema. Prima proponeva
+    soltanto di rimpicciolire la scala sullo stesso formato: per il 14.5% dei
+    fondi e' una perdita di dettaglio evitabile, perche' alla scala voluta ci
+    starebbero su un altro foglio. Passare da 1:500 a 1:1000 dimezza il
+    dettaglio di un piano che non aveva bisogno di perderlo.
+
+    'contorno' e 'centro' servono solo al consiglio di girare il foglio, e si
+    usano solo nel ramo che ne ha bisogno: il rettangolo minimo costa, e nella
+    maggioranza dei casi non lo si guarda nemmeno. Senza (WKB troncato, o
+    ripiego su PosFondo) resta il consiglio precedente, che e' comunque
+    corretto.
+
+    Restituisce (testo, grave) - grave=True per il taglio vero, False per il
+    fondo che ci sta ma a filo di cornice - oppure None se ci sta comodo.
+    """
+    edx, edy = estensione_ruotata(dx, dy, rotazione_gon)
+    larghezza, altezza = area_mappa(formato)
+
+    # Due controlli distinti: se ci sta ma a filo di cornice e' un'altra cosa
+    # dal non starci, e va detta in un altro modo.
+    if edx <= larghezza / 1000.0 * scala and edy <= altezza / 1000.0 * scala:
+        stretto, _s, _m = miglior_foglio(dx, dy, scala, formato,
+                                         rotazione_gon=rotazione_gon)
+        if stretto == formato:
+            return None
+        return ("   ℹ️ Il fondo (%.0f × %.0f m) ci sta a 1:%d su %s ma arriva a "
+                "meno di %.0f mm dalla cornice: sul foglio stampato sembrerà "
+                "tagliato." % (dx, dy, scala, formato, MARGINE_CORTESIA), False)
+
+    proposta, nuova_scala, motivo = miglior_foglio(dx, dy, scala, formato,
+                                                   rotazione_gon=rotazione_gon)
+    if motivo == "formato":
+        rimedio = ("Alla stessa scala ci sta su %s: basta cambiare formato."
+                   % proposta)
+    else:
+        # Prima di rinunciare alla scala si prova a GIRARE il foglio: un fondo
+        # lungo e stretto in diagonale ha un rettangolo circoscritto molto piu'
+        # grande di se', e alla scala voluta ci starebbe storto.
+        foglio_giro, giro = (None, None)
+        if contorno and centro is not None:
+            foglio_giro, giro = rotazione_che_salva_la_scala(
+                contorno, QgsPointXY(centro[0], centro[1]), scala, formato)
+        if giro is not None:
+            rimedio = ("Alla stessa scala ci sta ruotando il foglio di %.0f gon%s."
+                       % (giro, "" if foglio_giro == formato
+                          else " su %s" % foglio_giro))
+        elif motivo == "scala":
+            rimedio = ("Serve 1:%d%s."
+                       % (nuova_scala,
+                          " su %s" % proposta if proposta != formato else ""))
+        else:
+            rimedio = "Non ci sta in nessun formato e in nessuna scala ufficiale."
+
+    return ("   ⚠️ Il fondo misura %.0f × %.0f m e a 1:%d su %s non ci sta: "
+            "verrà tagliato. %s" % (dx, dy, scala, formato, rimedio), True)

@@ -1371,6 +1371,111 @@ class TestFiltroPerComune(unittest.TestCase):
         self.assertEqual(lyr.featureCount(), 0)
 
 
+class TestAvvisoCapienza(unittest.TestCase):
+    """L'avviso quando il fondo non ci sta nel foglio.
+
+    Stava dentro la finestra e non era provato: leggeva i controlli, misurava
+    e scriveva nel registro tutto di seguito, quindi per provarne una riga
+    bisognava costruire un dialogo. Adesso entrano metri e formato, esce un
+    testo - e l'avviso VERO da verificare non e' che il problema c'e', ma che
+    dica cosa fare.
+    """
+
+    # Le misure NON sono inventate: a 1:500 l'area mappa vale 91 x 114 m su A4
+    # verticale, 134 x 176 su A3 verticale, 196 x 114 su A3 orizzontale. Ogni
+    # caso qui sotto e' stato scelto misurando, non stimando.
+    def test_un_fondo_che_ci_sta_comodo_non_dice_niente(self):
+        self.assertIsNone(P.avviso_capienza(20.0, 30.0, "A4 verticale", 500, 0))
+
+    def test_a_filo_di_cornice_si_dice_ma_non_e_grave(self):
+        """Ci sta e non ci sta sono due cose diverse, e vanno dette in due modi
+        diversi: qui il foglio basta, ma sulla stampa sembrera' tagliato."""
+        larghezza, altezza = P.area_mappa("A4 verticale")
+        dx = larghezza / 1000.0 * 500 * 0.96
+        dy = altezza / 1000.0 * 500 * 0.96
+
+        esito = P.avviso_capienza(dx, dy, "A4 verticale", 500, 0)
+
+        self.assertIsNotNone(esito)
+        testo, grave = esito
+        self.assertFalse(grave)
+        self.assertIn("sembrerà tagliato", testo)
+
+    def test_se_basta_un_altro_foglio_lo_dice_invece_della_scala(self):
+        """IL PUNTO DELL'AVVISO. Prima proponeva solo di rimpicciolire la
+        scala: per il 14.5% dei fondi e' una perdita di dettaglio evitabile,
+        perche' alla scala voluta ci starebbero su un foglio piu' grande.
+        Passare da 1:500 a 1:1000 dimezza il dettaglio per niente.
+
+        120 x 100 m non ci sta su A4 verticale (91 x 114) e ci sta su A3
+        verticale (134 x 176), alla stessa scala."""
+        esito = P.avviso_capienza(120.0, 100.0, "A4 verticale", 500, 0)
+
+        self.assertIsNotNone(esito)
+        testo, grave = esito
+        self.assertTrue(grave)
+        self.assertIn("cambiare formato", testo)
+        self.assertIn("A3 verticale", testo)
+        self.assertNotIn("Serve 1:", testo)
+
+    def test_quando_nessun_foglio_basta_propone_la_scala(self):
+        """150 x 200 m non ci sta in nessun formato a 1:500."""
+        esito = P.avviso_capienza(150.0, 200.0, "A4 verticale", 500, 0)
+
+        testo, grave = esito
+        self.assertTrue(grave)
+        self.assertIn("Serve 1:1000", testo)
+
+    def test_quando_non_ci_sta_in_nessun_modo_lo_dice(self):
+        """Non deve proporre una scala che non esiste: le scale ufficiali
+        finiscono a 1:10000."""
+        testo, grave = P.avviso_capienza(4000.0, 4000.0, "A4 verticale", 500, 0)
+
+        self.assertTrue(grave)
+        self.assertIn("nessun formato", testo)
+        self.assertNotIn("Serve 1:", testo)
+
+    def test_l_avviso_porta_sempre_le_misure_vere(self):
+        """Un avviso che dice solo "non ci sta" costringe a rimisurare a mano."""
+        testo, _g = P.avviso_capienza(150.0, 200.0, "A4 verticale", 500, 0)
+
+        self.assertIn("150", testo)
+        self.assertIn("200", testo)
+        self.assertIn("1:500", testo)
+        self.assertIn("A4 verticale", testo)
+
+    def test_girare_il_foglio_si_prova_prima_di_rinunciare_alla_scala(self):
+        """Un fondo lungo e stretto IN DIAGONALE ha un rettangolo circoscritto
+        molto piu' grande di se': dritto non ci sta, storto si'. Rinunciare
+        alla scala senza aver provato a girare il foglio butta via dettaglio
+        che si poteva tenere.
+
+        Una striscia di 190 x 8 m a 45 gon ha un ingombro dritto di 140 x 140 m,
+        che a 1:500 non entra in nessun foglio; girata entra in A3 orizzontale
+        (196 x 114). La stessa chiamata SENZA contorno deve restare al consiglio
+        di prima - e' il caso del WKB troncato o del ripiego su PosFondo.
+        """
+        lung, largh = 190.0, 8.0
+        cos, sin = math.cos(math.pi / 4), math.sin(math.pi / 4)
+        contorno = [QgsPointXY(2712000 + u * cos - v * sin,
+                               1115000 + u * sin + v * cos)
+                    for u, v in ((0, 0), (lung, 0), (lung, largh), (0, largh))]
+        xs = [p.x() for p in contorno]
+        ys = [p.y() for p in contorno]
+        centro = ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+        dx, dy = max(xs) - min(xs), max(ys) - min(ys)
+
+        senza = P.avviso_capienza(dx, dy, "A4 verticale", 500, 0)
+        con = P.avviso_capienza(dx, dy, "A4 verticale", 500, 0,
+                                contorno=contorno, centro=centro)
+
+        self.assertIsNotNone(senza, "il caso scelto ci sta dritto: non prova niente")
+        self.assertIn("ruotando il foglio", con[0])
+        self.assertIn("A3 orizzontale", con[0])
+        self.assertIn("Serve 1:1000", senza[0])
+        self.assertNotIn("ruotando", senza[0])
+
+
 if __name__ == "__main__":
     result = unittest.main(exit=False, verbosity=2)
     _qgs.exitQgis()

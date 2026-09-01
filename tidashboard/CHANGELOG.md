@@ -27,6 +27,14 @@ una parte che prima non ne aveva quasi nessuna — l'unica provata era
 l'euristica delle coordinate. Su un ITF con più conflitti nella stessa
 tabella il file non viene più riletto da capo per ognuno.
 
+**Tre pezzi tornati al loro modulo.** I nomi leggibili del pannello dei layer e
+il raggruppamento dell'albero sono andati in `ordinamento.py`, che di ordine e
+di gruppi sapeva già tutto; la verifica GDAL del GeoPackage appena scritto in
+`archivio.py`; l'avviso «il fondo non ci sta nel foglio» in `planimetria.py`.
+Ventidue prove nuove, su tre parti che ne avevano zero: i nomi dei layer non
+erano provati affatto, e l'avviso di capienza — quello che dice *cosa fare*,
+non solo che c'è un problema — nemmeno.
+
 ## 1.3.3 — 29 agosto 2026 — sperimentale
 
 Stesso contenuto della 1.3.2, che non è stata pubblicata: la sua CI è caduta su

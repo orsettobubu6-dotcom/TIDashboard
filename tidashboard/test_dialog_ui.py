@@ -2492,6 +2492,12 @@ class TestCodaCartella(unittest.TestCase):
         self.avviati = []
         self.caricato = []
         self._worker_vero = cd.JavaWorker
+        # La verifica GDAL sta in archivio.verifica_con_gdal e non piu'
+        # sulla finestra: si zittisce sul MODULO, non sull'istanza -
+        # altrimenti si posa un attributo che nessuno legge e la prova
+        # chiama GDAL per davvero su un GeoPackage che non esiste.
+        self._verifica_vera = cd._archivio.verifica_con_gdal
+        cd._archivio.verifica_con_gdal = lambda *a, **k: True
         prova = self
 
         class WorkerFinto(object):
@@ -2515,6 +2521,7 @@ class TestCodaCartella(unittest.TestCase):
 
     def tearDown(self):
         cd.JavaWorker = self._worker_vero
+        cd._archivio.verifica_con_gdal = self._verifica_vera
 
     def _itf(self, nome, nome_comune, numero):
         percorso = os.path.join(self.cartella, nome)
@@ -2535,7 +2542,6 @@ class TestCodaCartella(unittest.TestCase):
         dlg.find_java = lambda: "java"
         prova = self
         dlg.load_and_style_layers = lambda: prova.caricato.append(True)
-        dlg._validate_gpkg_with_gdal = lambda *a, **k: None
         return dlg
 
     def _avvia(self, dlg):

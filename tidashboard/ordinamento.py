@@ -150,7 +150,7 @@ CAMPO_ORI_SIMBOLO = PREFISSO_SIMBOLO + "ori"
 def _raw_table_name(layer):
     """Nome RAW della tabella GeoPackage sorgente di un layer OGR (es.
     "oggetti_singoli_elemento_con_superficie"), indipendente da come il
-    layer e' stato rinominato nel pannello (vedi _nice_layer_name). Letto
+    layer e' stato rinominato nel pannello (vedi nome_leggibile). Letto
     dalla source URI ("...gpkg|layername=xxx"), non da layer.name() - vedi
     la nota in relazioni.per_tabella_raw sul bug reale che questo ha
     risolto (join falliti per ~123 layer su 128)."""
@@ -202,7 +202,7 @@ def _zorder_debug_info(t_low):
 # portata qui senza toccare _zorder_priority/ORDINE_PRIORITA (l'ordine
 # di disegno resta calcolato esattamente come prima, il raggruppamento e'
 # solo visuale). Le tabelle non coperte da nessun pattern qui finiscono nel
-# gruppo di riserva "90 Altri layer geometrici" (vedi _reorganize_layer_tree),
+# gruppo di riserva "90 Altri layer geometrici" (vedi raggruppa_albero),
 # non silenziosamente perse.
 RF_LAYER_GROUPS = (
     # Pattern deliberatamente SPECIFICI (es. "pcgiurisdizionale" invece di
@@ -290,3 +290,132 @@ def _rf_group_debug_info(t_low):
 # possono essere tralasciati nella rappresentazione - restano quindi visibili
 # solo a scale piu' dettagliate (denominatore <= questo valore).
 CONFINE_POINTS_MIN_SCALE = 5000
+
+
+# NOMI LEGGIBILI PER IL PANNELLO DEI LAYER ------------------------------------
+
+# Sigle e nomi di classe ILI concatenati senza underscore, illeggibili con il
+# semplice underscore->spazio che nome_leggibile usa per tutti gli altri
+# ("Punto_di_confine" -> "Punto di confine" va gia' bene cosi').
+#
+# PFP1/2/3 e PFA1/2 NON compaiono qui apposta: senza underscore ricadono gia'
+# correttamente sul percorso generico, che le lascia invariate. I nomi
+# ufficiali sono le sigle stesse, non una parafrasi - richiesta esplicita
+# dell'utente, che aveva visto "Punto fisso di poligonazione (cat. 1)" al
+# posto di "PFP1".
+NOMI_CLASSE_LEGGIBILI = {
+    "SuperficieCS": "Superficie (copertura del suolo)",
+    "SuperficieCSProg": "Superficie (copertura del suolo, progetto)",
+    "PCGiurisdizionale": "Punto di confine giurisdizionale",
+    "DPSSP": "DPSSP (diritto per sé stante e permanente)",
+    "CAP_localita": "CAP località",
+}
+
+
+def nome_leggibile(classe_ili, tabella):
+    """Nome per il pannello dei layer, al posto del nome tabella grezzo del
+    GeoPackage.
+
+    I nomi grezzi ("beni_immobili_punto_di_confine",
+    "punti_fissctgria3_simbolopfp3") sono identificativi SQL generati da
+    ili2db, spesso troncati e concatenati in modi poco intuitivi, e non sono
+    mai stati pensati perche' qualcuno li leggesse.
+
+    'classe_ili' e' il nome della classe ILI vera (dai metadati
+    t_ili2db_classname: "Punto_di_confine", "SuperficieCS", "PosNome_del_
+    luogo"), gia' molto piu' chiaro con un underscore->spazio - tranne per le
+    sigle concatenate, che stanno in NOMI_CLASSE_LEGGIBILI.
+
+    Le tabelle "PosXxx" sono il punto di iscrizione di un'etichetta, non
+    l'oggetto vero: diventano "Xxx (etichetta)".
+
+    Se la classe ILI non e' stata risolta (raro, e gia' segnalato altrove),
+    ripulisce almeno il nome tabella grezzo invece di lasciarlo com'e'.
+    """
+    if not classe_ili:
+        return tabella.replace("_", " ").strip().capitalize()
+    if classe_ili in NOMI_CLASSE_LEGGIBILI:
+        return NOMI_CLASSE_LEGGIBILI[classe_ili]
+    base, coda = classe_ili, ""
+    if base.startswith("Pos") and len(base) > 3 and base[3].isupper():
+        base = base[3:]
+        coda = " (etichetta)"
+    if base in NOMI_CLASSE_LEGGIBILI:
+        return NOMI_CLASSE_LEGGIBILI[base] + coda
+    return base.replace("_", " ") + coda
+
+
+def raggruppa_albero(layer_con_geometria, layer_attributo, progetto=None, log=None):
+    """Raggruppa il pannello dei layer secondo i dodici livelli di
+    RF_LAYER_GROUPS (circ. 154 cap. 1.5.4), invece di lasciare un elenco
+    piatto di decine o centinaia di tabelle con nomi tecnici.
+
+    PURAMENTE ORGANIZZATIVO: non tocca l'ordine di disegno (quello lo mette
+    setCustomLayerOrder) ne' stili ed etichette - sposta solo i nodi
+    nell'albero.
+
+    'layer_con_geometria' e' una lista di (layer, t_low); 'layer_attributo'
+    sono i layer senza geometria, quelli che servono solo ai join.
+
+    RILANCIABILE: toglie i gruppi di un giro precedente prima di rifarli,
+    cosi' ricaricare la legenda su un progetto gia' aperto non li duplica.
+
+    QGIS SI IMPORTA QUI DENTRO, non in cima al modulo: ordinamento.py e' uno
+    dei moduli che si leggono e si provano senza QGIS, e relazioni.py - che
+    gira nel lavoro di CI da dieci secondi - dipende da lui. Un import in
+    testa lo trascinerebbe fuori dal lavoro puro.
+    """
+    from qgis.core import QgsLayerTreeGroup, QgsProject
+
+    log = log or (lambda _t: None)
+    progetto = progetto if progetto is not None else QgsProject.instance()
+    radice = progetto.layerTreeRoot()
+
+    # Via i gruppi di un giro precedente (stesso progetto, legenda
+    # ricaricata): prima si staccano i layer nel nodo radice, cosi' restano
+    # nel progetto anche se il gruppo sparisce.
+    prefissi = tuple("%s " % titolo.split()[0] for titolo, _ in RF_LAYER_GROUPS)
+    prefissi += ("90 ", "99 ")
+    for figlio in list(radice.children()):
+        if isinstance(figlio, QgsLayerTreeGroup) and figlio.name().startswith(prefissi):
+            for sotto in list(figlio.findLayers()):
+                radice.insertChildNode(0, sotto.clone())
+                figlio.removeChildNode(sotto)
+            radice.removeChildNode(figlio)
+
+    gruppi = {titolo: radice.addGroup(titolo) for titolo, _p in RF_LAYER_GROUPS}
+    altri = radice.addGroup("90 Altri layer geometrici")
+    attributi = radice.addGroup("99 Tabelle attributo (join)")
+
+    spostati = 0
+    for layer, t_low in layer_con_geometria:
+        nodo = radice.findLayer(layer.id())
+        if nodo is None:
+            continue
+        titolo = _rf_group_for_table(t_low)
+        destinazione = gruppi.get(titolo, altri) if titolo else altri
+        destinazione.insertChildNode(-1, nodo.clone())
+        genitore = nodo.parent()
+        if genitore is not None:
+            genitore.removeChildNode(nodo)
+        spostati += 1
+
+    for layer in layer_attributo:
+        nodo = radice.findLayer(layer.id())
+        if nodo is None:
+            continue
+        attributi.insertChildNode(-1, nodo.clone())
+        genitore = nodo.parent()
+        if genitore is not None:
+            genitore.removeChildNode(nodo)
+        spostati += 1
+
+    # Via i gruppi rimasti vuoti: nessun layer di questo comune rientrava in
+    # quella categoria - per esempio nessuna condotta.
+    for gruppo in list(gruppi.values()) + [altri, attributi]:
+        if len(gruppo.children()) == 0:
+            radice.removeChildNode(gruppo)
+
+    log("   ✅ Albero raggruppato: %d layer in %d categorie possibili"
+        % (spostati, len(RF_LAYER_GROUPS) + 2))
+    return spostati
