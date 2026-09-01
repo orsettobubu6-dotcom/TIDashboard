@@ -19,6 +19,14 @@ erano disegnati tutti dritti.
 lavoro di CI da dieci secondi invece che dentro QGIS, ed è la metà dove i
 difetti sono successi davvero. Quattordici prove nuove.
 
+**L'analisi degli errori di importazione è uscita** in `errori_import.py`.
+Riconoscere una riga di log di ili2gpkg, ritrovare nell'ITF le due righe in
+conflitto, cavarne le coordinate e dire se è un doppione o una collisione di
+numerazione: è tutto testo, e ora si prova senza QGIS. Trenta prove nuove su
+una parte che prima non ne aveva quasi nessuna — l'unica provata era
+l'euristica delle coordinate. Su un ITF con più conflitti nella stessa
+tabella il file non viene più riletto da capo per ognuno.
+
 ## 1.3.3 — 29 agosto 2026 — sperimentale
 
 Stesso contenuto della 1.3.2, che non è stata pubblicata: la sua CI è caduta su

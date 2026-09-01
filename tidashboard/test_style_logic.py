@@ -31,6 +31,7 @@ _qgs.initQgis()
 import tidashboard as cd
 from etichette import _LABEL_PRIORITY
 import applica_etichette as _ae
+import errori_import as _ei
 
 
 class TestGenereIn(unittest.TestCase):
@@ -598,13 +599,13 @@ class TestApplyLabelsToLayer(unittest.TestCase):
 
 
 class TestExtractLv95Coords(unittest.TestCase):
-    """_extract_lv95_coords: euristica per i messaggi di errore dell'analisi
-    duplicati - accetta solo coppie di float ADIACENTI sulla stessa riga,
-    nell'ordine (E, N), con E in [2480000, 2840000] e N in [1070000, 1310000].
-    Funzione pura (staticmethod), testabile senza layer QGIS."""
+    """errori_import.coordinate_lv95: euristica per i messaggi di errore
+    dell'analisi duplicati - accetta solo coppie di float ADIACENTI sulla
+    stessa riga, nell'ordine (E, N), con E in [2480000, 2840000] e N in
+    [1070000, 1310000]. Funzione pura, provabile senza layer QGIS."""
 
     def _extract(self, line):
-        return cd.TIDashboardDialog._extract_lv95_coords(line)
+        return _ei.coordinate_lv95(line)
 
     def test_coppia_valida_stessa_riga(self):
         line = "OBJE 46560 2600123.456 1123456.789 500.0"

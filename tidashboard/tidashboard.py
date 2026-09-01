@@ -59,6 +59,7 @@ try:
     from . import archivio as _archivio
     from . import applica_etichette as _applica_etichette
     from . import relazioni as _relazioni
+    from . import errori_import as _errori_import
     from .stili import StiliMixin
     from .legend_manifest import write_legend_manifest
     from .colori import *          # noqa: F401,F403 - costanti C_*
@@ -96,6 +97,7 @@ except ImportError:
     import archivio as _archivio
     import applica_etichette as _applica_etichette
     import relazioni as _relazioni
+    import errori_import as _errori_import
     from stili import StiliMixin
     from legend_manifest import write_legend_manifest
     from colori import *           # noqa: F401,F403
@@ -3247,23 +3249,6 @@ class TIDashboardDialog(StiliMixin, QDialog):
 
     # Pattern degli errori di vincolo di unicita' ili2db (es. due
     # Punto_di_confine con lo stesso IdentAN+Identificatore ma coordinate
-    # diverse - dati sorgente difettosi, non un bug del plugin). Esempio
-    # reale: "Error: line 1183131: MD01MUTI7MN95.Beni_immobili.
-    # Punto_di_confine: tid 46560: Unique constraint MD01MUTI7MN95.
-    # Beni_immobili.Punto_di_confine.Constraint2 is violated! Values
-    # TI63201, 140602 already exist in Object: 40497"
-    _ILI2GPKG_UNIQUE_RE = re.compile(
-        r"^Error: line (\d+): ([\w.]+): tid (\d+): "
-        r"Unique constraint ([\w.]+) is violated! "
-        r"Values (.+) already exist in Object: (\d+)$"
-    )
-
-    # I messaggi che la validazione emette con le coordinate gia' dentro, e che
-    # finora restavano semplici righe di log: "Warning: arc is straight at
-    # (2719339.225, 1081435.757, NaN)". Sono geolocalizzati all'origine, e non
-    # c'e' bisogno di andarli a cercare nell'ITF come per i vincoli di unicita'.
-    _ILI2GPKG_LIVELLO_RE = re.compile(r"^(Error|Warning): (.+)$")
-
     # Quanto si aspetta, dopo l'ultima modifica del campo, prima di leggere il
     # file. Il campo cambia a ogni carattere digitato e dropEvent ci scrive
     # due volte quando i file trascinati sono due: senza attesa partirebbe una
@@ -3338,251 +3323,43 @@ class TIDashboardDialog(StiliMixin, QDialog):
                      Qgis.Warning)
 
     def _on_import_log_line(self, line):
-        """Wrapper del log_signal del JavaWorker durante l'import: logga
-        come sempre, ma intercetta e memorizza anche gli errori di vincolo
-        di unicita' riconosciuti, per l'analisi automatica in caso di
-        fallimento (vedi _analyze_import_errors), e ogni altro messaggio di
-        validazione che porti con se' una coordinata."""
+        """Giunto fra il log del JavaWorker e l'analisi degli errori: scrive
+        la riga come sempre, e passa a errori_import quel che ne sa cavare -
+        le violazioni di vincolo di unicita' e i messaggi di validazione che
+        portano con se' una coordinata."""
         self.log(line)
-        livello = self._ILI2GPKG_LIVELLO_RE.match(line.strip())
-        if livello and not self._ILI2GPKG_UNIQUE_RE.match(line.strip()):
-            coord = self._extract_lv95_coords(line)
-            if coord:
-                if not hasattr(self, "_punti_validazione"):
-                    self._punti_validazione = []
-                self._punti_validazione.append({
-                    "livello": "errore" if livello.group(1) == "Error" else "avviso",
-                    "tipo": "validazione",
-                    "messaggio": livello.group(2).strip(),
-                    "x": coord[0], "y": coord[1], "tid": "", "riga": 0,
-                })
-        m = self._ILI2GPKG_UNIQUE_RE.match(line.strip())
-        if m:
-            self._import_unique_errors.append({
-                "line": int(m.group(1)),
-                "class_path": m.group(2),
-                "tid": m.group(3),
-                "constraint": m.group(4),
-                "values": m.group(5),
-                "existing_tid": m.group(6),
-            })
-
-    def _find_itf_table_block(self, itf_path, around_line, max_scan=3_000_000):
-        """Trova inizio (riga 'TABL <Classe>') e fine (riga 'ETAB') del
-        blocco tabella ITF che contiene 'around_line' (1-indexed). Legge il
-        file una sola volta in streaming, senza caricarlo in memoria - un
-        ITF di produzione puo' superare il milione di righe. Se il file
-        supera 'max_scan' righe la scansione si ferma: il troncamento viene
-        segnalato nel log, perche' un risultato mancante in quel caso NON
-        significa "blocco non presente" ma solo "non cercato oltre"."""
-        start_line = None
-        start_name = None
-        end_line = None
-        with open(itf_path, "r", encoding="utf-8", errors="replace") as f:
-            for i, raw in enumerate(f, start=1):
-                if i > max_scan:
-                    self.log(f"      ⚠️ Analisi ITF troncata a {max_scan:,} righe "
-                              f"(limite di scansione): il blocco tabella cercato, se sta "
-                              f"oltre questo punto, non e' stato letto.", Qgis.Warning)
-                    break
-                if raw.startswith("TABL"):
-                    start_line = i
-                    start_name = raw.strip()
-                if i >= around_line and raw.startswith("ETAB"):
-                    end_line = i
-                    break
-        return start_line, start_name, end_line
-
-    @staticmethod
-    def _extract_objects_by_tid(itf_path, start_line, end_line, tids):
-        """Estrae le righe OBJE grezze per gli 'tid' cercati, limitandosi
-        all'intervallo [start_line, end_line] (un solo blocco TABL...ETAB,
-        non l'intero file)."""
-        wanted = set(tids)
-        found = {}
-        with open(itf_path, "r", encoding="utf-8", errors="replace") as f:
-            for i, raw in enumerate(f, start=1):
-                if i < start_line:
-                    continue
-                if i > end_line or len(found) == len(wanted):
-                    break
-                if raw.startswith("OBJE"):
-                    parts = raw.split()
-                    if len(parts) >= 2 and parts[1] in wanted:
-                        found[parts[1]] = raw.strip()
-        return found
-
-    @staticmethod
-    def _extract_lv95_coords(obje_line):
-        """Euristica indipendente dalla classe ILI - resta un'euristica,
-        pensata SOLO per arricchire i messaggi di errore dell'analisi
-        duplicati (coordinate indicative nei log), non per ricostruire
-        geometrie vere: cerca nella riga OBJE una COPPIA di numeri con la
-        virgola che compaiano consecutivamente sulla STESSA riga e cadano,
-        nell'ordine, nei range LV95 svizzeri E [2'480'000, 2'840'000] e
-        N [1'070'000, 1'310'000] (estremi nazionali con margine). La versione
-        precedente prendeva i primi due numeri "plausibili" dovunque nella
-        riga, con range piu' larghi e SENZA richiedere l'adiacenza: falsi
-        positivi su quote/attributi numerici erano facili (es. una quota
-        1234567.89 seguita da un valore 2450000.0). Piu' affidabile che
-        assumere la posizione esatta del campo Geometria, che varia da
-        classe a classe."""
-        nums = re.findall(r"-?\d+\.\d+", obje_line)
-        for i in range(len(nums) - 1):
-            e, n = float(nums[i]), float(nums[i + 1])
-            if 2_480_000 <= e <= 2_840_000 and 1_070_000 <= n <= 1_310_000:
-                return e, n
-        return None
+        letta = _errori_import.leggi_riga(line)
+        if letta is None:
+            return
+        genere, dato = letta
+        if genere == "unicita":
+            self._import_unique_errors.append(dato)
+        else:
+            self._punti_validazione.append(dato)
 
     def crea_layer_errori_validazione(self):
         """Mette sulla mappa i problemi trovati dalla validazione.
 
-        La scheda "Errori nei dati" dice COSA non va; questo layer dice DOVE, e
-        sono due domande diverse. Con due punti di confine che hanno lo stesso
-        identificativo, sapere che distano 8 metri o 8 chilometri cambia cosa
-        si va a controllare sul terreno - e per arrivarci finora bisognava
-        copiare le coordinate dal log e incollarle a mano.
-
-        I punti arrivano da due strade: le violazioni di unicita', per cui le
-        coordinate si vanno a leggere nell'ITF (vedi _analyze_import_errors), e
-        i messaggi che la coordinata ce l'hanno gia' dentro, come "arc is
-        straight at (...)". Ritorna il layer, o None se non c'e' niente da
-        mostrare."""
-        punti = getattr(self, "_punti_validazione", None)
-        if not punti:
-            return None
-        layer = QgsVectorLayer(
-            "Point?crs=EPSG:2056&field=livello:string(10)&field=tipo:string(40)"
-            "&field=messaggio:string(400)&field=tid:string(20)&field=riga:integer",
-            "Errori di validazione", "memory")
-        # Lo stesso difetto viene segnalato piu' volte: sul comune di prova le
-        # otto avvertenze "arc is straight" stanno su DUE posizioni sole,
-        # ripetute quattro volte ciascuna (una per anello che passa di li').
-        # Impilare quattro punti identici non aggiunge niente e rende il clic
-        # sulla mappa ambiguo, quindi restano quelli distinti.
-        visti = set()
-        distinti = []
-        for p in punti:
-            chiave = (p["livello"], p["tipo"], p["messaggio"],
-                      round(p["x"], 3), round(p["y"], 3))
-            if chiave in visti:
-                continue
-            visti.add(chiave)
-            distinti.append(p)
-        if len(distinti) < len(punti):
-            self.log("   ℹ️ %d segnalazioni ripetute sulla stessa posizione accorpate"
-                     % (len(punti) - len(distinti)))
-        punti = distinti
-        feature_list = []
-        for p in punti:
-            f = QgsFeature(layer.fields())
-            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(p["x"], p["y"])))
-            f.setAttributes([p["livello"], p["tipo"], p["messaggio"],
-                             str(p.get("tid") or ""), int(p.get("riga") or 0)])
-            feature_list.append(f)
-        layer.dataProvider().addFeatures(feature_list)
-        layer.updateExtents()
-        self._stile_errori_validazione(layer)
-        QgsProject.instance().addMapLayer(layer)
-        n_err = sum(1 for p in punti if p["livello"] == "errore")
-        self.log("   🗺️ Layer «Errori di validazione»: %d punti (%d errori, %d avvisi). "
-                 "Clic destro sul layer → Zoom sul layer per vederli."
-                 % (len(punti), n_err, len(punti) - n_err))
-        return layer
-
-    def _stile_errori_validazione(self, layer):
-        """Rosso gli errori, arancione gli avvisi, e l'etichetta col messaggio:
-        un puntino senza scritta costringe comunque ad aprire la tabella."""
-        from qgis.core import QgsMarkerSymbol, QgsRuleBasedRenderer
-        radice = QgsRuleBasedRenderer.Rule(None)
-        for livello, colore in (("errore", "198,40,40"), ("avviso", "230,145,0")):
-            simbolo = QgsMarkerSymbol.createSimple({
-                "name": "circle", "color": colore + ",180",
-                "outline_color": "255,255,255", "outline_width": "0.4", "size": "4"})
-            regola = QgsRuleBasedRenderer.Rule(simbolo, filterExp='"livello" = \'%s\'' % livello,
-                                               label=livello)
-            radice.appendChild(regola)
-        layer.setRenderer(QgsRuleBasedRenderer(radice))
+        La scheda "Errori nei dati" dice COSA non va; questo layer dice DOVE,
+        e sono due domande diverse. Con due punti di confine che hanno lo
+        stesso identificativo, sapere se distano 8 metri o 8 chilometri cambia
+        cosa si va a controllare sul terreno."""
+        return _errori_import.crea_layer(
+            self._punti_validazione, QgsProject.instance(),
+            lambda t: self.log(t, self._livello_di_riga(t)))
 
     def _analyze_import_errors(self, itf_path):
-        """Analizza gli errori di vincolo di unicita' catturati durante
-        l'import (vedi _on_import_log_line) e propone un riepilogo leggibile
-        invece di lasciare solo il log Java grezzo: per ogni conflitto,
-        cerca le due righe OBJE coinvolte nell'ITF originale e - quando
-        possibile - le coordinate e la distanza tra i due punti, per capire
-        subito se e' un vero doppione (stesso punto, due tid) o una
-        collisione di numerazione (punti diversi, stesso identificativo)."""
-        errors = self._import_unique_errors
-        if not errors:
-            self.log("   ℹ️ Nessun errore di vincolo di unicità riconosciuto nel log sopra: "
-                      "controlla i messaggi \"Error:\" per il dettaglio.", Qgis.Warning)
+        """L'analisi degli errori di unicita' sta in errori_import; qui
+        restano i due destinatari del risultato, che sono roba di finestra:
+        la scheda "Errori nei dati" e il layer sulla mappa."""
+        righe, punti = _errori_import.analizza(
+            self._import_unique_errors, itf_path,
+            lambda t: self.log(t, self._livello_di_riga(t)))
+        if not righe:
             return
-
-        self.log(f"\n🔬 Analisi automatica: {len(errors)} violazione/i di vincolo di unicità")
-        # Le stesse informazioni vanno anche nella scheda "Errori nei dati":
-        # in console un elenco di venti conflitti e' un muro di testo, in
-        # tabella e' una lista di cose da sistemare. Il log resta perche' porta
-        # il dettaglio esteso (coordinate, distanza) che in tabella non sta.
-        righe_tabella = []
-        for err in errors:
-            table = err["class_path"].split(".")[-1]
-            riga = {
-                "tabella": table,
-                "vincolo": err["constraint"].split(".")[-1],
-                "valori": err["values"],
-                "tid": "%s ↔ %s" % (err["tid"], err["existing_tid"]),
-                "riga": err["line"],
-                "diagnosi": "",
-            }
-            righe_tabella.append(riga)
-            self.log(f"\n   📋 Tabella: {table}  |  Vincolo: {err['constraint'].split('.')[-1]}")
-            self.log(f"      Valori duplicati: {err['values']}")
-            self.log(f"      Oggetto nuovo (tid {err['tid']}, riga ITF {err['line']}) "
-                      f"in conflitto con oggetto già importato (tid {err['existing_tid']})")
-            try:
-                start, start_name, end = self._find_itf_table_block(itf_path, err["line"])
-                if not start or not end:
-                    self.log("      ⚠️ Non trovo i confini del blocco tabella nell'ITF per il dettaglio.", Qgis.Warning)
-                    riga["diagnosi"] = "blocco tabella non individuato nell'ITF"
-                    continue
-                objs = self._extract_objects_by_tid(itf_path, start, end, [err["tid"], err["existing_tid"]])
-                coord_a = self._extract_lv95_coords(objs[err["tid"]]) if err["tid"] in objs else None
-                coord_b = self._extract_lv95_coords(objs[err["existing_tid"]]) if err["existing_tid"] in objs else None
-                if coord_a and coord_b:
-                    dist = ((coord_a[0] - coord_b[0]) ** 2 + (coord_a[1] - coord_b[1]) ** 2) ** 0.5
-                    # Gli stessi due punti finiscono anche sulla mappa: la
-                    # tabella dice COSA non va, il layer dice DOVE.
-                    for tid, (x, y) in ((err["tid"], coord_a), (err["existing_tid"], coord_b)):
-                        self._punti_validazione.append({
-                            "livello": "errore", "tipo": "vincolo di unicità",
-                            "messaggio": "%s: valori duplicati %s"
-                                         % (err["constraint"].split(".")[-1], err["values"]),
-                            "x": x, "y": y, "tid": tid, "riga": err["line"],
-                        })
-                    self.log(f"      Coordinate: A=({coord_a[0]:.1f}, {coord_a[1]:.1f})  "
-                              f"B=({coord_b[0]:.1f}, {coord_b[1]:.1f})  →  distanza {dist:.0f} m")
-                    if dist < 1.0:
-                        riga["diagnosi"] = "doppione: stesso punto, distanza %.1f m" % dist
-                        self.log("      → Stesso punto fisico registrato due volte (probabile doppione da rimuovere).")
-                    else:
-                        riga["diagnosi"] = ("collisione di numerazione: punti diversi, "
-                                            "distanza %.0f m" % dist)
-                        self.log("      → Punti fisicamente DIVERSI: collisione di numerazione "
-                                  "(due punti distinti con lo stesso identificativo), non un doppione.")
-                else:
-                    riga["diagnosi"] = "coordinate non estratte (formato riga inatteso)"
-                    self.log("      ℹ️ Coordinate non estratte automaticamente (formato riga inatteso).")
-            except OSError as e:
-                riga["diagnosi"] = "lettura ITF fallita"
-                self.log(f"      ⚠️ Lettura ITF fallita durante l'analisi: {e}", Qgis.Warning)
-
-        self._riempi_tabella_errori(righe_tabella)
+        self._punti_validazione.extend(punti)
+        self._riempi_tabella_errori(righe)
         self.crea_layer_errori_validazione()
-        self.log("\n   💡 Non è un problema risolvibile qui: i dati sorgente vanno corretti da chi "
-                  "gestisce l'ITF (assegna un identificativo diverso a uno dei due punti). "
-                  "Per procedere comunque con l'import (i duplicati restano nel GeoPackage così come sono), "
-                  "attiva \"Disabilita validazione\" nei parametri avanzati e rilancia. "
-                  "L'elenco completo è nella scheda \"Errori nei dati\".")
 
     def run_import(self):
         # Guardia contro il doppio avvio: un secondo worker in parallelo
