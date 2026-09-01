@@ -31,7 +31,7 @@ tabella il file non viene più riletto da capo per ognuno.
 il raggruppamento dell'albero sono andati in `ordinamento.py`, che di ordine e
 di gruppi sapeva già tutto; la verifica GDAL del GeoPackage appena scritto in
 `archivio.py`; l'avviso «il fondo non ci sta nel foglio» in `planimetria.py`.
-Ventidue prove nuove, su tre parti che ne avevano zero: i nomi dei layer non
+Ventisette prove nuove, su tre parti che ne avevano zero: i nomi dei layer non
 erano provati affatto, e l'avviso di capienza — quello che dice *cosa fare*,
 non solo che c'è un problema — nemmeno.
 
